@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Compile Include="TomlConfigTests.fs" />
+    <Compile Include="ValidateTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
@@ -22,6 +23,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Takatora.Core\Takatora.Core.fsproj" />
+    <ProjectReference Include="..\..\src\Takatora.Cli\Takatora.Cli.fsproj" />
   </ItemGroup>
 
 </Project>
