@@ -1,0 +1,19 @@
+# Takatora sample project — minimal config for testing the runner.
+# Real projects will normally have these autodetected by the GUI wizard.
+
+[project]
+name = "sample-game"
+working_dir = "."
+
+[engine]
+type = "unreal"
+project_file = "SampleGame.uproject"
+# engine_path = ""        # uncomment to override autodetection
+# engine_version = ""
+
+[vcs]
+type = "git"
+lfs = false
+
+[history]
+keep_last_n_runs = 50

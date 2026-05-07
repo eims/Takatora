@@ -1,0 +1,43 @@
+# .NET build outputs
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+publish/
+artifacts/
+
+# IDE / Editor
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.sln.docstates
+
+# F# Interactive cache
+.fake/
+.ionide/
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+
+# Test results
+TestResults/
+coverage*.json
+coverage*.xml
+*.coverage
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Takatora runtime state in sample projects
+samples/**/.ci/runs/
+
+# Local-only secrets fallback (real secrets go to OS keychain)
+**/.ci/.secrets.local

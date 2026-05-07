@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsPackable>true</IsPackable>
+    <PackageId>Takatora.Tasks</PackageId>
+    <Version>0.1.0-alpha</Version>
+    <Description>SDK for authoring Takatora task .fsx scripts (Param / Output / Step / Cmd / Project / ...)</Description>
+    <PackageTags>takatora;ci;build;fsharp;gamedev</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Library.fs" />
+  </ItemGroup>
+
+</Project>

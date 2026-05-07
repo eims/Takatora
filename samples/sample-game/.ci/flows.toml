@@ -1,0 +1,40 @@
+# Takatora sample flows — minimal definitions for runner smoke tests.
+
+[[flow]]
+id = "smoke"
+name = "Smoke test (notify only)"
+
+[flow.vars]
+message = { type = "string", default = "hello from takatora" }
+
+[[flow.steps]]
+type = "notify.console"
+
+# ─────────────────────────────────────────────────────────────────
+# Below are sketches of more realistic flows; not yet runnable
+# (their tasks live in Phase 1 of the catalog and are TBD).
+# Uncomment piece by piece as builtin tasks land.
+# ─────────────────────────────────────────────────────────────────
+
+# [[flow]]
+# id = "release"
+# name = "Release Shipping Build"
+#
+# [flow.vars]
+# configuration = { type = "enum", values = ["Development","DebugGame","Shipping","Test"], default = "Shipping" }
+# platform      = { type = "enum", values = ["Win64"], default = "Win64" }
+# clean_first   = { type = "bool", default = false }
+#
+# [[flow.steps]]
+# type = "git.pull"
+#
+# [[flow.steps]]
+# type = "lfs.pull"
+#
+# [[flow.steps]]
+# type = "ue.clean"
+# targets = ["intermediate", "binaries"]
+# when = "${vars.clean_first}"
+#
+# [[flow.steps]]
+# type = "ue.build_cook_run"

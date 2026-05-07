@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Takatora.Core\Takatora.Core.fsproj" />
+  </ItemGroup>
+
+  <!--
+    Pinned to a known-working combo (Avalonia 11.2 + FuncUI 1.5.1).
+    Avalonia.FuncUI's release cadence lags behind Avalonia core releases;
+    bumping Avalonia without checking FuncUI compatibility breaks the DSL
+    (silent member-resolution failures). When upgrading, verify that
+    TextBlock.text / DockPanel.children / etc. still resolve under the
+    target FuncUI version.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.2.0-beta1" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.2.0-beta1" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.2.0-beta1" />
+    <PackageReference Include="Avalonia.FuncUI" Version="1.5.1" />
+    <PackageReference Include="Avalonia.FuncUI.Elmish" Version="1.5.1" />
+  </ItemGroup>
+
+</Project>
