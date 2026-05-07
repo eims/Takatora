@@ -1,40 +1,279 @@
 namespace Takatora.Tasks
 
-// Public SDK surface for .fsx authors.
-//
-// Usage from a task .fsx:
-//     #r "nuget: Takatora.Tasks"
-//     open Takatora.Tasks
-//     let cfg = Param.required<string> "configuration"
-//     Step.run "Build" (fun () -> Cmd.exec "msbuild" ["..."])
-//     Output.set "exe_path" "..."
-//
-// All implementations are stubs at this stage. Real impls come with
-// the runner contract (TAKATORA_TASK_INPUT / OUTPUT_FILE / EVENTS_FILE).
+open System
+open System.Globalization
+open System.IO
+open System.Text.Json
+open System.Text.Json.Nodes
 
+/// Raised by `Task.fail` to signal a clean failure with no stack trace.
+/// Runner distinguishes this from other exceptions when reporting.
+exception TaskFailure of reason: string
+
+// ─── Internal I/O contract ─────────────────────────────────────────
+//
+// Three env vars cooperatively scope a task subprocess:
+//
+//   TAKATORA_TASK_INPUT   — JSON file with params/project/engine/prior_outputs
+//   TAKATORA_OUTPUT_FILE  — NDJSON, one {"name","value"} per Output.set call
+//   TAKATORA_EVENTS_FILE  — NDJSON, structured events from Step / Log
+//
+// All three are optional in isolation — when unset the SDK silently no-ops
+// the missing channel so a `.fsx` author can run the script under `dotnet
+// fsi` directly for local debugging.
+
+[<RequireQualifiedAccess>]
+module internal Io =
+
+    type private Channel = {
+        InputRoot: JsonObject
+        OutputPath: string option
+        EventsPath: string option
+    }
+
+    let private syncRoot = obj ()
+    let mutable private channelOpt: Channel option = None
+
+    let private envOrEmpty (name: string) =
+        match Environment.GetEnvironmentVariable(name) with
+        | null -> ""
+        | s -> s
+
+    let private buildChannel () : Channel =
+        let inputPath = envOrEmpty "TAKATORA_TASK_INPUT"
+        let inputRoot =
+            if String.IsNullOrEmpty inputPath then
+                JsonObject()
+            elif not (File.Exists inputPath) then
+                failwithf "TAKATORA_TASK_INPUT points to non-existent file: %s" inputPath
+            else
+                let text = File.ReadAllText(inputPath)
+                match JsonNode.Parse(text) with
+                | :? JsonObject as o -> o
+                | _ -> failwithf "TAKATORA_TASK_INPUT must contain a JSON object: %s" inputPath
+        let optPath name =
+            match envOrEmpty name with
+            | "" -> None
+            | p -> Some p
+        { InputRoot = inputRoot
+          OutputPath = optPath "TAKATORA_OUTPUT_FILE"
+          EventsPath = optPath "TAKATORA_EVENTS_FILE" }
+
+    let private get () : Channel =
+        match channelOpt with
+        | Some c -> c
+        | None ->
+            lock syncRoot (fun () ->
+                match channelOpt with
+                | Some c -> c
+                | None ->
+                    let c = buildChannel ()
+                    channelOpt <- Some c
+                    c)
+
+    /// Test hook — drops the cached channel so a subsequent call re-reads
+    /// the env vars. Production code never needs this.
+    let resetForTests () : unit =
+        lock syncRoot (fun () -> channelOpt <- None)
+
+    // ─── Input access ──────────────────────────────────────────────
+
+    let private tryProperty (obj: JsonObject) (key: string) : JsonNode option =
+        let mutable result : JsonNode = null
+        if obj.TryGetPropertyValue(key, &result) then Some result else None
+
+    let tryParam (name: string) : JsonNode option =
+        match tryProperty (get().InputRoot) "params" with
+        | Some (:? JsonObject as p) -> tryProperty p name
+        | _ -> None
+
+    let tryProjectField (key: string) : string option =
+        match tryProperty (get().InputRoot) "project" with
+        | Some (:? JsonObject as p) ->
+            match tryProperty p key with
+            | Some (:? JsonValue as v) ->
+                match v.TryGetValue<string>() with
+                | true, s -> Some s
+                | _ -> None
+            | _ -> None
+        | _ -> None
+
+    // ─── Append-only writes ────────────────────────────────────────
+
+    let private nowIso () =
+        DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture)
+
+    let private appendLine (path: string) (line: string) =
+        // FileShare.ReadWrite so a tail-reader (GUI) can follow live.
+        use stream =
+            new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)
+        use writer = new StreamWriter(stream)
+        writer.WriteLine(line)
+
+    let private valueToNode (v: obj) : JsonNode =
+        // System.Text.Json handles the polymorphic case correctly for primitives,
+        // strings, sequences, and POCOs. Going through Serialize → Parse keeps
+        // behavior consistent regardless of caller-supplied runtime type.
+        if isNull v then null
+        else JsonNode.Parse(JsonSerializer.Serialize(v))
+
+    let writeEvent (kind: string) (fields: (string * obj) seq) : unit =
+        match get().EventsPath with
+        | None -> ()
+        | Some path ->
+            let obj = JsonObject()
+            obj.["ts"] <- JsonValue.Create(nowIso ())
+            obj.["kind"] <- JsonValue.Create(kind)
+            for k, v in fields do
+                obj.[k] <- valueToNode v
+            appendLine path (obj.ToJsonString())
+
+    let writeOutput (name: string) (value: obj) : unit =
+        match get().OutputPath with
+        | None -> ()
+        | Some path ->
+            let obj = JsonObject()
+            obj.["name"] <- JsonValue.Create(name)
+            obj.["value"] <- valueToNode value
+            appendLine path (obj.ToJsonString())
+
+// ─── Public SDK surface ────────────────────────────────────────────
+
+/// Read typed input parameters declared in the flow's TOML for this step.
+/// Mismatched types or missing required keys raise `TaskFailure`.
+[<RequireQualifiedAccess>]
 module Param =
-    let required<'T> (_name: string) : 'T = failwith "Param.required: not implemented"
-    let optional<'T> (_name: string) (_default: 'T) : 'T = failwith "Param.optional: not implemented"
-    let requiredEnum (_name: string) (_values: string list) : string = failwith "Param.requiredEnum: not implemented"
-    let optionalList<'T> (_name: string) (_default: 'T list) : 'T list = failwith "Param.optionalList: not implemented"
-    let has (_name: string) : bool = failwith "Param.has: not implemented"
-    let requiredPath (_name: string) : string = failwith "Param.requiredPath: not implemented"
-    let optionalPath (_name: string) (_default: string) : string = failwith "Param.optionalPath: not implemented"
 
+    let private taskFail msg : 'T = raise (TaskFailure msg)
+
+    let private convert<'T> (name: string) (node: JsonNode) : 'T =
+        let t = typeof<'T>
+        try
+            match node with
+            | :? JsonValue as v ->
+                if t = typeof<string> then box (v.GetValue<string>()) :?> 'T
+                elif t = typeof<bool>     then box (v.GetValue<bool>())     :?> 'T
+                elif t = typeof<int>      then box (v.GetValue<int>())      :?> 'T
+                elif t = typeof<int64>    then box (v.GetValue<int64>())    :?> 'T
+                elif t = typeof<float>    then box (v.GetValue<double>())   :?> 'T
+                elif t = typeof<double>   then box (v.GetValue<double>())   :?> 'T
+                else
+                    JsonSerializer.Deserialize<'T>(node.ToJsonString())
+            | _ ->
+                JsonSerializer.Deserialize<'T>(node.ToJsonString())
+        with ex ->
+            taskFail $"Param '{name}' expected type {t.Name}: {ex.Message}"
+
+    /// Required typed param. `'T` should be string / bool / int / int64 /
+    /// float / double for primitives; arrays and lists work too.
+    let required<'T> (name: string) : 'T =
+        match Io.tryParam name with
+        | Some node when not (isNull node) -> convert<'T> name node
+        | _ -> taskFail $"Required param '{name}' is missing from task input"
+
+    /// Optional typed param with a fallback default.
+    let optional<'T> (name: string) (defaultValue: 'T) : 'T =
+        match Io.tryParam name with
+        | Some node when not (isNull node) -> convert<'T> name node
+        | _ -> defaultValue
+
+    /// True when the param is present and non-null.
+    let has (name: string) : bool =
+        match Io.tryParam name with
+        | Some node when not (isNull node) -> true
+        | _ -> false
+
+    /// String param constrained to a fixed set of allowed values. Used for
+    /// flow vars declared as `type = "enum"`.
+    let requiredEnum (name: string) (values: string list) : string =
+        let v = required<string> name
+        if List.contains v values then v
+        else
+            let allowed = String.concat ", " values
+            taskFail $"Param '{name}' must be one of [{allowed}], got '{v}'"
+
+/// Surface step outputs to subsequent steps via NDJSON appended to
+/// `TAKATORA_OUTPUT_FILE`. Visible as `${steps.<id>.outputs.<name>}` in
+/// later flow steps.
+[<RequireQualifiedAccess>]
 module Output =
-    let set (_name: string) (_value: obj) : unit = failwith "Output.set: not implemented"
+    let set (name: string) (value: obj) : unit = Io.writeOutput name value
 
+/// Time + log a logical sub-section of a task. Substep events appear
+/// in `TAKATORA_EVENTS_FILE` so the GUI can render a tree view.
+[<RequireQualifiedAccess>]
 module Step =
-    let run (_name: string) (_action: unit -> unit) : unit = failwith "Step.run: not implemented"
-    let runResult (_name: string) (_action: unit -> 'T) : 'T = failwith "Step.runResult: not implemented"
-    let skip (_name: string) (_reason: string) : unit = failwith "Step.skip: not implemented"
 
+    let private elapsedSec (start: DateTimeOffset) =
+        (DateTimeOffset.UtcNow - start).TotalSeconds
+
+    /// Run an action wrapped in substep.start / substep.end events.
+    /// Exceptions are logged as substep.end status=fail and re-raised.
+    let run (name: string) (action: unit -> unit) : unit =
+        Io.writeEvent "substep.start" [ "name", box name ]
+        let start = DateTimeOffset.UtcNow
+        try
+            action ()
+            Io.writeEvent "substep.end" [
+                "name", box name
+                "status", box "success"
+                "duration_sec", box (elapsedSec start)
+            ]
+        with ex ->
+            Io.writeEvent "substep.end" [
+                "name", box name
+                "status", box "fail"
+                "duration_sec", box (elapsedSec start)
+                "message", box ex.Message
+            ]
+            reraise ()
+
+    /// Run an action that returns a value, otherwise identical to `run`.
+    let runResult (name: string) (action: unit -> 'T) : 'T =
+        let mutable result : 'T = Unchecked.defaultof<'T>
+        run name (fun () -> result <- action ())
+        result
+
+    /// Skip a substep with a human-readable reason.
+    let skip (name: string) (reason: string) : unit =
+        Io.writeEvent "substep.skip" [
+            "name", box name
+            "reason", box reason
+        ]
+
+/// Leveled logging routed through `TAKATORA_EVENTS_FILE`.
+[<RequireQualifiedAccess>]
 module Log =
-    let info (_msg: string) : unit = failwith "Log.info: not implemented"
-    let warn (_msg: string) : unit = failwith "Log.warn: not implemented"
-    let error (_msg: string) : unit = failwith "Log.error: not implemented"
-    let debug (_msg: string) : unit = failwith "Log.debug: not implemented"
-    let section (_msg: string) : unit = failwith "Log.section: not implemented"
+    let private emit (level: string) (message: string) =
+        Io.writeEvent "log" [ "level", box level; "message", box message ]
 
+    let info  (msg: string) : unit = emit "info"  msg
+    let warn  (msg: string) : unit = emit "warn"  msg
+    let error (msg: string) : unit = emit "error" msg
+    let debug (msg: string) : unit = emit "debug" msg
+
+    /// Visual section break — surfaces as a heading-style line in the GUI's
+    /// log view. Functionally just an info-level event with a section flag.
+    let section (msg: string) : unit =
+        Io.writeEvent "log" [
+            "level", box "info"
+            "section", box true
+            "message", box msg
+        ]
+
+/// Read-only project metadata as supplied by the runner.
+/// Members are properties (not let-bound values) so they re-read the
+/// input on each access; otherwise tests + GUI re-init scenarios would
+/// pin to whatever the input was at module init time.
+type Project =
+    static member workingDir : string =
+        Io.tryProjectField "working_dir" |> Option.defaultValue ""
+    static member name : string =
+        Io.tryProjectField "name" |> Option.defaultValue ""
+
+/// Task-level control flow.
+[<RequireQualifiedAccess>]
 module Task =
-    let fail<'T> (_reason: string) : 'T = failwith "Task.fail: not implemented"
+    /// Abort the task with a clean message — runner won't print the F# stack.
+    /// Use for user-facing failure reasons; let plain exceptions handle bugs.
+    let fail<'T> (reason: string) : 'T = raise (TaskFailure reason)

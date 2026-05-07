@@ -14,4 +14,11 @@
     <Compile Include="Library.fs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The Io module is internal to keep the SDK's surface tight; tests
+         need to call Io.resetForTests between cases since env vars are
+         process-global. -->
+    <InternalsVisibleTo Include="Takatora.Core.Tests" />
+  </ItemGroup>
+
 </Project>
