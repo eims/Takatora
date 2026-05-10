@@ -15,6 +15,10 @@ type StepStatus =
     | Success
     | Failure of message: string
     | Skipped of reason: string
+    /// In-flight when a CANCEL signal arrived; the process tree was
+    /// killed mid-execution. Distinct from Skipped (which means "never
+    /// started") so the audit trail shows where work was lost.
+    | Cancelled
 
 type StepRecord = {
     Id: string
@@ -261,9 +265,15 @@ module Run =
         | EngineKind.Unity  -> "unity"
         | EngineKind.Godot  -> "godot"
 
+    /// Path where a cancel request lives, relative to a run dir.
+    let cancelFlagPath (runDir: string) = Path.Combine(runDir, "CANCEL")
+
     /// Spawn `dotnet fsi <wrapper>` for one step. Stdout/stderr get
     /// pumped into log.txt; the .fsx itself writes its own events +
-    /// outputs through the env var paths.
+    /// outputs through the env var paths. While the subprocess runs,
+    /// the runner polls `<run-dir>/CANCEL` and terminates the entire
+    /// process tree on appearance — UE's UAT cooks spawn long chains of
+    /// children, so a plain Process.Kill leaks them.
     let private runStep
             (opts: Options)
             (project: Project)
@@ -374,6 +384,23 @@ module Run =
         proc.Start() |> ignore
         proc.BeginOutputReadLine()
         proc.BeginErrorReadLine()
+
+        // CANCEL polling: cheap (200ms cadence, single File.Exists), so we
+        // don't reach for FileSystemWatcher's threading complexity.
+        let cancelPath = cancelFlagPath runDir
+        let mutable cancelled = false
+        while not (proc.HasExited) do
+            if not cancelled && File.Exists cancelPath then
+                writeEvent eventsPath "step.cancel" [
+                    "step_id", box id
+                    "type", box step.Type
+                ]
+                try proc.Kill(entireProcessTree = true)
+                with _ -> ()
+                cancelled <- true
+            else
+                Threading.Thread.Sleep(200)
+        // Drain stdout/stderr handlers before reading exit code.
         proc.WaitForExit()
         let exitCode = proc.ExitCode
         let durationSec = (DateTimeOffset.UtcNow - stepStart).TotalSeconds
@@ -381,12 +408,18 @@ module Run =
         // 5) Read outputs back, record the step
         let outputs = readStepOutputs outputPath
         let status =
-            if exitCode = 0 then StepStatus.Success
+            if cancelled then StepStatus.Cancelled
+            elif exitCode = 0 then StepStatus.Success
             else StepStatus.Failure $"task exited with code {exitCode}"
+        let endStatus =
+            match status with
+            | StepStatus.Success -> "success"
+            | StepStatus.Cancelled -> "cancelled"
+            | _ -> "fail"
         writeEvent eventsPath "step.end" [
             "step_id", box id
             "type", box step.Type
-            "status", box (match status with StepStatus.Success -> "success" | _ -> "fail")
+            "status", box endStatus
             "duration_sec", box durationSec
             "exit_code", box exitCode
         ]
@@ -437,9 +470,10 @@ module Run =
             writeStr "type" s.Type
             writeStr "status" (
                 match s.Status with
-                | StepStatus.Success -> "success"
-                | StepStatus.Failure _ -> "failure"
-                | StepStatus.Skipped _ -> "skipped")
+                | StepStatus.Success    -> "success"
+                | StepStatus.Failure _  -> "failure"
+                | StepStatus.Skipped _  -> "skipped"
+                | StepStatus.Cancelled  -> "cancelled")
             writeRaw "duration_sec" (s.DurationSec.ToString("0.###", CultureInfo.InvariantCulture))
             match s.Status with
             | StepStatus.Failure msg -> writeStr "message" msg
@@ -503,24 +537,31 @@ module Run =
 
             let mutable priorOutputs : Map<string, Map<string, TomlValue>> = Map.empty
             let mutable steps : StepRecord list = []
-            let mutable failed = false
+            // `halted` is one of: `None` (keep running), `Some "failed"`,
+            // `Some "cancelled"`. Both terminal states skip remaining
+            // steps; the reason string differs in the audit trail.
+            let mutable halted : string option = None
 
             for i, step in flow.Steps |> List.indexed do
-                if failed then
+                match halted with
+                | Some reason ->
                     let id = stepId (i + 1) step
-                    let reason = "earlier step failed"
+                    let skipReason =
+                        match reason with
+                        | "cancelled" -> "cancelled"
+                        | _ -> "earlier step failed"
                     writeEvent eventsPath "step.skip" [
                         "step_id", box id
                         "type", box step.Type
-                        "reason", box reason
+                        "reason", box skipReason
                     ]
                     steps <-
                         { Id = id
                           Type = step.Type
-                          Status = StepStatus.Skipped reason
+                          Status = StepStatus.Skipped skipReason
                           DurationSec = 0.0
                           Outputs = Map.empty } :: steps
-                else
+                | None ->
                     let ctx : ResolveContext = {
                         Vars = vars
                         StepOutputs = priorOutputs
@@ -532,14 +573,20 @@ module Run =
                     match record.Status with
                     | StepStatus.Success ->
                         priorOutputs <- Map.add record.Id record.Outputs priorOutputs
-                    | StepStatus.Failure _ -> failed <- true
+                    | StepStatus.Failure _ -> halted <- Some "failed"
+                    | StepStatus.Cancelled -> halted <- Some "cancelled"
                     | StepStatus.Skipped _ -> ()
 
             let stepsOrdered = List.rev steps
             let result =
-                if stepsOrdered |> List.exists (fun s ->
-                    match s.Status with StepStatus.Failure _ -> true | _ -> false) then
-                    RunResult.Failure
+                let anyCancelled =
+                    stepsOrdered |> List.exists (fun s ->
+                        match s.Status with StepStatus.Cancelled -> true | _ -> false)
+                let anyFailed =
+                    stepsOrdered |> List.exists (fun s ->
+                        match s.Status with StepStatus.Failure _ -> true | _ -> false)
+                if anyCancelled then RunResult.Cancelled
+                elif anyFailed then RunResult.Failure
                 else RunResult.Success
             let finished = DateTimeOffset.UtcNow
 

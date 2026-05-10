@@ -203,3 +203,70 @@ type = "noop"
         match Run.execute (buildOptions "missing-flow" Map.empty) with
         | Error (RunFailure.FlowNotFound id) -> Assert.Equal("missing-flow", id)
         | other -> Assert.Fail($"expected FlowNotFound, got %A{other}")
+
+    // ─── cancel ───────────────────────────────────────────────────
+
+    [<Fact>]
+    member _.``CANCEL flag mid-flight cancels current step + skips rest`` () =
+        writeFile ".ci/project.toml" projectToml
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "long"
+
+[[flow.steps]]
+id = "sleeper"
+type = "sleep"
+
+[[flow.steps]]
+id = "after"
+type = "sleep"
+"""
+        writeFile ".ci/tasks/sleep.fsx" """
+open Takatora.Tasks
+Step.run "sleeping" (fun () ->
+    System.Threading.Thread.Sleep(System.TimeSpan.FromSeconds(10.0)))
+"""
+        // Predict the run dir without racing: capture run id by watching
+        // the runs/ directory for the new entry, then drop CANCEL inside.
+        let runsRoot = Path.Combine(dir, ".ci", "runs")
+        Directory.CreateDirectory(runsRoot) |> ignore
+
+        let runTask =
+            System.Threading.Tasks.Task.Run(fun () ->
+                Run.execute (buildOptions "long" Map.empty))
+
+        // Wait for the run dir to appear (runner creates it before
+        // launching the first step), then drop CANCEL.
+        let deadline = DateTimeOffset.UtcNow.AddSeconds(8.0)
+        let mutable runDir : string option = None
+        while runDir.IsNone && DateTimeOffset.UtcNow < deadline do
+            match Directory.GetDirectories(runsRoot) |> Array.tryHead with
+            | Some d -> runDir <- Some d
+            | None -> System.Threading.Thread.Sleep(50)
+
+        match runDir with
+        | None -> Assert.Fail("runner never created a run dir")
+        | Some d ->
+            // Give the step a beat to actually start fsi before cancelling.
+            System.Threading.Thread.Sleep(500)
+            File.WriteAllText(Path.Combine(d, "CANCEL"), "")
+
+        let outcome =
+            match runTask.Result with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+
+        Assert.Equal(RunResult.Cancelled, outcome.Result)
+        Assert.Equal(2, List.length outcome.Steps)
+        Assert.Equal(StepStatus.Cancelled, outcome.Steps.[0].Status)
+        // Should be far short of 10s — Kill(entireProcessTree) is prompt.
+        Assert.True(outcome.Steps.[0].DurationSec < 5.0,
+                    $"expected cancel under 5s, got {outcome.Steps.[0].DurationSec}s")
+        match outcome.Steps.[1].Status with
+        | StepStatus.Skipped reason -> Assert.Equal("cancelled", reason)
+        | other -> Assert.Fail($"expected later step Skipped(cancelled), got %A{other}")
+
+        let manifest = File.ReadAllText(Path.Combine(outcome.RunDir, "manifest.toml"))
+        Assert.Contains("result = \"cancelled\"", manifest)
+        let events = File.ReadAllLines(Path.Combine(outcome.RunDir, "events.ndjson"))
+        Assert.Contains(events, fun l -> l.Contains("\"kind\":\"step.cancel\""))

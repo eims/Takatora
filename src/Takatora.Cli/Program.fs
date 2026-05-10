@@ -56,6 +56,24 @@ let main argv =
         Run.invoke path flow vars)
     root.Subcommands.Add(runCmd)
 
-    // TODO: describe / detect-engines / cancel / project / history / show-run / replay-run
+    // ─── cancel ───────────────────────────────────────────────────
+    let cancelPathArg = Argument<string>("path")
+    cancelPathArg.Description <- "Project working directory containing .ci/"
+    cancelPathArg.DefaultValueFactory <- (fun _ -> ".")
+
+    let cancelRunIdArg = Argument<string>("run-id")
+    cancelRunIdArg.Description <- "Run id from `runs/<id>/`"
+
+    let cancelCmd =
+        Command("cancel", "Request cancellation of a running flow (writes CANCEL flag)")
+    cancelCmd.Arguments.Add(cancelPathArg)
+    cancelCmd.Arguments.Add(cancelRunIdArg)
+    cancelCmd.SetAction(fun (pr: ParseResult) ->
+        let path  = pr.GetValue(cancelPathArg)
+        let runId = pr.GetValue(cancelRunIdArg)
+        Cancel.invoke path runId)
+    root.Subcommands.Add(cancelCmd)
+
+    // TODO: describe / detect-engines / project / history / show-run / replay-run
 
     root.Parse(argv).Invoke()

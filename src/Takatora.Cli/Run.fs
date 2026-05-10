@@ -72,9 +72,10 @@ let private failureToExitCode (failure: RunFailure) =
 
 let private describeStatus (s: StepStatus) =
     match s with
-    | StepStatus.Success -> "✓"
+    | StepStatus.Success   -> "✓"
     | StepStatus.Failure _ -> "✗"
     | StepStatus.Skipped _ -> "⊘"
+    | StepStatus.Cancelled -> "⊗"
 
 /// Pretty-print a run's outcome to stdout. Stderr stays empty for the
 /// success path; failures put a one-line summary there too so CI of CI
@@ -101,6 +102,7 @@ let formatOutcome (outcome: RunOutcome) : string * string =
             | StepStatus.Success     -> sprintf "  %s %s (%s) — %.2fs" mark s.Id s.Type s.DurationSec
             | StepStatus.Failure msg -> sprintf "  %s %s (%s) — %s" mark s.Id s.Type msg
             | StepStatus.Skipped r   -> sprintf "  %s %s (%s) — skipped (%s)" mark s.Id s.Type r
+            | StepStatus.Cancelled   -> sprintf "  %s %s (%s) — cancelled after %.2fs" mark s.Id s.Type s.DurationSec
         sb.AppendLine(line) |> ignore
     let stdout = sb.ToString()
     let stderr =
