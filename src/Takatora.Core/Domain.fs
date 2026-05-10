@@ -32,6 +32,9 @@ type Engine = {
     ProjectFile: string option
     EnginePath: string option
     EngineVersion: string option
+    /// Editor binary path (UnrealEditor.exe / Unity.exe / godot.exe).
+    /// Never set from TOML — the runner fills it in from detection.
+    Executable: string option
 }
 
 [<RequireQualifiedAccess>]

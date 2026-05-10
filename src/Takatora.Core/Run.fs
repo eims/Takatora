@@ -207,6 +207,8 @@ module Run =
         |> Option.iter (fun p -> engineObj.["path"] <- JsonValue.Create(p))
         project.Engine.EngineVersion
         |> Option.iter (fun p -> engineObj.["version"] <- JsonValue.Create(p))
+        project.Engine.Executable
+        |> Option.iter (fun p -> engineObj.["executable"] <- JsonValue.Create(p))
         root.["engine"] <- engineObj
 
         let priorObj = JsonObject()
@@ -514,8 +516,8 @@ module Run =
             let effectiveWorkingDir =
                 Path.GetFullPath(Path.Combine(projectRoot, project.WorkingDir))
 
-            // Engine auto-detection: only fills in path/version if the
-            // user didn't specify them in project.toml. Detection
+            // Engine auto-detection: only fills in path/version/executable
+            // if the user didn't specify them in project.toml. Detection
             // failure is non-fatal — the .fsx may still get by (e.g. a
             // pure git/fs flow doesn't need engine info), and tasks
             // that DO need it raise their own clear error.
@@ -531,7 +533,8 @@ module Run =
                                     EnginePath = Some detected.Path
                                     EngineVersion =
                                         project.Engine.EngineVersion
-                                        |> Option.orElse (Some detected.Version) } }
+                                        |> Option.orElse (Some detected.Version)
+                                    Executable = detected.Executable } }
                     | None -> project
 
             let runId = RunId.generate DateTimeOffset.UtcNow

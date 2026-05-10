@@ -116,7 +116,8 @@ let ``format Valid yields exit 0 and prints to stdout`` () =
             { Kind = EngineKind.Unreal
               ProjectFile = None
               EnginePath = None
-              EngineVersion = None }
+              EngineVersion = None
+              Executable = None }
           Vcs = None
           History = { KeepLastNRuns = 50 } }
     let flow = { Id = "smoke"; Name = None; Vars = []; Steps = [] }

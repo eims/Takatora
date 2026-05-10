@@ -98,6 +98,17 @@ module internal Io =
             | _ -> None
         | _ -> None
 
+    let tryEngineField (key: string) : string option =
+        match tryProperty (get().InputRoot) "engine" with
+        | Some (:? JsonObject as e) ->
+            match tryProperty e key with
+            | Some (:? JsonValue as v) ->
+                match v.TryGetValue<string>() with
+                | true, s -> Some s
+                | _ -> None
+            | _ -> None
+        | _ -> None
+
     // ─── Append-only writes ────────────────────────────────────────
 
     let private nowIso () =
@@ -271,6 +282,21 @@ type Project =
     static member name : string =
         Io.tryProjectField "name" |> Option.defaultValue ""
 
+/// Read-only engine metadata. Same property pattern as `Project`.
+/// Empty strings when the runner hasn't supplied a field — engine
+/// tasks should call `Task.fail` early if a required field is blank.
+type Engine =
+    static member kind : string =
+        Io.tryEngineField "type" |> Option.defaultValue ""
+    static member path : string =
+        Io.tryEngineField "path" |> Option.defaultValue ""
+    static member version : string =
+        Io.tryEngineField "version" |> Option.defaultValue ""
+    static member projectFile : string =
+        Io.tryEngineField "project_file" |> Option.defaultValue ""
+    static member executable : string =
+        Io.tryEngineField "executable" |> Option.defaultValue ""
+
 /// Task-level control flow.
 [<RequireQualifiedAccess>]
 module Task =
@@ -384,3 +410,45 @@ module Cmd =
     /// Capture variant with default options.
     let execCapture (exe: string) (args: string list) =
         execCaptureWith ExecOptions.empty exe args
+
+// ─── Engine-family helpers ─────────────────────────────────────────
+//
+// These are thin wrappers that turn `Engine.path` (set by the runner
+// from detection) into the right tool path and invoke it through Cmd.
+// Tasks use these to avoid hardcoding paths like
+// `<engine>/Engine/Build/BatchFiles/RunUAT.bat` in every .fsx.
+
+/// Unreal Engine helpers. Resolved against `Engine.path`.
+[<RequireQualifiedAccess>]
+module UE =
+    open System.IO
+
+    let private taskFail msg : 'T = raise (TaskFailure msg)
+
+    let private engineRoot () =
+        match Engine.path with
+        | "" -> taskFail "UE.* helpers require engine.path; runner did not detect Unreal Engine. Set [engine] engine_path in project.toml or install Unreal."
+        | p -> p
+
+    /// Path to `RunUAT.bat` under the resolved engine root.
+    let uatBatPath () : string =
+        Path.Combine(engineRoot (), "Engine", "Build", "BatchFiles", "RunUAT.bat")
+
+    /// Path to `Build.bat` (UnrealBuildTool driver) under the engine root.
+    let ubtBatPath () : string =
+        Path.Combine(engineRoot (), "Engine", "Build", "BatchFiles", "Build.bat")
+
+    /// Path to UnrealEditor.exe — falls back to the conventional
+    /// location if the runner didn't fill in `engine.executable`.
+    let editorPath () : string =
+        match Engine.executable with
+        | "" -> Path.Combine(engineRoot (), "Engine", "Binaries", "Win64", "UnrealEditor.exe")
+        | p -> p
+
+    /// Run UAT (`RunUAT.bat <args>`). Stdout streams into the run log.
+    let runUAT (args: string list) : unit =
+        Cmd.exec (uatBatPath ()) args
+
+    /// Run UBT (`Build.bat <args>`).
+    let runUBT (args: string list) : unit =
+        Cmd.exec (ubtBatPath ()) args

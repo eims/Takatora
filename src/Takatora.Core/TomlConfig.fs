@@ -95,7 +95,9 @@ module TomlConfig =
         { Kind = kind
           ProjectFile = tryString tbl "project_file"
           EnginePath = tryString tbl "engine_path"
-          EngineVersion = tryString tbl "engine_version" }
+          EngineVersion = tryString tbl "engine_version"
+          // Executable comes from detection at run time, never from TOML.
+          Executable = None }
 
     let private parseVcs (tbl: TomlTable) : Vcs =
         let kind =

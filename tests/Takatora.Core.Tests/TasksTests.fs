@@ -201,6 +201,49 @@ type TasksSdkTests() =
         Assert.Equal("", Project.name)
         Assert.Equal("", Project.workingDir)
 
+    // ─── Engine accessors ──────────────────────────────────────────
+
+    [<Fact>]
+    member _.``Engine fields surface from input.engine block`` () =
+        setupInput """{"engine":{"type":"unreal","path":"C:/UE","version":"5.4","project_file":"X.uproject","executable":"C:/UE/Editor.exe"}}"""
+        Assert.Equal("unreal",       Engine.kind)
+        Assert.Equal("C:/UE",        Engine.path)
+        Assert.Equal("5.4",          Engine.version)
+        Assert.Equal("X.uproject",   Engine.projectFile)
+        Assert.Equal("C:/UE/Editor.exe", Engine.executable)
+
+    [<Fact>]
+    member _.``Engine fields default to empty strings when absent`` () =
+        setupInput """{"params":{}}"""
+        Assert.Equal("", Engine.kind)
+        Assert.Equal("", Engine.path)
+        Assert.Equal("", Engine.executable)
+
+    [<Fact>]
+    member _.``UE.uatBatPath joins engine path with the conventional sub-path`` () =
+        setupInput """{"engine":{"path":"C:/Program Files/Epic Games/UE_5.4"}}"""
+        let expected =
+            Path.Combine(
+                "C:/Program Files/Epic Games/UE_5.4",
+                "Engine", "Build", "BatchFiles", "RunUAT.bat")
+        Assert.Equal(expected, UE.uatBatPath ())
+
+    [<Fact>]
+    member _.``UE.editorPath uses Engine.executable when set`` () =
+        setupInput """{"engine":{"path":"C:/UE","executable":"D:/custom/Editor.exe"}}"""
+        Assert.Equal("D:/custom/Editor.exe", UE.editorPath ())
+
+    [<Fact>]
+    member _.``UE.editorPath falls back to convention when executable absent`` () =
+        setupInput """{"engine":{"path":"C:/UE"}}"""
+        let expected = Path.Combine("C:/UE", "Engine", "Binaries", "Win64", "UnrealEditor.exe")
+        Assert.Equal(expected, UE.editorPath ())
+
+    [<Fact>]
+    member _.``UE helpers raise TaskFailure when engine path is unset`` () =
+        setupInput """{"params":{}}"""
+        Assert.Throws<TaskFailure>(fun () -> UE.uatBatPath () |> ignore) |> ignore
+
     // ─── Task.fail / TaskFailure ───────────────────────────────────
 
     [<Fact>]

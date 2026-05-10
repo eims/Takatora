@@ -12,7 +12,8 @@ let private project: Project =
         { Kind = EngineKind.Unreal
           ProjectFile = None
           EnginePath = None
-          EngineVersion = None }
+          EngineVersion = None
+          Executable = None }
       Vcs = None
       History = { KeepLastNRuns = 50 } }
 
