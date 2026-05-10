@@ -243,6 +243,46 @@ type = "fs.clean"
         Assert.Equal(Some (TInt 150L), Map.tryFind "bytes_freed"   outputs)
         Assert.Equal(Some (TInt 2L),   Map.tryFind "files_deleted" outputs)
 
+    // ─── builtin: ue.clean ────────────────────────────────────────
+
+    [<Fact>]
+    member _.``builtin ue.clean preset safe removes intermediate + binaries`` () =
+        writeFile ".ci/project.toml" projectToml
+        // Set up the canonical UE artifact dirs the `safe` preset
+        // touches, plus an unrelated dir we expect to survive.
+        Directory.CreateDirectory(Path.Combine(dir, "Intermediate", "Build")) |> ignore
+        File.WriteAllText(Path.Combine(dir, "Intermediate", "x.obj"), "stuff")
+        Directory.CreateDirectory(Path.Combine(dir, "Binaries", "Win64")) |> ignore
+        File.WriteAllText(Path.Combine(dir, "Binaries", "Win64", "Game.exe"), "binary")
+        Directory.CreateDirectory(Path.Combine(dir, "Saved")) |> ignore
+        File.WriteAllText(Path.Combine(dir, "Saved", "log.txt"), "log")
+
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "clean"
+
+[[flow.steps]]
+type = "ue.clean"
+preset = "safe"
+"""
+        let opts : Run.Options = {
+            WorkingDir = dir
+            FlowId = "clean"
+            VarOverrides = Map.empty
+            SdkAssemblyPath = sdkAssemblyPath
+            BuiltinTasksDir = Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+            UserTasksDir = None
+        }
+        let outcome =
+            match Run.execute opts with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        Assert.False(Directory.Exists (Path.Combine(dir, "Intermediate")), "Intermediate should be gone")
+        Assert.False(Directory.Exists (Path.Combine(dir, "Binaries")),     "Binaries should be gone")
+        // `safe` preset doesn't touch Saved.
+        Assert.True(Directory.Exists (Path.Combine(dir, "Saved")),         "Saved should survive `safe`")
+
     // ─── builtin: shell ───────────────────────────────────────────
 
     [<Fact>]

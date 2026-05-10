@@ -452,3 +452,45 @@ module UE =
     /// Run UBT (`Build.bat <args>`).
     let runUBT (args: string list) : unit =
         Cmd.exec (ubtBatPath ()) args
+
+/// Unity helpers. `Engine.executable` for Unity points at
+/// `<engine>/Editor/Unity.exe`; runBatch prefixes the standard flags
+/// every CI invocation needs.
+[<RequireQualifiedAccess>]
+module Unity =
+    open System.IO
+
+    let private taskFail msg : 'T = raise (TaskFailure msg)
+
+    let editorPath () : string =
+        match Engine.executable with
+        | "" ->
+            match Engine.path with
+            | "" -> taskFail "Unity.* helpers require engine.path/executable; runner did not detect Unity. Set [engine] engine_path in project.toml or install Unity Hub."
+            | p -> Path.Combine(p, "Editor", "Unity.exe")
+        | p -> p
+
+    /// `-batchmode -nographics -quit` plus user args. `-quit` is
+    /// essential — without it Unity's batch process sits open waiting
+    /// for input and the runner times out / hangs.
+    let runBatch (args: string list) : unit =
+        let prefix = [ "-batchmode"; "-nographics"; "-quit" ]
+        Cmd.exec (editorPath ()) (prefix @ args)
+
+/// Godot helpers. `Engine.executable` IS the Godot binary path
+/// (Godot has no install layout to peer into).
+[<RequireQualifiedAccess>]
+module Godot =
+
+    let private taskFail msg : 'T = raise (TaskFailure msg)
+
+    let editorPath () : string =
+        match Engine.executable with
+        | "" -> taskFail "Godot.* helpers require engine.executable; runner did not detect Godot. Set [engine] engine_path in project.toml or place godot.exe on PATH."
+        | p -> p
+
+    /// Prepends `--headless` so the export doesn't try to open a window
+    /// on a CI box. Godot 4.x convention; the flag became a hard
+    /// requirement somewhere in the 4.0 release line.
+    let runHeadless (args: string list) : unit =
+        Cmd.exec (editorPath ()) ("--headless" :: args)

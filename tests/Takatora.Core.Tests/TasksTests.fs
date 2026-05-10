@@ -244,6 +244,33 @@ type TasksSdkTests() =
         setupInput """{"params":{}}"""
         Assert.Throws<TaskFailure>(fun () -> UE.uatBatPath () |> ignore) |> ignore
 
+    [<Fact>]
+    member _.``Unity.editorPath uses executable when present`` () =
+        setupInput """{"engine":{"path":"C:/Hub/Editor/2022.3","executable":"C:/Hub/Editor/2022.3/Editor/Unity.exe"}}"""
+        Assert.Equal("C:/Hub/Editor/2022.3/Editor/Unity.exe", Unity.editorPath ())
+
+    [<Fact>]
+    member _.``Unity.editorPath falls back to convention from engine path`` () =
+        setupInput """{"engine":{"path":"C:/Hub/Editor/2022.3"}}"""
+        let expected = Path.Combine("C:/Hub/Editor/2022.3", "Editor", "Unity.exe")
+        Assert.Equal(expected, Unity.editorPath ())
+
+    [<Fact>]
+    member _.``Unity helpers raise TaskFailure when neither path nor executable set`` () =
+        setupInput """{"params":{}}"""
+        Assert.Throws<TaskFailure>(fun () -> Unity.editorPath () |> ignore) |> ignore
+
+    [<Fact>]
+    member _.``Godot.editorPath returns the configured executable`` () =
+        setupInput """{"engine":{"executable":"D:/godot.exe"}}"""
+        Assert.Equal("D:/godot.exe", Godot.editorPath ())
+
+    [<Fact>]
+    member _.``Godot helpers raise TaskFailure when executable absent`` () =
+        // Path alone doesn't help — Godot has no install layout.
+        setupInput """{"engine":{"path":"D:/godot-folder"}}"""
+        Assert.Throws<TaskFailure>(fun () -> Godot.editorPath () |> ignore) |> ignore
+
     // ─── Task.fail / TaskFailure ───────────────────────────────────
 
     [<Fact>]
