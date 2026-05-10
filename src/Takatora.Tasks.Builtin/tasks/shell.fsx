@@ -13,9 +13,11 @@
 open Takatora.Tasks
 open System.Runtime.InteropServices
 
-let command         = Param.required<string> "command"
+let command         = Param.required<string>   "command"
 let workingDir      = Param.optional<string>    "working_dir" Project.workingDir
-let ignoreExitCodes = Param.optional<int list>  "ignore_exit_codes" []
+// `int array` not `int list`: System.Text.Json doesn't deserialize
+// FSharpList without a custom converter; arrays go through cleanly.
+let ignoreExitCodes = Param.optional<int array> "ignore_exit_codes" [||]
 
 let isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
 let exe, args =
@@ -26,6 +28,6 @@ Step.run "shell" (fun () ->
     let opts =
         { ExecOptions.empty with
             WorkingDir = Some workingDir
-            IgnoreExitCodes = ignoreExitCodes }
+            IgnoreExitCodes = List.ofArray ignoreExitCodes }
     Cmd.execWith opts exe args
 )

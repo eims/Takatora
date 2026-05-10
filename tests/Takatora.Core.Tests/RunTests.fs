@@ -204,6 +204,45 @@ type = "noop"
         | Error (RunFailure.FlowNotFound id) -> Assert.Equal("missing-flow", id)
         | other -> Assert.Fail($"expected FlowNotFound, got %A{other}")
 
+    // ─── builtin: fs.clean ────────────────────────────────────────
+
+    [<Fact>]
+    member _.``builtin fs.clean removes a directory and reports counts`` () =
+        writeFile ".ci/project.toml" projectToml
+        // Set up a junk dir with two files of known size.
+        let target = Path.Combine(dir, "junk")
+        Directory.CreateDirectory(Path.Combine(target, "sub")) |> ignore
+        File.WriteAllText(Path.Combine(target, "a.txt"), String.replicate 100 "x")
+        File.WriteAllText(Path.Combine(target, "sub", "b.txt"), String.replicate 50 "y")
+
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "clean-it"
+[flow.vars]
+path = { type = "string", default = "junk" }
+
+[[flow.steps]]
+id = "wipe"
+type = "fs.clean"
+"""
+        let opts : Run.Options = {
+            WorkingDir = dir
+            FlowId = "clean-it"
+            VarOverrides = Map.empty
+            SdkAssemblyPath = sdkAssemblyPath
+            BuiltinTasksDir = Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+            UserTasksDir = None
+        }
+        let outcome =
+            match Run.execute opts with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        Assert.False(Directory.Exists target, "junk dir should be gone")
+        let outputs = outcome.Steps.[0].Outputs
+        Assert.Equal(Some (TInt 150L), Map.tryFind "bytes_freed"   outputs)
+        Assert.Equal(Some (TInt 2L),   Map.tryFind "files_deleted" outputs)
+
     // ─── builtin: shell ───────────────────────────────────────────
 
     [<Fact>]
