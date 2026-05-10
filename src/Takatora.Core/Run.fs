@@ -513,6 +513,27 @@ module Run =
 
             let effectiveWorkingDir =
                 Path.GetFullPath(Path.Combine(projectRoot, project.WorkingDir))
+
+            // Engine auto-detection: only fills in path/version if the
+            // user didn't specify them in project.toml. Detection
+            // failure is non-fatal — the .fsx may still get by (e.g. a
+            // pure git/fs flow doesn't need engine info), and tasks
+            // that DO need it raise their own clear error.
+            let project =
+                match project.Engine.EnginePath with
+                | Some _ -> project
+                | None ->
+                    match Engines.pick project.Engine.Kind project.Engine.EngineVersion with
+                    | Some detected ->
+                        { project with
+                            Engine =
+                                { project.Engine with
+                                    EnginePath = Some detected.Path
+                                    EngineVersion =
+                                        project.Engine.EngineVersion
+                                        |> Option.orElse (Some detected.Version) } }
+                    | None -> project
+
             let runId = RunId.generate DateTimeOffset.UtcNow
             let runDir = Path.Combine(projectRoot, ".ci", "runs", runId)
             Directory.CreateDirectory(runDir) |> ignore

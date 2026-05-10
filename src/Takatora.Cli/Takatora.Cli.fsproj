@@ -9,6 +9,7 @@
     <Compile Include="Validate.fs" />
     <Compile Include="Run.fs" />
     <Compile Include="Cancel.fs" />
+    <Compile Include="DetectEngines.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

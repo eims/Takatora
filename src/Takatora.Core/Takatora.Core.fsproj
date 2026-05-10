@@ -9,12 +9,17 @@
     <Compile Include="Domain.fs" />
     <Compile Include="TomlConfig.fs" />
     <Compile Include="Vars.fs" />
+    <Compile Include="Engines.fs" />
     <Compile Include="Run.fs" />
     <Compile Include="Library.fs" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Tomlyn" Version="2.3.2" />
+    <!-- Engine detection reads HKLM for Unreal installs. Windows-only;
+         the package is harmless on other platforms but the detector
+         skips the registry path when it isn't supported. -->
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
   </ItemGroup>
 
 </Project>

@@ -74,6 +74,23 @@ let main argv =
         Cancel.invoke path runId)
     root.Subcommands.Add(cancelCmd)
 
-    // TODO: describe / detect-engines / project / history / show-run / replay-run
+    // ─── detect-engines ───────────────────────────────────────────
+    let formatOpt = Option<string>("--format")
+    formatOpt.Description <- "Output format: human (default) | json"
+    formatOpt.DefaultValueFactory <- (fun _ -> "human")
+
+    let detectCmd =
+        Command("detect-engines",
+                "Scan for installed UE / Unity / Godot engines and report what was found")
+    detectCmd.Options.Add(formatOpt)
+    detectCmd.SetAction(fun (pr: ParseResult) ->
+        match DetectEngines.parseFormat (pr.GetValue(formatOpt)) with
+        | Error msg ->
+            Console.Error.WriteLine($"detect-engines: {msg}")
+            2
+        | Ok fmt -> DetectEngines.invoke fmt)
+    root.Subcommands.Add(detectCmd)
+
+    // TODO: describe / project / history / show-run / replay-run
 
     root.Parse(argv).Invoke()
