@@ -14,15 +14,15 @@ let main argv =
     root.Subcommands.Add(versionCmd)
 
     // ─── validate ─────────────────────────────────────────────────
-    let pathArg = Argument<string>("path")
-    pathArg.Description <- "Project working directory containing .ci/ (default: current dir)"
-    pathArg.DefaultValueFactory <- (fun _ -> ".")
+    let validatePathArg = Argument<string>("path")
+    validatePathArg.Description <- "Project working directory containing .ci/ (default: current dir)"
+    validatePathArg.DefaultValueFactory <- (fun _ -> ".")
 
     let validateCmd =
         Command("validate", "Check that .ci/project.toml and .ci/flows.toml parse cleanly")
-    validateCmd.Arguments.Add(pathArg)
+    validateCmd.Arguments.Add(validatePathArg)
     validateCmd.SetAction(fun (pr: ParseResult) ->
-        let path = pr.GetValue(pathArg)
+        let path = pr.GetValue(validatePathArg)
         let outcome = Validate.run path
         let stdout, stderr, exitCode = Validate.format outcome
         if not (String.IsNullOrEmpty stdout) then Console.Out.Write(stdout)
@@ -30,6 +30,32 @@ let main argv =
         exitCode)
     root.Subcommands.Add(validateCmd)
 
-    // TODO: run / describe / detect-engines / cancel / project / history / show-run / replay-run
+    // ─── run ──────────────────────────────────────────────────────
+    let runPathArg = Argument<string>("path")
+    runPathArg.Description <- "Project working directory containing .ci/"
+    runPathArg.DefaultValueFactory <- (fun _ -> ".")
+
+    let runFlowArg = Argument<string>("flow")
+    runFlowArg.Description <- "Flow id from flows.toml"
+
+    let runVarOpt = Option<string array>("--var")
+    runVarOpt.Description <- "Override a flow variable (KEY=VALUE). Repeatable."
+    runVarOpt.AllowMultipleArgumentsPerToken <- true
+
+    let runCmd = Command("run", "Execute a flow against a project's .ci/ configuration")
+    runCmd.Arguments.Add(runPathArg)
+    runCmd.Arguments.Add(runFlowArg)
+    runCmd.Options.Add(runVarOpt)
+    runCmd.SetAction(fun (pr: ParseResult) ->
+        let path = pr.GetValue(runPathArg)
+        let flow = pr.GetValue(runFlowArg)
+        let vars =
+            match pr.GetValue(runVarOpt) with
+            | null -> Seq.empty
+            | xs -> xs :> seq<string>
+        Run.invoke path flow vars)
+    root.Subcommands.Add(runCmd)
+
+    // TODO: describe / detect-engines / cancel / project / history / show-run / replay-run
 
     root.Parse(argv).Invoke()

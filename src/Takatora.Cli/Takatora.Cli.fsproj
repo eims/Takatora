@@ -7,11 +7,16 @@
 
   <ItemGroup>
     <Compile Include="Validate.fs" />
+    <Compile Include="Run.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Takatora.Core\Takatora.Core.fsproj" />
+    <!-- Pull the SDK assembly + builtin .fsx files into the runner's
+         bin folder so it can resolve them via AppContext.BaseDirectory. -->
+    <ProjectReference Include="..\Takatora.Tasks\Takatora.Tasks.fsproj" />
+    <ProjectReference Include="..\Takatora.Tasks.Builtin\Takatora.Tasks.Builtin.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

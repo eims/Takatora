@@ -13,6 +13,7 @@
     <Compile Include="ValidateTests.fs" />
     <Compile Include="VarsTests.fs" />
     <Compile Include="TasksTests.fs" />
+    <Compile Include="RunTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
