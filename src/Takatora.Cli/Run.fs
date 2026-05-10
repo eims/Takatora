@@ -118,8 +118,71 @@ let formatFailure (failure: RunFailure) : string =
     | RunFailure.ConfigError (src, m)  -> $"run: configuration error in {src}:{Environment.NewLine}  {m}{Environment.NewLine}"
     | RunFailure.InternalError m       -> $"run: internal error: {m}{Environment.NewLine}"
 
-/// Glue: build Run.Options, call Run.execute, render the outcome.
-let invoke (workingDir: string) (flowId: string) (varRaw: string seq) : int =
+let private renderTomlValue (v: TomlValue) : string =
+    match v with
+    | TString s -> sprintf "\"%s\"" s
+    | TBool b -> if b then "true" else "false"
+    | TInt i -> string i
+    | TFloat f -> sprintf "%g" f
+    | TArray xs -> "[" + (xs |> List.map (fun x ->
+        match x with
+        | TString s -> sprintf "\"%s\"" s
+        | TBool b -> if b then "true" else "false"
+        | TInt i -> string i
+        | TFloat f -> sprintf "%g" f
+        | _ -> "...") |> String.concat ", ") + "]"
+    | TTable _ -> "{...}"
+
+let formatPlan (plan: RunPlan) : string =
+    let sb = System.Text.StringBuilder()
+    sb.AppendLine($"Flow: {plan.FlowId}") |> ignore
+    sb.AppendLine($"Project: {plan.Project.Name}") |> ignore
+    let engine = plan.Project.Engine
+    let kindStr =
+        match engine.Kind with
+        | EngineKind.Unreal -> "unreal"
+        | EngineKind.Unity  -> "unity"
+        | EngineKind.Godot  -> "godot"
+    sb.AppendLine(sprintf "Engine: %s%s%s" kindStr
+                    (engine.EngineVersion |> Option.map (fun v -> $" {v}") |> Option.defaultValue "")
+                    (engine.EnginePath    |> Option.map (fun p -> $" — {p}") |> Option.defaultValue " (not detected)"))
+    |> ignore
+    sb.AppendLine() |> ignore
+
+    if Map.isEmpty plan.Vars then
+        sb.AppendLine("Vars: (none)") |> ignore
+    else
+        sb.AppendLine("Vars (effective):") |> ignore
+        for KeyValue (k, v) in plan.Vars do
+            let mark =
+                if Set.contains k plan.OverriddenKeys then "*" else " "
+            sb.AppendLine(sprintf "  %s %-15s = %s" mark k (renderTomlValue v)) |> ignore
+        if not (Set.isEmpty plan.OverriddenKeys) then
+            sb.AppendLine("  (* = overridden via --var)") |> ignore
+    sb.AppendLine() |> ignore
+
+    let runnable, skipped =
+        plan.Steps |> List.partition (fun s -> Option.isNone s.SkipReason)
+
+    if List.isEmpty runnable then
+        sb.AppendLine("Steps to execute: (none)") |> ignore
+    else
+        sb.AppendLine("Steps to execute:") |> ignore
+        for s in runnable do
+            sb.AppendLine(sprintf "  %d. %s (%s)" s.Index s.Id s.Type) |> ignore
+
+    if not (List.isEmpty skipped) then
+        sb.AppendLine() |> ignore
+        sb.AppendLine("Steps to skip:") |> ignore
+        for s in skipped do
+            sb.AppendLine(sprintf "  - %s (%s) — %s" s.Id s.Type
+                            (s.SkipReason |> Option.defaultValue "")) |> ignore
+
+    sb.ToString()
+
+/// Glue: build Run.Options, call Run.execute (or Run.plan if --dry-run),
+/// render the outcome.
+let invoke (workingDir: string) (flowId: string) (varRaw: string seq) (dryRun: bool) : int =
     match parseVars varRaw with
     | Error msg ->
         Console.Error.WriteLine($"run: {msg}")
@@ -133,12 +196,21 @@ let invoke (workingDir: string) (flowId: string) (varRaw: string seq) : int =
             BuiltinTasksDir = defaultBuiltinTasksDir ()
             UserTasksDir = None
         }
-        match Run.execute opts with
-        | Error f ->
-            Console.Error.Write(formatFailure f)
-            failureToExitCode f
-        | Ok outcome ->
-            let stdout, stderr = formatOutcome outcome
-            Console.Out.Write(stdout)
-            if not (String.IsNullOrEmpty stderr) then Console.Error.Write(stderr)
-            runResultToExitCode outcome
+        if dryRun then
+            match Run.plan opts with
+            | Error f ->
+                Console.Error.Write(formatFailure f)
+                failureToExitCode f
+            | Ok plan ->
+                Console.Out.Write(formatPlan plan)
+                0
+        else
+            match Run.execute opts with
+            | Error f ->
+                Console.Error.Write(formatFailure f)
+                failureToExitCode f
+            | Ok outcome ->
+                let stdout, stderr = formatOutcome outcome
+                Console.Out.Write(stdout)
+                if not (String.IsNullOrEmpty stderr) then Console.Error.Write(stderr)
+                runResultToExitCode outcome

@@ -42,10 +42,14 @@ let main argv =
     runVarOpt.Description <- "Override a flow variable (KEY=VALUE). Repeatable."
     runVarOpt.AllowMultipleArgumentsPerToken <- true
 
+    let runDryRunOpt = Option<bool>("--dry-run")
+    runDryRunOpt.Description <- "Resolve vars + steps and print the plan without spawning anything"
+
     let runCmd = Command("run", "Execute a flow against a project's .ci/ configuration")
     runCmd.Arguments.Add(runPathArg)
     runCmd.Arguments.Add(runFlowArg)
     runCmd.Options.Add(runVarOpt)
+    runCmd.Options.Add(runDryRunOpt)
     runCmd.SetAction(fun (pr: ParseResult) ->
         let path = pr.GetValue(runPathArg)
         let flow = pr.GetValue(runFlowArg)
@@ -53,7 +57,8 @@ let main argv =
             match pr.GetValue(runVarOpt) with
             | null -> Seq.empty
             | xs -> xs :> seq<string>
-        Run.invoke path flow vars)
+        let dryRun = pr.GetValue(runDryRunOpt)
+        Run.invoke path flow vars dryRun)
     root.Subcommands.Add(runCmd)
 
     // ─── cancel ───────────────────────────────────────────────────

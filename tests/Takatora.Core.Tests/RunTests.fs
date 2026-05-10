@@ -189,6 +189,74 @@ Task.fail<unit> "deliberate failure"
             Assert.Contains("earlier step failed", reason)
         | other -> Assert.Fail($"expected second step Skipped, got %A{other}")
 
+    // ─── dry run ──────────────────────────────────────────────────
+
+    [<Fact>]
+    member _.``plan returns runnable steps and reflects var overrides`` () =
+        writeFile ".ci/project.toml" projectToml
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "preview"
+[flow.vars]
+configuration = { type = "string", default = "Development" }
+
+[[flow.steps]]
+id = "notify"
+type = "test-notify"
+"""
+        writeFile ".ci/tasks/test-notify.fsx" "open Takatora.Tasks\nLog.info \"x\"\n"
+
+        let opts = buildOptions "preview" (Map.ofList [ "configuration", TString "Shipping" ])
+        match Run.plan opts with
+        | Error e -> Assert.Fail($"expected Ok, got %A{e}")
+        | Ok p ->
+            Assert.Equal("preview", p.FlowId)
+            Assert.Equal(Some (TString "Shipping"), Map.tryFind "configuration" p.Vars)
+            Assert.True(Set.contains "configuration" p.OverriddenKeys)
+            Assert.Equal(1, List.length p.Steps)
+            let step = p.Steps.[0]
+            Assert.Equal("notify", step.Id)
+            Assert.Equal(None, step.SkipReason)
+            Assert.True(Option.isSome step.TaskPath)
+
+    [<Fact>]
+    member _.``plan flags when=false steps with skip reason`` () =
+        writeFile ".ci/project.toml" projectToml
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "guarded"
+[flow.vars]
+do_it = { type = "bool", default = false }
+
+[[flow.steps]]
+id = "skipped"
+type = "doesnt-exist-but-doesnt-matter"
+when = "${vars.do_it}"
+"""
+        let opts = buildOptions "guarded" Map.empty
+        match Run.plan opts with
+        | Error e -> Assert.Fail($"expected Ok, got %A{e}")
+        | Ok p ->
+            Assert.Equal(1, List.length p.Steps)
+            Assert.True(Option.isSome p.Steps.[0].SkipReason)
+
+    [<Fact>]
+    member _.``plan flags missing task .fsx as skip reason`` () =
+        writeFile ".ci/project.toml" projectToml
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "broken"
+[[flow.steps]]
+type = "no-such-task"
+"""
+        let opts = buildOptions "broken" Map.empty
+        match Run.plan opts with
+        | Error e -> Assert.Fail($"expected Ok, got %A{e}")
+        | Ok p ->
+            let reason = p.Steps.[0].SkipReason
+            Assert.True(Option.isSome reason)
+            Assert.Contains("no-such-task", Option.defaultValue "" reason)
+
     // ─── flow not found ───────────────────────────────────────────
 
     [<Fact>]

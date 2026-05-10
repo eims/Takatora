@@ -51,6 +51,29 @@ type RunFailure =
     | ConfigError of source: string * message: string
     | InternalError of message: string
 
+/// One step entry in a `--dry-run` plan. Same shape whether the step
+/// would have run or been skipped — `SkipReason` is `Some` for skips
+/// (when=false, missing .fsx) and `None` for runnable.
+type PlannedStep = {
+    Index: int
+    Id: string
+    Type: string
+    TaskPath: string option
+    SkipReason: string option
+    ResolvedParams: Map<string, TomlValue>
+}
+
+/// Output of `Run.plan`. Mirrors the runtime view a real `execute`
+/// would have at the start of step execution, minus the actual runs.
+type RunPlan = {
+    Project: Project
+    FlowId: string
+    Vars: Map<string, TomlValue>
+    /// Which var keys came from `VarOverrides` rather than defaults.
+    OverriddenKeys: Set<string>
+    Steps: PlannedStep list
+}
+
 // ─── Run id ────────────────────────────────────────────────────────
 
 [<RequireQualifiedAccess>]
@@ -484,6 +507,99 @@ module Run =
             sb.AppendLine() |> ignore
 
         File.WriteAllText(path, sb.ToString())
+
+    /// Resolve a flow into the same view `execute` would see at start
+    /// of step execution, but stop short of actually spawning anything.
+    /// Used by `takatora run --dry-run` to preview what would happen.
+    let plan (opts: Options) : Result<RunPlan, RunFailure> =
+        let projectRoot = Path.GetFullPath(opts.WorkingDir)
+        let projectPath = Path.Combine(projectRoot, ".ci", "project.toml")
+        let flowsPath   = Path.Combine(projectRoot, ".ci", "flows.toml")
+        let load () =
+            try
+                let p  = TomlConfig.loadProject projectPath
+                let fs = TomlConfig.loadFlows  flowsPath
+                Ok (p, fs)
+            with
+            | TomlConfigError msg -> Error (RunFailure.ConfigError (projectPath, msg))
+            | :? FileNotFoundException as ex ->
+                Error (RunFailure.ConfigError (ex.FileName, ex.Message))
+        load ()
+        |> Result.bind (fun (project, flows) ->
+            match flows |> List.tryFind (fun f -> f.Id = opts.FlowId) with
+            | None -> Error (RunFailure.FlowNotFound opts.FlowId)
+            | Some flow ->
+                // Same engine auto-detect path as `execute` so the
+                // plan reflects the runner's actual resolution.
+                let project =
+                    match project.Engine.EnginePath with
+                    | Some _ -> project
+                    | None ->
+                        match Engines.pick project.Engine.Kind project.Engine.EngineVersion with
+                        | Some d ->
+                            { project with
+                                Engine =
+                                    { project.Engine with
+                                        EnginePath = Some d.Path
+                                        EngineVersion =
+                                            project.Engine.EngineVersion
+                                            |> Option.orElse (Some d.Version)
+                                        Executable = d.Executable } }
+                        | None -> project
+
+                let vars = effectiveVars flow opts.VarOverrides
+                let envReader name =
+                    match Environment.GetEnvironmentVariable(name: string) with
+                    | null -> None
+                    | s -> Some s
+                let ctx : ResolveContext = {
+                    Vars = vars
+                    StepOutputs = Map.empty
+                    Project = project
+                    Env = envReader
+                }
+
+                let steps =
+                    flow.Steps
+                    |> List.indexed
+                    |> List.map (fun (i, step) ->
+                        let id = stepId (i + 1) step
+                        let skip =
+                            match step.When with
+                            | Some expr when not (Vars.evalWhen ctx expr) ->
+                                Some (sprintf "when=%s evaluated false" expr)
+                            | _ -> None
+                        let taskPath =
+                            TaskResolver.resolve projectRoot opts.UserTasksDir opts.BuiltinTasksDir step.Type
+                            |> Option.map (fun r -> r.Path)
+                        let skipReason =
+                            match skip, taskPath with
+                            | Some r, _ -> Some r
+                            | _, None -> Some (sprintf "no .fsx for type '%s'" step.Type)
+                            | _ -> None
+                        let merged =
+                            let baseMap =
+                                vars |> Map.fold (fun acc k v -> Map.add k v acc) Map.empty
+                            step.Params |> Map.fold (fun acc k v -> Map.add k v acc) baseMap
+                        let resolved =
+                            try merged |> Map.map (fun _ v -> Vars.resolve ctx v)
+                            with _ -> merged  // if resolution fails, return raw — plan shouldn't crash
+                        {
+                            Index = i + 1
+                            Id = id
+                            Type = step.Type
+                            TaskPath = taskPath
+                            SkipReason = skipReason
+                            ResolvedParams = resolved
+                        })
+
+                Ok {
+                    Project = project
+                    FlowId = flow.Id
+                    Vars = vars
+                    OverriddenKeys = Map.toSeq opts.VarOverrides |> Seq.map fst |> Set.ofSeq
+                    Steps = steps
+                })
 
     /// Execute a flow end-to-end. Returns either an outcome with the
     /// per-step record and final result, or a setup-time failure
