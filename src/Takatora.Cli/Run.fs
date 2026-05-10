@@ -2,7 +2,19 @@ module Takatora.Cli.Run
 
 open System
 open System.IO
+open System.Text.Json
+open System.Text.Json.Nodes
 open Takatora.Core
+
+/// Output format for the `run` command. JSON is for CI of CI
+/// scenarios that pipe the result into `jq` or similar.
+type Format = Human | Json
+
+let parseFormat (s: string) : Result<Format, string> =
+    match s with
+    | null | "" | "human" -> Ok Human
+    | "json" -> Ok Json
+    | other -> Error $"unknown format '{other}', expected human | json"
 
 // ─── --var KEY=VALUE parsing ──────────────────────────────────────
 
@@ -76,6 +88,97 @@ let private describeStatus (s: StepStatus) =
     | StepStatus.Failure _ -> "✗"
     | StepStatus.Skipped _ -> "⊘"
     | StepStatus.Cancelled -> "⊗"
+
+let private engineKindString = function
+    | EngineKind.Unreal -> "unreal"
+    | EngineKind.Unity  -> "unity"
+    | EngineKind.Godot  -> "godot"
+
+let rec private tomlValueToJson (v: TomlValue) : JsonNode =
+    match v with
+    | TString s -> JsonValue.Create(s)
+    | TBool b   -> JsonValue.Create(b)
+    | TInt i    -> JsonValue.Create(i)
+    | TFloat f  -> JsonValue.Create(f)
+    | TArray xs ->
+        let arr = JsonArray()
+        for x in xs do arr.Add(tomlValueToJson x)
+        arr
+    | TTable m ->
+        let obj = JsonObject()
+        for KeyValue (k, v) in m do obj.[k] <- tomlValueToJson v
+        obj
+
+let private outcomeToJson (outcome: RunOutcome) : string =
+    let root = JsonObject()
+    root.["run_id"]   <- JsonValue.Create(outcome.RunId)
+    root.["flow_id"]  <- JsonValue.Create(outcome.FlowId)
+    root.["result"]   <-
+        JsonValue.Create(
+            match outcome.Result with
+            | RunResult.Success -> "success"
+            | RunResult.Failure -> "failure"
+            | RunResult.Cancelled -> "cancelled")
+    root.["started_at"]   <- JsonValue.Create(outcome.StartedAt.ToString("o", System.Globalization.CultureInfo.InvariantCulture))
+    root.["finished_at"]  <- JsonValue.Create(outcome.FinishedAt.ToString("o", System.Globalization.CultureInfo.InvariantCulture))
+    root.["duration_sec"] <- JsonValue.Create((outcome.FinishedAt - outcome.StartedAt).TotalSeconds)
+    root.["run_dir"]      <- JsonValue.Create(outcome.RunDir)
+    let stepsArr = JsonArray()
+    for s in outcome.Steps do
+        let step = JsonObject()
+        step.["id"]   <- JsonValue.Create(s.Id)
+        step.["type"] <- JsonValue.Create(s.Type)
+        step.["status"] <-
+            JsonValue.Create(
+                match s.Status with
+                | StepStatus.Success    -> "success"
+                | StepStatus.Failure _  -> "failure"
+                | StepStatus.Skipped _  -> "skipped"
+                | StepStatus.Cancelled  -> "cancelled")
+        step.["duration_sec"] <- JsonValue.Create(s.DurationSec)
+        match s.Status with
+        | StepStatus.Failure msg -> step.["message"] <- JsonValue.Create(msg)
+        | StepStatus.Skipped r   -> step.["reason"]  <- JsonValue.Create(r)
+        | _ -> ()
+        let outs = JsonObject()
+        for KeyValue (k, v) in s.Outputs do outs.[k] <- tomlValueToJson v
+        step.["outputs"] <- outs
+        stepsArr.Add(step)
+    root.["steps"] <- stepsArr
+    root.ToJsonString(JsonSerializerOptions(WriteIndented = true))
+
+let private planToJson (plan: RunPlan) : string =
+    let root = JsonObject()
+    root.["flow_id"]      <- JsonValue.Create(plan.FlowId)
+    root.["project_name"] <- JsonValue.Create(plan.Project.Name)
+    let engine = JsonObject()
+    engine.["type"] <- JsonValue.Create(engineKindString plan.Project.Engine.Kind)
+    plan.Project.Engine.EnginePath
+    |> Option.iter (fun p -> engine.["path"] <- JsonValue.Create(p))
+    plan.Project.Engine.EngineVersion
+    |> Option.iter (fun v -> engine.["version"] <- JsonValue.Create(v))
+    root.["engine"] <- engine
+    let vars = JsonObject()
+    for KeyValue (k, v) in plan.Vars do vars.[k] <- tomlValueToJson v
+    root.["vars"] <- vars
+    let overridden = JsonArray()
+    for k in plan.OverriddenKeys do overridden.Add(JsonValue.Create(k))
+    root.["overridden_keys"] <- overridden
+    let stepsArr = JsonArray()
+    for s in plan.Steps do
+        let step = JsonObject()
+        step.["index"]      <- JsonValue.Create(s.Index)
+        step.["id"]         <- JsonValue.Create(s.Id)
+        step.["type"]       <- JsonValue.Create(s.Type)
+        match s.TaskPath with
+        | Some p -> step.["task_path"] <- JsonValue.Create(p)
+        | None -> step.["task_path"] <- null
+        match s.SkipReason with
+        | Some r -> step.["skip_reason"] <- JsonValue.Create(r)
+        | None -> step.["skip_reason"] <- null
+        stepsArr.Add(step)
+    root.["steps"] <- stepsArr
+    root.ToJsonString(JsonSerializerOptions(WriteIndented = true))
 
 /// Pretty-print a run's outcome to stdout. Stderr stays empty for the
 /// success path; failures put a one-line summary there too so CI of CI
@@ -181,8 +284,14 @@ let formatPlan (plan: RunPlan) : string =
     sb.ToString()
 
 /// Glue: build Run.Options, call Run.execute (or Run.plan if --dry-run),
-/// render the outcome.
-let invoke (workingDir: string) (flowId: string) (varRaw: string seq) (dryRun: bool) : int =
+/// render the outcome in the requested format.
+let invoke
+        (workingDir: string)
+        (flowId: string)
+        (varRaw: string seq)
+        (dryRun: bool)
+        (format: Format)
+        : int =
     match parseVars varRaw with
     | Error msg ->
         Console.Error.WriteLine($"run: {msg}")
@@ -202,7 +311,11 @@ let invoke (workingDir: string) (flowId: string) (varRaw: string seq) (dryRun: b
                 Console.Error.Write(formatFailure f)
                 failureToExitCode f
             | Ok plan ->
-                Console.Out.Write(formatPlan plan)
+                let text =
+                    match format with
+                    | Human -> formatPlan plan
+                    | Json  -> planToJson plan + Environment.NewLine
+                Console.Out.Write(text)
                 0
         else
             match Run.execute opts with
@@ -210,7 +323,11 @@ let invoke (workingDir: string) (flowId: string) (varRaw: string seq) (dryRun: b
                 Console.Error.Write(formatFailure f)
                 failureToExitCode f
             | Ok outcome ->
-                let stdout, stderr = formatOutcome outcome
-                Console.Out.Write(stdout)
-                if not (String.IsNullOrEmpty stderr) then Console.Error.Write(stderr)
+                match format with
+                | Human ->
+                    let stdout, stderr = formatOutcome outcome
+                    Console.Out.Write(stdout)
+                    if not (String.IsNullOrEmpty stderr) then Console.Error.Write(stderr)
+                | Json ->
+                    Console.Out.WriteLine(outcomeToJson outcome)
                 runResultToExitCode outcome

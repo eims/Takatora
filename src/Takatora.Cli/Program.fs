@@ -45,11 +45,16 @@ let main argv =
     let runDryRunOpt = Option<bool>("--dry-run")
     runDryRunOpt.Description <- "Resolve vars + steps and print the plan without spawning anything"
 
+    let runFormatOpt = Option<string>("--output-format")
+    runFormatOpt.Description <- "Output format: human (default) | json"
+    runFormatOpt.DefaultValueFactory <- (fun _ -> "human")
+
     let runCmd = Command("run", "Execute a flow against a project's .ci/ configuration")
     runCmd.Arguments.Add(runPathArg)
     runCmd.Arguments.Add(runFlowArg)
     runCmd.Options.Add(runVarOpt)
     runCmd.Options.Add(runDryRunOpt)
+    runCmd.Options.Add(runFormatOpt)
     runCmd.SetAction(fun (pr: ParseResult) ->
         let path = pr.GetValue(runPathArg)
         let flow = pr.GetValue(runFlowArg)
@@ -58,7 +63,11 @@ let main argv =
             | null -> Seq.empty
             | xs -> xs :> seq<string>
         let dryRun = pr.GetValue(runDryRunOpt)
-        Run.invoke path flow vars dryRun)
+        match Run.parseFormat (pr.GetValue(runFormatOpt)) with
+        | Error msg ->
+            Console.Error.WriteLine($"run: {msg}")
+            2
+        | Ok fmt -> Run.invoke path flow vars dryRun fmt)
     root.Subcommands.Add(runCmd)
 
     // ─── cancel ───────────────────────────────────────────────────
