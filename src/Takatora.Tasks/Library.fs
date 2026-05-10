@@ -277,3 +277,110 @@ module Task =
     /// Abort the task with a clean message — runner won't print the F# stack.
     /// Use for user-facing failure reasons; let plain exceptions handle bugs.
     let fail<'T> (reason: string) : 'T = raise (TaskFailure reason)
+
+// ─── External process invocation (Cmd) ─────────────────────────────
+
+/// Configurable knobs for `Cmd.execWith` / `Cmd.execCaptureWith`.
+/// `Cmd.exec` / `execCapture` use `ExecOptions.empty`.
+type ExecOptions = {
+    /// Override the child's working directory. `None` inherits the
+    /// task's cwd (which is `Project.workingDir`).
+    WorkingDir: string option
+    /// Extra environment variables to set on the child process.
+    Env: Map<string, string>
+    /// Non-zero exit codes that should NOT throw (`robocopy` returns 1
+    /// for "files copied, no errors" — that's success there).
+    IgnoreExitCodes: int list
+    /// Hard wall-clock cap. On expiry the runner kills the entire
+    /// process tree and the task fails with a timeout message.
+    Timeout: TimeSpan option
+}
+
+[<RequireQualifiedAccess>]
+module ExecOptions =
+    let empty = {
+        WorkingDir = None
+        Env = Map.empty
+        IgnoreExitCodes = []
+        Timeout = None
+    }
+
+/// Spawn external processes from a task .fsx. By default stdout/stderr
+/// are inherited from the parent fsi process, which the runner pipes to
+/// `<run-dir>/log.txt` — so engine tools (UE/Unity/git) appear with
+/// their output verbatim. Use the `Capture` variants when the task
+/// itself needs the bytes (e.g. `git rev-parse HEAD` → output value).
+[<RequireQualifiedAccess>]
+module Cmd =
+
+    open System.Diagnostics
+
+    let private taskFail msg : 'T = raise (TaskFailure msg)
+
+    let private buildPsi (exe: string) (args: string list) (opts: ExecOptions) : ProcessStartInfo =
+        let psi = ProcessStartInfo(exe)
+        for a in args do psi.ArgumentList.Add(a)
+        psi.UseShellExecute <- false
+        opts.WorkingDir |> Option.iter (fun wd -> psi.WorkingDirectory <- wd)
+        for KeyValue (k, v) in opts.Env do
+            psi.Environment.[k] <- v
+        psi
+
+    let private waitWithTimeout (proc: Process) (timeout: TimeSpan option) : bool =
+        match timeout with
+        | None -> proc.WaitForExit(); true
+        | Some t ->
+            let ms = int t.TotalMilliseconds
+            if proc.WaitForExit(ms) then true
+            else
+                try proc.Kill(entireProcessTree = true) with _ -> ()
+                false
+
+    let private runStreaming (exe: string) (args: string list) (opts: ExecOptions) : int =
+        let psi = buildPsi exe args opts
+        // No redirection — child inherits fsi's stdout/stderr, which
+        // the runner is already capturing into log.txt.
+        use proc = Process.Start(psi)
+        if not (waitWithTimeout proc opts.Timeout) then
+            taskFail (sprintf "Cmd '%s' timed out after %.1fs" exe opts.Timeout.Value.TotalSeconds)
+        let exitCode = proc.ExitCode
+        if exitCode <> 0 && not (List.contains exitCode opts.IgnoreExitCodes) then
+            taskFail $"Cmd '{exe}' exited with code {exitCode}"
+        exitCode
+
+    /// Run `exe args` with stdout/stderr streaming through to the run log.
+    /// Throws `TaskFailure` on non-zero exit unless the code is in
+    /// `IgnoreExitCodes`.
+    let exec (exe: string) (args: string list) : unit =
+        runStreaming exe args ExecOptions.empty |> ignore
+
+    /// As `exec`, but with an explicit working directory.
+    let execIn (workingDir: string) (exe: string) (args: string list) : unit =
+        runStreaming exe args { ExecOptions.empty with WorkingDir = Some workingDir }
+        |> ignore
+
+    /// Full-knob variant. Use for ignore_exit_codes, timeout, or env vars.
+    let execWith (opts: ExecOptions) (exe: string) (args: string list) : unit =
+        runStreaming exe args opts |> ignore
+
+    /// Capture stdout/stderr into strings instead of streaming. Returns
+    /// the exit code instead of throwing — caller decides what's
+    /// success. Use for short outputs (commit hashes, version strings).
+    let execCaptureWith (opts: ExecOptions) (exe: string) (args: string list) =
+        let psi = buildPsi exe args opts
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError <- true
+        use proc = Process.Start(psi)
+        // Read both streams concurrently; reading sequentially can
+        // deadlock if the child fills the unread pipe.
+        let stdoutTask = proc.StandardOutput.ReadToEndAsync()
+        let stderrTask = proc.StandardError.ReadToEndAsync()
+        if not (waitWithTimeout proc opts.Timeout) then
+            taskFail (sprintf "Cmd '%s' timed out after %.1fs" exe opts.Timeout.Value.TotalSeconds)
+        {| stdout = stdoutTask.Result
+           stderr = stderrTask.Result
+           exitCode = proc.ExitCode |}
+
+    /// Capture variant with default options.
+    let execCapture (exe: string) (args: string list) =
+        execCaptureWith ExecOptions.empty exe args

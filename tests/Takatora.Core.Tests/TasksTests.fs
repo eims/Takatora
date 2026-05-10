@@ -224,3 +224,56 @@ type TasksSdkTests() =
         Log.info "still fine"
         Assert.False(File.Exists outputPath)
         Assert.False(File.Exists eventsPath)
+
+    // ─── Cmd ───────────────────────────────────────────────────────
+    //
+    // Tests use `dotnet --version` because it's reliably present (we're
+    // running under it) and prints a single line — keeps assertions tight
+    // and avoids reaching for /bin/sh or cmd.exe quirks.
+
+    [<Fact>]
+    member _.``Cmd.execCapture returns stdout and exit 0 on success`` () =
+        setupInput """{"params":{}}"""
+        let r = Cmd.execCapture "dotnet" [ "--version" ]
+        Assert.Equal(0, r.exitCode)
+        Assert.NotEmpty(r.stdout.Trim())
+
+    [<Fact>]
+    member _.``Cmd.exec succeeds quietly on exit 0`` () =
+        setupInput """{"params":{}}"""
+        // Should not throw.
+        Cmd.exec "dotnet" [ "--version" ]
+
+    [<Fact>]
+    member _.``Cmd.exec raises TaskFailure on non-zero exit`` () =
+        setupInput """{"params":{}}"""
+        // `dotnet --not-a-real-flag` exits non-zero.
+        let ex = Assert.Throws<TaskFailure>(fun () ->
+            Cmd.exec "dotnet" [ "--not-a-real-flag" ])
+        Assert.Contains("exited with code", ex.Message)
+
+    [<Fact>]
+    member _.``Cmd.execWith ignoreExitCodes accepts the listed code`` () =
+        setupInput """{"params":{}}"""
+        // First, capture the actual exit code dotnet uses for unknown flags.
+        let probe = Cmd.execCapture "dotnet" [ "--not-a-real-flag" ]
+        Assert.NotEqual(0, probe.exitCode)
+        // Now run streaming with that code in IgnoreExitCodes — should not throw.
+        Cmd.execWith
+            { ExecOptions.empty with IgnoreExitCodes = [ probe.exitCode ] }
+            "dotnet"
+            [ "--not-a-real-flag" ]
+
+    [<Fact>]
+    member _.``Cmd.execCaptureWith carries WorkingDir override`` () =
+        setupInput """{"params":{}}"""
+        // The runtime always knows its current dir; pwd-style probe via
+        // `dotnet fsi -e` is fiddly across OSes. Settle for a structural
+        // smoke: WorkingDir is plumbed into ProcessStartInfo without
+        // throwing for a real existing dir.
+        let probe =
+            Cmd.execCaptureWith
+                { ExecOptions.empty with WorkingDir = Some (Path.GetTempPath()) }
+                "dotnet"
+                [ "--version" ]
+        Assert.Equal(0, probe.exitCode)

@@ -204,6 +204,43 @@ type = "noop"
         | Error (RunFailure.FlowNotFound id) -> Assert.Equal("missing-flow", id)
         | other -> Assert.Fail($"expected FlowNotFound, got %A{other}")
 
+    // ─── builtin: shell ───────────────────────────────────────────
+
+    [<Fact>]
+    member _.``builtin shell task echoes through to log.txt`` () =
+        writeFile ".ci/project.toml" projectToml
+        // Use a marker that survives both /bin/sh and cmd.exe quoting.
+        let marker = "TAKATORA_SHELL_OK"
+        writeFile ".ci/flows.toml" (sprintf """
+[[flow]]
+id = "shell-smoke"
+[flow.vars]
+command = { type = "string", default = "echo %s" }
+
+[[flow.steps]]
+id = "say"
+type = "shell"
+""" marker)
+        // Point at the real builtin dir copied alongside the test bin
+        // by the Tasks.Builtin ProjectReference chain.
+        let builtinDir =
+            Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+        let opts : Run.Options = {
+            WorkingDir = dir
+            FlowId = "shell-smoke"
+            VarOverrides = Map.empty
+            SdkAssemblyPath = sdkAssemblyPath
+            BuiltinTasksDir = builtinDir
+            UserTasksDir = None
+        }
+        let outcome =
+            match Run.execute opts with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        let log = File.ReadAllText(Path.Combine(outcome.RunDir, "log.txt"))
+        Assert.Contains(marker, log)
+
     // ─── cancel ───────────────────────────────────────────────────
 
     [<Fact>]
