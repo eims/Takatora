@@ -10,6 +10,9 @@ open Takatora.Core
 /// `Run.execute` in-process. The runner spawns real `dotnet fsi`, so
 /// these tests are slower than the rest of the suite (≈1s per case)
 /// but they exercise the actual contract end to end.
+/// Shares the `env-sensitive` xUnit collection with TasksSdkTests so
+/// describe-mode env var changes can't leak into our fsi subprocesses.
+[<Xunit.Collection("env-sensitive")>]
 type RunTests() =
 
     let dir =

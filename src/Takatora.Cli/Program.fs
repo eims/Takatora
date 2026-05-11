@@ -235,6 +235,14 @@ let main argv =
         History.invokeReplay (pr.GetValue(replayProjectArg)) (pr.GetValue(replayRunIdArg)))
     root.Subcommands.Add(replayCmd)
 
-    // TODO: describe
+    // ─── describe ─────────────────────────────────────────────────
+    let describeTypeArg = Argument<string>("task-type")
+    describeTypeArg.Description <- "Task type (e.g. ue.build_cook_run, shell, notify.console)"
+    let describeCmd =
+        Command("describe", "Print the param + output schema for a built-in task as JSON")
+    describeCmd.Arguments.Add(describeTypeArg)
+    describeCmd.SetAction(fun (pr: ParseResult) ->
+        Describe.invoke (pr.GetValue(describeTypeArg)))
+    root.Subcommands.Add(describeCmd)
 
     root.Parse(argv).Invoke()

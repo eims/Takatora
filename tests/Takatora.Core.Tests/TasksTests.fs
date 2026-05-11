@@ -8,6 +8,10 @@ open Takatora.Tasks
 /// All SDK tests live in this single class so xUnit serializes them
 /// (methods within a class never run in parallel). The SDK touches
 /// process-global env vars; cross-class parallelism would be a bug.
+/// The `env-sensitive` collection brackets RunTests too so describe
+/// mode's TAKATORA_MODE doesn't leak into fsi subprocesses RunTests
+/// spawns.
+[<Xunit.Collection("env-sensitive")>]
 type TasksSdkTests() =
 
     // Each test gets a fresh tmp dir; env vars are restored on dispose.
@@ -42,6 +46,20 @@ type TasksSdkTests() =
             |> Array.filter (fun line -> not (String.IsNullOrWhiteSpace line))
             |> List.ofArray
         else []
+
+    /// Drop into describe mode for the duration of `action`. Sets env
+    /// vars + resets channel; same xUnit class instance can call other
+    /// helpers before/after.
+    let runInDescribeMode (action: unit -> unit) =
+        Environment.SetEnvironmentVariable("TAKATORA_MODE", "describe")
+        Environment.SetEnvironmentVariable("TAKATORA_TASK_INPUT", null)
+        Environment.SetEnvironmentVariable("TAKATORA_OUTPUT_FILE", null)
+        Environment.SetEnvironmentVariable("TAKATORA_EVENTS_FILE", null)
+        Io.resetForTests ()
+        try action ()
+        finally
+            Environment.SetEnvironmentVariable("TAKATORA_MODE", null)
+            Io.resetForTests ()
 
     interface IDisposable with
         member _.Dispose() =
@@ -270,6 +288,95 @@ type TasksSdkTests() =
         // Path alone doesn't help — Godot has no install layout.
         setupInput """{"engine":{"path":"D:/godot-folder"}}"""
         Assert.Throws<TaskFailure>(fun () -> Godot.editorPath () |> ignore) |> ignore
+
+    // ─── Describe mode ─────────────────────────────────────────────
+
+    [<Fact>]
+    member _.``Param.required in describe mode registers schema and returns default`` () =
+        runInDescribeMode (fun () ->
+            let v = Param.required<string> "message"
+            Assert.Equal("", v)
+            let pars, _ = Io.describeSnapshot ()
+            Assert.Equal(1, List.length pars)
+            Assert.Equal("message", pars.[0].Name)
+            Assert.Equal("string", pars.[0].Kind)
+            Assert.True(pars.[0].Required))
+
+    [<Fact>]
+    member _.``Param.optional in describe mode captures default + required=false`` () =
+        runInDescribeMode (fun () ->
+            let v = Param.optional<int> "count" 7
+            Assert.Equal(7, v)
+            let pars, _ = Io.describeSnapshot ()
+            Assert.Equal("count", pars.[0].Name)
+            Assert.Equal("int", pars.[0].Kind)
+            Assert.False(pars.[0].Required))
+
+    [<Fact>]
+    member _.``Param.requiredEnum in describe mode captures values`` () =
+        runInDescribeMode (fun () ->
+            let v = Param.requiredEnum "cfg" [ "Development"; "Shipping" ]
+            // First value is returned as a benign default.
+            Assert.Equal("Development", v)
+            let pars, _ = Io.describeSnapshot ()
+            Assert.Equal("enum", pars.[0].Kind)
+            Assert.Equal(Some [ "Development"; "Shipping" ], pars.[0].EnumValues))
+
+    [<Fact>]
+    member _.``Output.set in describe mode registers names only`` () =
+        runInDescribeMode (fun () ->
+            Output.set "exe_path" "irrelevant"
+            Output.set "log_path" "irrelevant"
+            // Duplicate name shouldn't double-register.
+            Output.set "exe_path" "still-irrelevant"
+            let _, outs = Io.describeSnapshot ()
+            Assert.Equal<string list>([ "exe_path"; "log_path" ], outs))
+
+    [<Fact>]
+    member _.``Step.run body is skipped in describe mode`` () =
+        runInDescribeMode (fun () ->
+            let mutable ran = false
+            Step.run "do-thing" (fun () -> ran <- true)
+            Assert.False(ran, "Step.run should not invoke its action in describe mode"))
+
+    [<Fact>]
+    member _.``Cmd.exec is a no-op in describe mode`` () =
+        runInDescribeMode (fun () ->
+            // If this actually spawned dotnet --not-a-real-flag, the
+            // non-zero exit would raise TaskFailure. Describe mode
+            // short-circuits before reaching Process.Start.
+            Cmd.exec "dotnet" [ "--not-a-real-flag" ])
+
+    [<Fact>]
+    member _.``Task.fail returns default instead of throwing in describe mode`` () =
+        runInDescribeMode (fun () ->
+            // The .fsx may have a top-level `if X = "" then Task.fail ...`
+            // guard that's correct for execution but trips during
+            // describe because Engine.path / params are empty.
+            let v : int = Task.fail "deliberate"
+            Assert.Equal(0, v))
+
+    [<Fact>]
+    member _.``Io.flushDescribe writes a parseable JSON schema file`` () =
+        let outPath = Path.Combine(dir, "describe.json")
+        Environment.SetEnvironmentVariable("TAKATORA_MODE", "describe")
+        Environment.SetEnvironmentVariable("TAKATORA_DESCRIBE_OUTPUT", outPath)
+        Io.resetForTests ()
+        try
+            Param.required<string> "message" |> ignore
+            Output.set "echoed" ""
+            Io.flushDescribe (Some "test.task")
+            Assert.True(File.Exists outPath)
+            let json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText outPath) :?> System.Text.Json.Nodes.JsonObject
+            Assert.Equal("test.task", json.["type"].GetValue<string>())
+            let pars = json.["params"] :?> System.Text.Json.Nodes.JsonArray
+            Assert.Equal(1, pars.Count)
+            let outs = json.["outputs"] :?> System.Text.Json.Nodes.JsonArray
+            Assert.Equal(1, outs.Count)
+        finally
+            Environment.SetEnvironmentVariable("TAKATORA_MODE", null)
+            Environment.SetEnvironmentVariable("TAKATORA_DESCRIBE_OUTPUT", null)
+            Io.resetForTests ()
 
     // ─── Task.fail / TaskFailure ───────────────────────────────────
 
