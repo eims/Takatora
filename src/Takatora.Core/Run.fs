@@ -293,6 +293,68 @@ module Run =
     /// Path where a cancel request lives, relative to a run dir.
     let cancelFlagPath (runDir: string) = Path.Combine(runDir, "CANCEL")
 
+    /// Engine-family steps acquire a named mutex so two flows on the
+    /// same machine don't try to drive the same editor concurrently
+    /// (Unity license locking, UE project file lock, etc.). Different
+    /// engines run in parallel — the mutexes are scoped per family.
+    let private engineMutexName (stepType: string) : string option =
+        if   stepType.StartsWith("ue.")    then Some @"Global\Takatora-ue-editor"
+        elif stepType.StartsWith("unity.") then Some @"Global\Takatora-unity-editor"
+        elif stepType.StartsWith("godot.") then Some @"Global\Takatora-godot-editor"
+        else None
+
+    /// Acquire the engine mutex (if the step type calls for one),
+    /// polling for `<run-dir>/CANCEL` while we wait so the user can
+    /// abort a queued step before it ever starts. Returns:
+    ///   (None,   true)  no mutex needed
+    ///   (Some m, true)  acquired (caller must ReleaseMutex + Dispose)
+    ///   (None,   false) cancelled while waiting
+    let private acquireEngineMutex
+            (cancelPath: string)
+            (eventsPath: string)
+            (stepId: string)
+            (stepType: string)
+            : System.Threading.Mutex option * bool =
+        match engineMutexName stepType with
+        | None -> None, true
+        | Some name ->
+            let m = new System.Threading.Mutex(false, name)
+            let immediate =
+                try m.WaitOne(0)
+                with :? System.Threading.AbandonedMutexException -> true
+            if immediate then
+                Some m, true
+            else
+                writeEvent eventsPath "mutex.wait" [
+                    "step_id", box stepId
+                    "mutex", box name
+                ]
+                let mutable acquired = false
+                let mutable cancelled = false
+                while not acquired && not cancelled do
+                    if File.Exists cancelPath then cancelled <- true
+                    else
+                        try
+                            if m.WaitOne(200) then acquired <- true
+                        with :? System.Threading.AbandonedMutexException ->
+                            acquired <- true
+                if acquired then
+                    writeEvent eventsPath "mutex.acquired" [
+                        "step_id", box stepId
+                        "mutex", box name
+                    ]
+                    Some m, true
+                else
+                    m.Dispose()
+                    None, false
+
+    let private releaseMutex (m: System.Threading.Mutex option) =
+        match m with
+        | Some mtx ->
+            try mtx.ReleaseMutex() with _ -> ()
+            try mtx.Dispose() with _ -> ()
+        | None -> ()
+
     /// Spawn `dotnet fsi <wrapper>` for one step. Stdout/stderr get
     /// pumped into log.txt; the .fsx itself writes its own events +
     /// outputs through the env var paths. While the subprocess runs,
@@ -385,7 +447,33 @@ module Run =
             "task_path", box resolved.Path
         ]
 
-        // 4) Spawn fsi
+        // 4) Acquire engine mutex if step.Type matches an engine family.
+        // Cancellation while waiting → emit step.cancel + step.end and
+        // bail before the fsi spawn.
+        let mutex, acquired =
+            acquireEngineMutex (cancelFlagPath runDir) eventsPath id step.Type
+        if not acquired then
+            let durationSec = (DateTimeOffset.UtcNow - stepStart).TotalSeconds
+            writeEvent eventsPath "step.cancel" [
+                "step_id", box id
+                "type", box step.Type
+            ]
+            writeEvent eventsPath "step.end" [
+                "step_id", box id
+                "type", box step.Type
+                "status", box "cancelled"
+                "duration_sec", box durationSec
+                "exit_code", box -1
+            ]
+            { Id = id
+              Type = step.Type
+              Status = StepStatus.Cancelled
+              DurationSec = durationSec
+              Outputs = Map.empty }
+        else
+
+        try
+        // 5) Spawn fsi
         let psi = ProcessStartInfo("dotnet")
         psi.ArgumentList.Add("fsi")
         psi.ArgumentList.Add(wrapperPath)
@@ -453,6 +541,8 @@ module Run =
           Status = status
           DurationSec = durationSec
           Outputs = outputs }
+        finally
+            releaseMutex mutex
 
     let private writeManifest (path: string) (outcome: RunOutcome) (project: Project) (flow: Flow) (vars: Map<string, TomlValue>) =
         // Tomlyn write-back via DocumentSyntax is overkill here; emit a

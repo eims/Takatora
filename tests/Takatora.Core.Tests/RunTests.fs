@@ -388,6 +388,71 @@ type = "shell"
         let log = File.ReadAllText(Path.Combine(outcome.RunDir, "log.txt"))
         Assert.Contains(marker, log)
 
+    // ─── engine mutex ─────────────────────────────────────────────
+
+    [<Fact>]
+    member _.``ue.* step waits on engine mutex and emits mutex events`` () =
+        writeFile ".ci/project.toml" projectToml
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "ue-stub"
+
+[[flow.steps]]
+id = "stub"
+type = "ue.stub"
+"""
+        writeFile ".ci/tasks/ue.stub.fsx" """
+open Takatora.Tasks
+Log.info "got past the mutex"
+"""
+        // Hold the engine mutex from the test thread so the runner is
+        // forced to wait. WaitOne / ReleaseMutex must run on the same
+        // thread, hence the explicit acquire here instead of `use`.
+        let mutexName = @"Global\Takatora-ue-editor"
+        use heldMutex = new System.Threading.Mutex(false, mutexName)
+        Assert.True(heldMutex.WaitOne(1000), "test setup: could not acquire engine mutex")
+
+        let runTask =
+            System.Threading.Tasks.Task.Run(fun () ->
+                Run.execute (buildOptions "ue-stub" Map.empty))
+
+        // Give the runner enough time to enter the mutex wait loop and
+        // emit mutex.wait, then hand the mutex over.
+        System.Threading.Thread.Sleep(1200)
+        heldMutex.ReleaseMutex()
+
+        let outcome =
+            match runTask.Result with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        let events = File.ReadAllLines(Path.Combine(outcome.RunDir, "events.ndjson"))
+        Assert.Contains(events, fun l -> l.Contains("\"kind\":\"mutex.wait\""))
+        Assert.Contains(events, fun l -> l.Contains("\"kind\":\"mutex.acquired\""))
+        Assert.Contains(events, fun l -> l.Contains("Global\\\\Takatora-ue-editor"))
+
+    [<Fact>]
+    member _.``non-engine step types skip the mutex (no mutex events emitted)`` () =
+        writeFile ".ci/project.toml" projectToml
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "plain"
+[[flow.steps]]
+type = "plain-task"
+"""
+        writeFile ".ci/tasks/plain-task.fsx" """
+open Takatora.Tasks
+Log.info "no mutex required"
+"""
+        let outcome =
+            match Run.execute (buildOptions "plain" Map.empty) with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        let events = File.ReadAllLines(Path.Combine(outcome.RunDir, "events.ndjson"))
+        Assert.DoesNotContain(events, fun l -> l.Contains("\"kind\":\"mutex.wait\""))
+        Assert.DoesNotContain(events, fun l -> l.Contains("\"kind\":\"mutex.acquired\""))
+
     // ─── cancel ───────────────────────────────────────────────────
 
     [<Fact>]
