@@ -169,6 +169,72 @@ let main argv =
 
     root.Subcommands.Add(projectCmd)
 
-    // TODO: describe / history / show-run / replay-run
+    // ─── history ──────────────────────────────────────────────────
+    let historyProjectArg = Argument<string>("project")
+    historyProjectArg.Description <- "Registered project name OR path to a working dir with .ci/"
+    let historyFlowOpt = Option<string>("--flow")
+    historyFlowOpt.Description <- "Limit to runs of this flow id"
+    let historyLimitOpt = Option<int>("--limit")
+    historyLimitOpt.Description <- "Maximum number of entries to show (default 50)"
+    historyLimitOpt.DefaultValueFactory <- (fun _ -> 50)
+    let historyFormatOpt = Option<string>("--output-format")
+    historyFormatOpt.Description <- "Output format: human (default) | json"
+    historyFormatOpt.DefaultValueFactory <- (fun _ -> "human")
+
+    let historyCmd = Command("history", "List past runs for a project")
+    historyCmd.Arguments.Add(historyProjectArg)
+    historyCmd.Options.Add(historyFlowOpt)
+    historyCmd.Options.Add(historyLimitOpt)
+    historyCmd.Options.Add(historyFormatOpt)
+    historyCmd.SetAction(fun (pr: ParseResult) ->
+        let project = pr.GetValue(historyProjectArg)
+        let flowRaw = pr.GetValue(historyFlowOpt)
+        let flow = if String.IsNullOrWhiteSpace flowRaw then None else Some flowRaw
+        let limit = pr.GetValue(historyLimitOpt)
+        match History.parseFormat (pr.GetValue(historyFormatOpt)) with
+        | Error msg ->
+            Console.Error.WriteLine(sprintf "history: %s" msg)
+            2
+        | Ok fmt -> History.invokeHistory project flow limit fmt)
+    root.Subcommands.Add(historyCmd)
+
+    // ─── show-run ─────────────────────────────────────────────────
+    let showProjectArg = Argument<string>("project")
+    showProjectArg.Description <- "Registered project name OR path"
+    let showRunIdArg = Argument<string>("run-id")
+    showRunIdArg.Description <- "Run id (see `takatora history`)"
+    let showFormatOpt = Option<string>("--output-format")
+    showFormatOpt.Description <- "Output format: human (default) | json"
+    showFormatOpt.DefaultValueFactory <- (fun _ -> "human")
+
+    let showRunCmd = Command("show-run", "Show details of one past run (manifest + step summary)")
+    showRunCmd.Arguments.Add(showProjectArg)
+    showRunCmd.Arguments.Add(showRunIdArg)
+    showRunCmd.Options.Add(showFormatOpt)
+    showRunCmd.SetAction(fun (pr: ParseResult) ->
+        let project = pr.GetValue(showProjectArg)
+        let runId   = pr.GetValue(showRunIdArg)
+        match History.parseFormat (pr.GetValue(showFormatOpt)) with
+        | Error msg ->
+            Console.Error.WriteLine(sprintf "show-run: %s" msg)
+            2
+        | Ok fmt -> History.invokeShowRun project runId fmt)
+    root.Subcommands.Add(showRunCmd)
+
+    // ─── replay-run ───────────────────────────────────────────────
+    let replayProjectArg = Argument<string>("project")
+    replayProjectArg.Description <- "Registered project name OR path"
+    let replayRunIdArg = Argument<string>("run-id")
+    replayRunIdArg.Description <- "Run id whose params to reuse"
+
+    let replayCmd =
+        Command("replay-run", "Re-run a flow using the exact params of a prior run")
+    replayCmd.Arguments.Add(replayProjectArg)
+    replayCmd.Arguments.Add(replayRunIdArg)
+    replayCmd.SetAction(fun (pr: ParseResult) ->
+        History.invokeReplay (pr.GetValue(replayProjectArg)) (pr.GetValue(replayRunIdArg)))
+    root.Subcommands.Add(replayCmd)
+
+    // TODO: describe
 
     root.Parse(argv).Invoke()

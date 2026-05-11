@@ -11,6 +11,7 @@
     <Compile Include="Vars.fs" />
     <Compile Include="Engines.fs" />
     <Compile Include="ProjectRegistry.fs" />
+    <Compile Include="History.fs" />
     <Compile Include="Run.fs" />
     <Compile Include="Library.fs" />
   </ItemGroup>

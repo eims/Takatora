@@ -11,6 +11,7 @@
     <Compile Include="Cancel.fs" />
     <Compile Include="DetectEngines.fs" />
     <Compile Include="Project.fs" />
+    <Compile Include="History.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
