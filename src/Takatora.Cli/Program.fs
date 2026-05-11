@@ -105,6 +105,70 @@ let main argv =
         | Ok fmt -> DetectEngines.invoke fmt)
     root.Subcommands.Add(detectCmd)
 
-    // TODO: describe / project / history / show-run / replay-run
+    // ─── project add/remove/list/info ─────────────────────────────
+    let projectCmd =
+        Command("project", "Manage the local project registry (%APPDATA%\\Takatora\\projects.toml)")
+
+    // project add <path> [--name X]
+    let projAddPath = Argument<string>("path")
+    projAddPath.Description <- "Path to the project working directory containing .ci/"
+    let projAddName = Option<string>("--name")
+    projAddName.Description <- "Override the registered name (default: project.toml's [project] name)"
+    let projAddCmd = Command("add", "Register a project for `takatora run` lookup")
+    projAddCmd.Arguments.Add(projAddPath)
+    projAddCmd.Options.Add(projAddName)
+    projAddCmd.SetAction(fun (pr: ParseResult) ->
+        let path = pr.GetValue(projAddPath)
+        let nameRaw = pr.GetValue(projAddName)
+        let nameHint =
+            if String.IsNullOrWhiteSpace nameRaw then None else Some nameRaw
+        Project.invokeAdd path nameHint)
+    projectCmd.Subcommands.Add(projAddCmd)
+
+    // project remove <name>
+    let projRemoveName = Argument<string>("name")
+    projRemoveName.Description <- "Registered project name (see `takatora project list`)"
+    let projRemoveCmd =
+        Command("remove", "Unregister a project (does NOT delete its .ci/ directory)")
+    projRemoveCmd.Arguments.Add(projRemoveName)
+    projRemoveCmd.SetAction(fun (pr: ParseResult) ->
+        Project.invokeRemove (pr.GetValue(projRemoveName)))
+    projectCmd.Subcommands.Add(projRemoveCmd)
+
+    // project list
+    let projListFormat = Option<string>("--output-format")
+    projListFormat.Description <- "Output format: human (default) | json"
+    projListFormat.DefaultValueFactory <- (fun _ -> "human")
+    let projListCmd = Command("list", "Show registered projects")
+    projListCmd.Options.Add(projListFormat)
+    projListCmd.SetAction(fun (pr: ParseResult) ->
+        match Project.parseFormat (pr.GetValue(projListFormat)) with
+        | Error msg ->
+            Console.Error.WriteLine(sprintf "project list: %s" msg)
+            2
+        | Ok fmt -> Project.invokeList fmt)
+    projectCmd.Subcommands.Add(projListCmd)
+
+    // project info <name>
+    let projInfoName = Argument<string>("name")
+    projInfoName.Description <- "Registered project name"
+    let projInfoFormat = Option<string>("--output-format")
+    projInfoFormat.Description <- "Output format: human (default) | json"
+    projInfoFormat.DefaultValueFactory <- (fun _ -> "human")
+    let projInfoCmd =
+        Command("info", "Show registration details + project.toml/flows.toml summary")
+    projInfoCmd.Arguments.Add(projInfoName)
+    projInfoCmd.Options.Add(projInfoFormat)
+    projInfoCmd.SetAction(fun (pr: ParseResult) ->
+        match Project.parseFormat (pr.GetValue(projInfoFormat)) with
+        | Error msg ->
+            Console.Error.WriteLine(sprintf "project info: %s" msg)
+            2
+        | Ok fmt -> Project.invokeInfo (pr.GetValue(projInfoName)) fmt)
+    projectCmd.Subcommands.Add(projInfoCmd)
+
+    root.Subcommands.Add(projectCmd)
+
+    // TODO: describe / history / show-run / replay-run
 
     root.Parse(argv).Invoke()

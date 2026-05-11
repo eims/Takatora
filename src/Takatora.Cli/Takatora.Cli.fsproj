@@ -10,6 +10,7 @@
     <Compile Include="Run.fs" />
     <Compile Include="Cancel.fs" />
     <Compile Include="DetectEngines.fs" />
+    <Compile Include="Project.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

@@ -10,6 +10,7 @@
     <Compile Include="TomlConfig.fs" />
     <Compile Include="Vars.fs" />
     <Compile Include="Engines.fs" />
+    <Compile Include="ProjectRegistry.fs" />
     <Compile Include="Run.fs" />
     <Compile Include="Library.fs" />
   </ItemGroup>
@@ -20,6 +21,12 @@
          the package is harmless on other platforms but the detector
          skips the registry path when it isn't supported. -->
     <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ProjectRegistry exposes a test-only path override so tests
+         don't pollute the real %APPDATA%\Takatora\projects.toml. -->
+    <InternalsVisibleTo Include="Takatora.Core.Tests" />
   </ItemGroup>
 
 </Project>
