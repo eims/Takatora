@@ -7,12 +7,17 @@ open Takatora.Core
 /// rather than introducing a separate id type.
 type ProjectId = string
 
-/// Root tab variants. Only Home + Project are wired; the other variants
-/// from gui.md (LiveRun / RunDetail / Settings) will land as the
-/// corresponding views come online.
+/// Run id (mirrors RunHistoryEntry.RunId). Carried alongside ProjectId
+/// in RunDetail tabs because RunHistory.findRun needs the project's
+/// working dir to locate the run.
+type RunId = string
+
+/// Root tab variants. Home + Project + RunDetail are wired; LiveRun and
+/// Settings from gui.md will land later.
 type RootTab =
     | Home
     | Project of ProjectId
+    | RunDetail of ProjectId * RunId
 
 /// Sub-tabs inside a Project tab. Per gui.md these are plain TabControl
 /// territory (only the root strip is custom), but we keep the active
@@ -33,6 +38,10 @@ type Model = {
     /// lazily on OpenProject so initial app startup doesn't pay for
     /// every project's runs dir.
     ProjectHistory: Map<ProjectId, RunHistoryEntry list>
+    /// Cached `RunHistory.findRun` results for open RunDetail tabs,
+    /// keyed by (project, run id). Loaded on OpenRunDetail, dropped
+    /// when the corresponding tab closes.
+    RunDetails: Map<ProjectId * RunId, RunHistoryEntry * StepSummary list>
 }
 
 type Msg =
@@ -42,13 +51,15 @@ type Msg =
     | CloseTab of RootTab
     | ActivateSubTab of ProjectId * ProjectSubTab
     | RefreshHistory of ProjectId
+    | OpenRunDetail of ProjectId * RunId
 
 let init () : Model =
     { OpenTabs       = [ Home ]
       ActiveTab      = Home
       Projects       = ProjectRegistry.load ()
       ProjectSubTabs = Map.empty
-      ProjectHistory = Map.empty }
+      ProjectHistory = Map.empty
+      RunDetails     = Map.empty }
 
 let private moveOrAppend (tab: RootTab) (tabs: RootTab list) : RootTab list =
     if List.contains tab tabs then tabs else tabs @ [ tab ]
@@ -80,13 +91,30 @@ let projectSubTab (pid: ProjectId) (model: Model) : ProjectSubTab =
     Map.tryFind pid model.ProjectSubTabs
     |> Option.defaultValue ProjectFlows
 
+let private projectRoot
+        (pid: ProjectId)
+        (projects: ProjectRegistration list)
+        : string option =
+    projects
+    |> List.tryFind (fun (p: ProjectRegistration) -> p.Name = pid)
+    |> Option.map (fun p -> p.Path)
+
 let private loadHistoryFor
         (pid: ProjectId)
         (projects: ProjectRegistration list)
         : RunHistoryEntry list =
-    match List.tryFind (fun (p: ProjectRegistration) -> p.Name = pid) projects with
-    | Some p -> RunHistory.load p.Path
-    | None   -> []
+    match projectRoot pid projects with
+    | Some root -> RunHistory.load root
+    | None      -> []
+
+let private loadRunDetailFor
+        (pid: ProjectId)
+        (runId: RunId)
+        (projects: ProjectRegistration list)
+        : (RunHistoryEntry * StepSummary list) option =
+    match projectRoot pid projects with
+    | Some root -> RunHistory.findRun root runId
+    | None      -> None
 
 let update (msg: Msg) (model: Model) : Model =
     match msg with
@@ -107,22 +135,44 @@ let update (msg: Msg) (model: Model) : Model =
         else model
     | CloseTab tab ->
         let newTabs, newActive = closeAndPickActive tab model.ActiveTab model.OpenTabs
-        // Drop per-project caches when a Project tab is closed. Keeping
-        // them would leak state across close+reopen, and reopen reloads
-        // anyway.
-        let subTabs, history =
+        // Drop per-tab caches when the corresponding tab closes; reopen
+        // reloads from disk anyway, and keeping stale entries would let
+        // the cache grow without bound across a long session.
+        let subTabs, history, details =
             match tab with
             | Project pid ->
                 Map.remove pid model.ProjectSubTabs,
-                Map.remove pid model.ProjectHistory
-            | _ -> model.ProjectSubTabs, model.ProjectHistory
+                Map.remove pid model.ProjectHistory,
+                model.RunDetails
+            | RunDetail (pid, runId) ->
+                model.ProjectSubTabs,
+                model.ProjectHistory,
+                Map.remove (pid, runId) model.RunDetails
+            | Home ->
+                model.ProjectSubTabs,
+                model.ProjectHistory,
+                model.RunDetails
         { model with
             OpenTabs       = newTabs
             ActiveTab      = newActive
             ProjectSubTabs = subTabs
-            ProjectHistory = history }
+            ProjectHistory = history
+            RunDetails     = details }
     | ActivateSubTab (pid, sub) ->
         { model with ProjectSubTabs = Map.add pid sub model.ProjectSubTabs }
     | RefreshHistory pid ->
         { model with
             ProjectHistory = Map.add pid (loadHistoryFor pid model.Projects) model.ProjectHistory }
+    | OpenRunDetail (pid, runId) ->
+        let tab = RunDetail (pid, runId)
+        let key = pid, runId
+        let details =
+            if Map.containsKey key model.RunDetails then model.RunDetails
+            else
+                match loadRunDetailFor pid runId model.Projects with
+                | Some data -> Map.add key data model.RunDetails
+                | None      -> model.RunDetails
+        { model with
+            OpenTabs   = moveOrAppend tab model.OpenTabs
+            ActiveTab  = tab
+            RunDetails = details }
