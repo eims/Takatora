@@ -248,12 +248,124 @@ let private projectSubTabHeader
         )
     ] :> _
 
-let private flowsBody (_p: ProjectRegistration) : IView =
-    TextBlock.create [
-        TextBlock.text "Flow editor lands in a later slice. For now use the CLI: `takatora run <project> <flow>`."
-        TextBlock.margin (Thickness 16.0)
-        TextBlock.foreground mutedBrush
-        TextBlock.textWrapping TextWrapping.Wrap
+let private flowCard (f: Flow) : IView =
+    Border.create [
+        Border.padding (Thickness 12.0)
+        Border.cornerRadius 4.0
+        Border.background cardBg
+        Border.child (
+            StackPanel.create [
+                StackPanel.spacing 2.0
+                StackPanel.children [
+                    StackPanel.create [
+                        StackPanel.orientation Orientation.Horizontal
+                        StackPanel.spacing 12.0
+                        StackPanel.children [
+                            TextBlock.create [
+                                TextBlock.text f.Id
+                                TextBlock.fontSize 16.0
+                                TextBlock.fontWeight FontWeight.SemiBold
+                            ]
+                            (match f.Name with
+                             | Some n ->
+                                 TextBlock.create [
+                                     TextBlock.text n
+                                     TextBlock.foreground mutedBrush
+                                     TextBlock.fontSize 13.0
+                                     TextBlock.verticalAlignment VerticalAlignment.Center
+                                 ] :> IView
+                             | None ->
+                                 TextBlock.create [ TextBlock.text "" ] :> IView)
+                        ]
+                    ]
+                    TextBlock.create [
+                        TextBlock.text
+                            (sprintf "%d var(s)  ·  %d step(s)"
+                                (List.length f.Vars) (List.length f.Steps))
+                        TextBlock.foreground mutedBrush
+                        TextBlock.fontSize 12.0
+                    ]
+                ]
+            ]
+        )
+    ] :> _
+
+let private flowsBody
+        (pid: ProjectId)
+        (load: FlowsLoad)
+        (dispatch: Msg -> unit)
+        : IView =
+    let header =
+        StackPanel.create [
+            DockPanel.dock Dock.Top
+            StackPanel.orientation Orientation.Horizontal
+            StackPanel.margin (Thickness(16.0, 12.0))
+            StackPanel.spacing 12.0
+            StackPanel.children [
+                TextBlock.create [
+                    TextBlock.text
+                        (match load with
+                         | FlowsOk fs -> sprintf "%d flow(s)" (List.length fs)
+                         | FlowsMissing -> "(no .ci/flows.toml)"
+                         | FlowsError _ -> "(flows.toml error)")
+                    TextBlock.foreground mutedBrush
+                    TextBlock.verticalAlignment VerticalAlignment.Center
+                ]
+                Button.create [
+                    Button.content "Refresh"
+                    Button.onClick (fun _ -> dispatch (RefreshFlows pid))
+                ]
+            ]
+        ]
+    let body : IView =
+        match load with
+        | FlowsMissing ->
+            TextBlock.create [
+                TextBlock.text "No `.ci/flows.toml` in this project's working directory. Create one (or use the planned init/wizard) to define runnable flows."
+                TextBlock.margin (Thickness 16.0)
+                TextBlock.foreground mutedBrush
+                TextBlock.textWrapping TextWrapping.Wrap
+            ] :> _
+        | FlowsError msg ->
+            StackPanel.create [
+                StackPanel.margin (Thickness 16.0)
+                StackPanel.spacing 6.0
+                StackPanel.children [
+                    TextBlock.create [
+                        TextBlock.text "Could not parse `.ci/flows.toml`:"
+                        TextBlock.foreground (brush "#f15a5a")
+                    ]
+                    TextBlock.create [
+                        TextBlock.text msg
+                        TextBlock.foreground dimBrush
+                        TextBlock.textWrapping TextWrapping.Wrap
+                    ]
+                ]
+            ] :> _
+        | FlowsOk [] ->
+            TextBlock.create [
+                TextBlock.text "`flows.toml` parsed but defines no `[[flow]]` entries yet."
+                TextBlock.margin (Thickness 16.0)
+                TextBlock.foreground mutedBrush
+                TextBlock.textWrapping TextWrapping.Wrap
+            ] :> _
+        | FlowsOk fs ->
+            ScrollViewer.create [
+                ScrollViewer.content (
+                    StackPanel.create [
+                        StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
+                        StackPanel.spacing 6.0
+                        StackPanel.children [
+                            for f in fs -> flowCard f
+                        ]
+                    ]
+                )
+            ] :> _
+    DockPanel.create [
+        DockPanel.children [
+            header
+            body
+        ]
     ] :> _
 
 let private settingsBody (_p: ProjectRegistration) : IView =
@@ -431,7 +543,11 @@ let private projectView
                 ]
                 projectSubTabHeader pid active dispatch
                 (match active with
-                 | ProjectFlows    -> flowsBody p
+                 | ProjectFlows    ->
+                     let load =
+                         Map.tryFind pid model.ProjectFlows
+                         |> Option.defaultValue FlowsMissing
+                     flowsBody pid load dispatch
                  | ProjectHistory  ->
                      let entries =
                          Map.tryFind pid model.ProjectHistory

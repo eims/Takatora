@@ -1,5 +1,6 @@
 module Takatora.Gui.State
 
+open System.IO
 open Takatora.Core
 
 /// Project lookup key inside the GUI. The registry uses `Name` as the
@@ -28,6 +29,14 @@ type ProjectSubTab =
     | ProjectHistory
     | ProjectSettings
 
+/// Result of trying to read a project's `.ci/flows.toml`. The three
+/// outcomes need distinct UX — missing file is a setup hint, parse
+/// failure is a config bug to surface, success is the happy path.
+type FlowsLoad =
+    | FlowsOk of Flow list
+    | FlowsMissing
+    | FlowsError of string
+
 type Model = {
     OpenTabs: RootTab list
     ActiveTab: RootTab
@@ -38,6 +47,9 @@ type Model = {
     /// lazily on OpenProject so initial app startup doesn't pay for
     /// every project's runs dir.
     ProjectHistory: Map<ProjectId, RunHistoryEntry list>
+    /// Cached `TomlConfig.loadFlows` results, keyed by project id.
+    /// Loaded on OpenProject alongside history.
+    ProjectFlows: Map<ProjectId, FlowsLoad>
     /// Cached `RunHistory.findRun` results for open RunDetail tabs,
     /// keyed by (project, run id). Loaded on OpenRunDetail, dropped
     /// when the corresponding tab closes.
@@ -51,6 +63,7 @@ type Msg =
     | CloseTab of RootTab
     | ActivateSubTab of ProjectId * ProjectSubTab
     | RefreshHistory of ProjectId
+    | RefreshFlows of ProjectId
     | OpenRunDetail of ProjectId * RunId
 
 let init () : Model =
@@ -59,6 +72,7 @@ let init () : Model =
       Projects       = ProjectRegistry.load ()
       ProjectSubTabs = Map.empty
       ProjectHistory = Map.empty
+      ProjectFlows   = Map.empty
       RunDetails     = Map.empty }
 
 let private moveOrAppend (tab: RootTab) (tabs: RootTab list) : RootTab list =
@@ -107,6 +121,23 @@ let private loadHistoryFor
     | Some root -> RunHistory.load root
     | None      -> []
 
+/// Read and classify `.ci/flows.toml` for the given project. We keep
+/// the three outcomes distinct because each maps to a different UX:
+/// missing → "no flows yet, here's how to add one"; error → "your
+/// flows.toml has a bug, here's the message"; ok → render the list.
+let private loadFlowsFor
+        (pid: ProjectId)
+        (projects: ProjectRegistration list)
+        : FlowsLoad =
+    match projectRoot pid projects with
+    | None -> FlowsError (sprintf "Project '%s' not in registry" pid)
+    | Some root ->
+        let path = Path.Combine(root, ".ci", "flows.toml")
+        if not (File.Exists path) then FlowsMissing
+        else
+            try FlowsOk (TomlConfig.loadFlows path)
+            with ex -> FlowsError ex.Message
+
 let private loadRunDetailFor
         (pid: ProjectId)
         (runId: RunId)
@@ -125,10 +156,14 @@ let update (msg: Msg) (model: Model) : Model =
         let history =
             if Map.containsKey pid model.ProjectHistory then model.ProjectHistory
             else Map.add pid (loadHistoryFor pid model.Projects) model.ProjectHistory
+        let flows =
+            if Map.containsKey pid model.ProjectFlows then model.ProjectFlows
+            else Map.add pid (loadFlowsFor pid model.Projects) model.ProjectFlows
         { model with
             OpenTabs       = moveOrAppend tab model.OpenTabs
             ActiveTab      = tab
-            ProjectHistory = history }
+            ProjectHistory = history
+            ProjectFlows   = flows }
     | ActivateTab tab ->
         if List.contains tab model.OpenTabs then
             { model with ActiveTab = tab }
@@ -138,31 +173,38 @@ let update (msg: Msg) (model: Model) : Model =
         // Drop per-tab caches when the corresponding tab closes; reopen
         // reloads from disk anyway, and keeping stale entries would let
         // the cache grow without bound across a long session.
-        let subTabs, history, details =
+        let subTabs, history, flows, details =
             match tab with
             | Project pid ->
                 Map.remove pid model.ProjectSubTabs,
                 Map.remove pid model.ProjectHistory,
+                Map.remove pid model.ProjectFlows,
                 model.RunDetails
             | RunDetail (pid, runId) ->
                 model.ProjectSubTabs,
                 model.ProjectHistory,
+                model.ProjectFlows,
                 Map.remove (pid, runId) model.RunDetails
             | Home ->
                 model.ProjectSubTabs,
                 model.ProjectHistory,
+                model.ProjectFlows,
                 model.RunDetails
         { model with
             OpenTabs       = newTabs
             ActiveTab      = newActive
             ProjectSubTabs = subTabs
             ProjectHistory = history
+            ProjectFlows   = flows
             RunDetails     = details }
     | ActivateSubTab (pid, sub) ->
         { model with ProjectSubTabs = Map.add pid sub model.ProjectSubTabs }
     | RefreshHistory pid ->
         { model with
             ProjectHistory = Map.add pid (loadHistoryFor pid model.Projects) model.ProjectHistory }
+    | RefreshFlows pid ->
+        { model with
+            ProjectFlows = Map.add pid (loadFlowsFor pid model.Projects) model.ProjectFlows }
     | OpenRunDetail (pid, runId) ->
         let tab = RunDetail (pid, runId)
         let key = pid, runId
