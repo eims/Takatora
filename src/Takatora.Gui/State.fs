@@ -232,6 +232,20 @@ let private loadHistoryFor
     | Some root -> RunHistory.load root
     | None      -> []
 
+/// Reload a project's history into the cache, but only if it's already
+/// cached — i.e. the Project tab is open (CloseTab drops the entry).
+/// Used after a run completes so a visible History sub-tab updates
+/// without manual Refresh, while avoiding orphan cache entries for
+/// closed projects (which would otherwise defeat OpenProject's lazy
+/// reload on the next open).
+let private refreshHistoryIfOpen
+        (pid: ProjectId)
+        (model: Model)
+        : Map<ProjectId, RunHistoryEntry list> =
+    if Map.containsKey pid model.ProjectHistory then
+        Map.add pid (loadHistoryFor pid model.Projects) model.ProjectHistory
+    else model.ProjectHistory
+
 /// Read and classify `.ci/flows.toml` for the given project. We keep
 /// the three outcomes distinct because each maps to a different UX:
 /// missing → "no flows yet, here's how to add one"; error → "your
@@ -607,11 +621,10 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         | None -> model, Cmd.none  // should not happen; guard.
         | Some state ->
             let pid = state.ProjectId
-            // Always refresh history — even if the LiveRun tab itself
-            // was closed before completion, the Project tab may still
-            // be open and the user would expect the new run to appear.
-            let newHistory =
-                Map.add pid (loadHistoryFor pid model.Projects) model.ProjectHistory
+            // Refresh history only if the Project is open (cached). If it's
+            // closed, leave the cache untouched so we don't leave an orphan
+            // entry that would short-circuit the lazy reload on next OpenProject.
+            let newHistory = refreshHistoryIfOpen pid model
             // Keep the LiveRuns entry around if the tab is still open
             // (so the view can render the Completed phase); otherwise
             // drop it to bound the map.
@@ -732,8 +745,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         | Some state ->
             let result = Error (RunFailure.InternalError ex.Message)
             let pid = state.ProjectId
-            let newHistory =
-                Map.add pid (loadHistoryFor pid model.Projects) model.ProjectHistory
+            let newHistory = refreshHistoryIfOpen pid model
             let newLiveRuns =
                 if List.contains (LiveRun key) model.OpenTabs then
                     Map.add key { state with Phase = LiveCompleted result } model.LiveRuns
