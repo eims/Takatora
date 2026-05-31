@@ -1143,14 +1143,68 @@ let private runDetailBody
         )
     ] :> _
 
+/// Prev/next navigation across runs by serial number, so you can step
+/// through a project's history without going back to the History list.
+/// "← #(N-1)" is the next-older run, "#(N+1) →" the next-newer.
+let private runDetailNav
+        (pid: ProjectId)
+        (runId: RunId)
+        (model: Model)
+        (dispatch: Msg -> unit)
+        : IView =
+    let navButton (label: string) (target: RunId option) : IView =
+        Button.create [
+            Button.content label
+            Button.isEnabled (Option.isSome target)
+            Button.background Brushes.Transparent
+            // Reused by position as the active run changes, so re-subscribe
+            // the click handler (FuncUI freezes the first-render closure).
+            Button.onClick (
+                (fun _ -> target |> Option.iter (fun rid -> dispatch (OpenRunDetail (pid, rid)))),
+                SubPatchOptions.Always)
+        ] :> IView
+    let older = State.runByNumberOffset model pid runId -1
+    let newer = State.runByNumberOffset model pid runId 1
+    let currentLabel =
+        match State.runNumber model pid runId with
+        | Some n -> sprintf "#%d" n
+        | None   -> "—"
+    Border.create [
+        DockPanel.dock Dock.Top
+        Border.borderThickness (Thickness(0.0, 0.0, 0.0, 1.0))
+        Border.borderBrush stripBorder
+        Border.padding (Thickness(12.0, 4.0))
+        Border.child (
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 8.0
+                StackPanel.children [
+                    navButton "←  older" older
+                    TextBlock.create [
+                        TextBlock.text currentLabel
+                        TextBlock.foreground dimBrush
+                        TextBlock.verticalAlignment VerticalAlignment.Center
+                    ]
+                    navButton "newer  →" newer
+                ]
+            ]
+        )
+    ] :> _
+
 let private runDetailView
         (pid: ProjectId)
         (runId: RunId)
         (model: Model)
-        (_dispatch: Msg -> unit)
+        (dispatch: Msg -> unit)
         : IView =
     match Map.tryFind (pid, runId) model.RunDetails with
-    | Some (entry, steps) -> runDetailBody pid entry steps
+    | Some (entry, steps) ->
+        DockPanel.create [
+            DockPanel.children [
+                runDetailNav pid runId model dispatch
+                runDetailBody pid entry steps
+            ]
+        ] :> _
     | None ->
         TextBlock.create [
             TextBlock.text $"Run '{runId}' not found under project '{pid}'. The run dir may have been deleted, or this project's history was rotated since the tab was opened."

@@ -485,3 +485,24 @@ type StateTests() =
         Assert.Equal<string option>(Some "build", runFlowId m "p1" "r1")
         Assert.Equal<string option>(Some "test", runFlowId m "p1" "r2")
         Assert.Equal<string option>(None, runFlowId m "p1" "missing")
+
+    [<Fact>]
+    member _.``runByNumberOffset steps to the next-newer (+1) and next-older (-1) run`` () =
+        // newest-first [r3(#3); r2(#2); r1(#1)]. From r2: +1 → r3, -1 → r1.
+        let m =
+            { baseModel with
+                ProjectHistory =
+                    Map.ofList [ "p1", [ fakeEntry "r3"; fakeEntry "r2"; fakeEntry "r1" ] ] }
+        Assert.Equal<RunId option>(Some "r3", runByNumberOffset m "p1" "r2" 1)
+        Assert.Equal<RunId option>(Some "r1", runByNumberOffset m "p1" "r2" -1)
+
+    [<Fact>]
+    member _.``runByNumberOffset is None at the ends of history`` () =
+        let m =
+            { baseModel with
+                ProjectHistory =
+                    Map.ofList [ "p1", [ fakeEntry "r3"; fakeEntry "r2"; fakeEntry "r1" ] ] }
+        // r3 is newest (#3) → no newer; r1 is oldest (#1) → no older.
+        Assert.Equal<RunId option>(None, runByNumberOffset m "p1" "r3" 1)
+        Assert.Equal<RunId option>(None, runByNumberOffset m "p1" "r1" -1)
+        Assert.Equal<RunId option>(None, runByNumberOffset m "p1" "missing" 1)

@@ -269,6 +269,23 @@ let runFlowId (model: Model) (pid: ProjectId) (rid: RunId) : string option =
         |> Option.map (fun e -> e.FlowId)
     | None -> None
 
+/// The run whose serial number is `offset` away from `rid`'s (e.g. +1 =
+/// the next-newer run #N+1, -1 = the next-older #N-1). Drives the
+/// prev/next navigation on a RunDetail tab. None at the ends of history
+/// or when `rid` isn't in the cached list. History is newest-first, so a
+/// higher number sits at a lower index → target index = i - offset.
+let runByNumberOffset (model: Model) (pid: ProjectId) (rid: RunId) (offset: int) : RunId option =
+    match Map.tryFind pid model.ProjectHistory with
+    | Some entries ->
+        match List.tryFindIndex (fun (e: RunHistoryEntry) -> e.RunId = rid) entries with
+        | Some i ->
+            let targetIdx = i - offset
+            if targetIdx >= 0 && targetIdx < List.length entries
+            then Some (List.item targetIdx entries).RunId
+            else None
+        | None -> None
+    | None -> None
+
 let private projectRoot
         (pid: ProjectId)
         (projects: ProjectRegistration list)
