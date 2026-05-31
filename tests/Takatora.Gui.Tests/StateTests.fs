@@ -336,3 +336,14 @@ type StateTests() =
         let m  = update (RefreshProjectInfo "p1") m0
         Assert.Equal<RootTab list>(m0.OpenTabs, m.OpenTabs)
         Assert.Equal(m0.ActiveTab, m.ActiveTab)
+
+    // ─── RunFlow ────────────────────────────────────────────────────
+
+    [<Fact>]
+    member _.``RunFlow on a non-registered project is a graceful no-op`` () =
+        // No project in registry means projectRoot returns None — Run.execute
+        // must not be invoked, and the model is returned unchanged.
+        let m = update (RunFlow ("ghost", "smoke")) baseModel
+        Assert.Equal<RootTab list>(baseModel.OpenTabs, m.OpenTabs)
+        Assert.Equal(baseModel.ActiveTab, m.ActiveTab)
+        Assert.True(Map.isEmpty m.ProjectHistory)

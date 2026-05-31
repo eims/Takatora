@@ -256,42 +256,56 @@ let private projectSubTabHeader
         )
     ] :> _
 
-let private flowCard (f: Flow) : IView =
+let private flowCard
+        (pid: ProjectId)
+        (f: Flow)
+        (dispatch: Msg -> unit)
+        : IView =
     Border.create [
         Border.padding (Thickness 12.0)
         Border.cornerRadius 4.0
         Border.background cardBg
         Border.child (
-            StackPanel.create [
-                StackPanel.spacing 2.0
-                StackPanel.children [
-                    StackPanel.create [
-                        StackPanel.orientation Orientation.Horizontal
-                        StackPanel.spacing 12.0
-                        StackPanel.children [
-                            TextBlock.create [
-                                TextBlock.text f.Id
-                                TextBlock.fontSize 16.0
-                                TextBlock.fontWeight FontWeight.SemiBold
-                            ]
-                            (match f.Name with
-                             | Some n ->
-                                 TextBlock.create [
-                                     TextBlock.text n
-                                     TextBlock.foreground mutedBrush
-                                     TextBlock.fontSize 13.0
-                                     TextBlock.verticalAlignment VerticalAlignment.Center
-                                 ] :> IView
-                             | None ->
-                                 TextBlock.create [ TextBlock.text "" ] :> IView)
-                        ]
+            DockPanel.create [
+                DockPanel.children [
+                    Button.create [
+                        DockPanel.dock Dock.Right
+                        Button.content "Run"
+                        Button.verticalAlignment VerticalAlignment.Center
+                        Button.onClick (fun _ -> dispatch (RunFlow (pid, f.Id)))
                     ]
-                    TextBlock.create [
-                        TextBlock.text
-                            (sprintf "%d var(s)  ·  %d step(s)"
-                                (List.length f.Vars) (List.length f.Steps))
-                        TextBlock.foreground mutedBrush
-                        TextBlock.fontSize 12.0
+                    StackPanel.create [
+                        StackPanel.spacing 2.0
+                        StackPanel.children [
+                            StackPanel.create [
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.spacing 12.0
+                                StackPanel.children [
+                                    TextBlock.create [
+                                        TextBlock.text f.Id
+                                        TextBlock.fontSize 16.0
+                                        TextBlock.fontWeight FontWeight.SemiBold
+                                    ]
+                                    (match f.Name with
+                                     | Some n ->
+                                         TextBlock.create [
+                                             TextBlock.text n
+                                             TextBlock.foreground mutedBrush
+                                             TextBlock.fontSize 13.0
+                                             TextBlock.verticalAlignment VerticalAlignment.Center
+                                         ] :> IView
+                                     | None ->
+                                         TextBlock.create [ TextBlock.text "" ] :> IView)
+                                ]
+                            ]
+                            TextBlock.create [
+                                TextBlock.text
+                                    (sprintf "%d var(s)  ·  %d step(s)"
+                                        (List.length f.Vars) (List.length f.Steps))
+                                TextBlock.foreground mutedBrush
+                                TextBlock.fontSize 12.0
+                            ]
+                        ]
                     ]
                 ]
             ]
@@ -364,7 +378,7 @@ let private flowsBody
                         StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
                         StackPanel.spacing 6.0
                         StackPanel.children [
-                            for f in fs -> flowCard f
+                            for f in fs -> flowCard pid f dispatch
                         ]
                     ]
                 )

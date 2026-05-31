@@ -77,6 +77,7 @@ type Msg =
     | RefreshFlows of ProjectId
     | RefreshProjectInfo of ProjectId
     | OpenRunDetail of ProjectId * RunId
+    | RunFlow of ProjectId * flowId:string
 
 let init () : Model =
     { OpenTabs       = [ Home ]
@@ -150,6 +151,16 @@ let private loadFlowsFor
         else
             try FlowsOk (TomlConfig.loadFlows path)
             with ex -> FlowsError ex.Message
+
+/// Resolve the Tasks SDK assembly + builtin tasks dir from the host
+/// process layout. Same defaults the CLI uses; works here because the
+/// GUI project-references Takatora.Tasks + Takatora.Tasks.Builtin, so
+/// Tasks.dll + builtin-tasks/ get copied next to the GUI executable.
+let private sdkAssemblyPath () =
+    Path.Combine(System.AppContext.BaseDirectory, "Takatora.Tasks.dll")
+
+let private builtinTasksDir () =
+    Path.Combine(System.AppContext.BaseDirectory, "builtin-tasks")
 
 /// Same shape as `loadFlowsFor` but for `.ci/project.toml`.
 let private loadProjectInfoFor
@@ -243,6 +254,29 @@ let update (msg: Msg) (model: Model) : Model =
     | RefreshProjectInfo pid ->
         { model with
             ProjectInfo = Map.add pid (loadProjectInfoFor pid model.Projects) model.ProjectInfo }
+    | RunFlow (pid, flowId) ->
+        // Synchronous in-process run: UI thread blocks until Run.execute
+        // returns. Acceptable for smoke / short flows but unsuitable for
+        // real builds — LiveRun will replace this with an async/streamed
+        // path. The outcome is intentionally not stored on the model;
+        // history reload picks up the new run dir regardless of whether
+        // execute returned Ok or Error.
+        match projectRoot pid model.Projects with
+        | None -> model
+        | Some root ->
+            let opts : Run.Options = {
+                WorkingDir       = root
+                FlowId           = flowId
+                VarOverrides     = Map.empty
+                SdkAssemblyPath  = sdkAssemblyPath ()
+                BuiltinTasksDir  = builtinTasksDir ()
+                UserTasksDir     = None
+            }
+            try Run.execute opts |> ignore
+            with _ -> ()
+            { model with
+                ProjectHistory =
+                    Map.add pid (loadHistoryFor pid model.Projects) model.ProjectHistory }
     | OpenRunDetail (pid, runId) ->
         let tab = RunDetail (pid, runId)
         let key = pid, runId

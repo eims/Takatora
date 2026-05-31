@@ -14,6 +14,17 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Takatora.Core\Takatora.Core.fsproj" />
+    <!--
+      Tasks + Tasks.Builtin are pulled in so the GUI can call
+      Run.execute in-process. Tasks.dll is the SDK assembly the runner
+      `#r`s into each task wrapper; Tasks.Builtin contributes the
+      `builtin-tasks/` directory with the bundled .fsx tasks. Same
+      payload the CLI ships with — keeping them on the GUI side means
+      Run.execute's default Tasks.dll / builtin-tasks/ path resolution
+      (AppContext.BaseDirectory) works without bouncing to the CLI exe.
+    -->
+    <ProjectReference Include="..\Takatora.Tasks\Takatora.Tasks.fsproj" />
+    <ProjectReference Include="..\Takatora.Tasks.Builtin\Takatora.Tasks.Builtin.fsproj" />
   </ItemGroup>
 
   <!--
