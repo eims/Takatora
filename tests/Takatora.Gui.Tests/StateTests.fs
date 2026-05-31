@@ -53,6 +53,13 @@ type StateTests() =
             [Home; Project "p1"; RunDetail ("p1", "r1"); RunDetail ("p1", "r2")]
             with CurrentProject = Some "p1" }
 
+    /// p1 with three run tabs open, scoped to p1.
+    let scopedThreeRuns (active: RootTab) : Model =
+        { modelWithTabs active
+            [ Home; Project "p1"
+              RunDetail ("p1", "r1"); RunDetail ("p1", "r2"); RunDetail ("p1", "r3") ]
+            with CurrentProject = Some "p1" }
+
     let fakeEntry (runId: string) : RunHistoryEntry =
         { RunId       = runId
           FlowId      = "smoke"
@@ -506,3 +513,36 @@ type StateTests() =
         Assert.Equal<RunId option>(None, runByNumberOffset m "p1" "r3" 1)
         Assert.Equal<RunId option>(None, runByNumberOffset m "p1" "r1" -1)
         Assert.Equal<RunId option>(None, runByNumberOffset m "p1" "missing" 1)
+
+    // ─── bulk tab close (others / to the right) ─────────────────────
+
+    [<Fact>]
+    member _.``CloseOtherTabs keeps Home, project root, and the target; target becomes active`` () =
+        let m = apply (CloseOtherTabs (RunDetail ("p1", "r2"))) (scopedThreeRuns (RunDetail ("p1", "r1")))
+        Assert.Equal<RootTab list>(
+            [ Home; Project "p1"; RunDetail ("p1", "r2") ], m.OpenTabs)
+        Assert.Equal(RunDetail ("p1", "r2"), m.ActiveTab)
+        Assert.Equal<ProjectId option>(Some "p1", m.CurrentProject)
+
+    [<Fact>]
+    member _.``CloseTabsToRight closes only tabs after the target in strip order`` () =
+        // Target r1 is first run; r2 and r3 sit to its right and close.
+        let m = apply (CloseTabsToRight (RunDetail ("p1", "r1"))) (scopedThreeRuns (RunDetail ("p1", "r1")))
+        Assert.Equal<RootTab list>(
+            [ Home; Project "p1"; RunDetail ("p1", "r1") ], m.OpenTabs)
+
+    [<Fact>]
+    member _.``CloseTabsToRight on the rightmost run is a no-op`` () =
+        let start = scopedThreeRuns (RunDetail ("p1", "r3"))
+        let m = apply (CloseTabsToRight (RunDetail ("p1", "r3"))) start
+        Assert.Equal<RootTab list>(start.OpenTabs, m.OpenTabs)
+
+    [<Fact>]
+    member _.``CloseTabsToRight reassigns the active tab when it was to the right`` () =
+        // Active r3 is closed by "close right of r1" → active falls back into
+        // the surviving context (never Home while p1 tabs remain).
+        let m = apply (CloseTabsToRight (RunDetail ("p1", "r1"))) (scopedThreeRuns (RunDetail ("p1", "r3")))
+        Assert.Equal<RootTab list>(
+            [ Home; Project "p1"; RunDetail ("p1", "r1") ], m.OpenTabs)
+        Assert.Equal(RunDetail ("p1", "r1"), m.ActiveTab)
+        Assert.Equal<ProjectId option>(Some "p1", m.CurrentProject)

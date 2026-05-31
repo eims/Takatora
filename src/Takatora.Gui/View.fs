@@ -111,13 +111,44 @@ let private tabClosable = function
     | Home -> false
     | _    -> true
 
+/// Right-click menu on a tab chip: single close plus the bulk operations
+/// (others / to the right), each disabled when there's nothing to act on.
+let private tabContextMenu (model: Model) (tab: RootTab) (dispatch: Msg -> unit) : IView<ContextMenu> =
+    let vis = State.visibleTabs model
+    let othersExist = vis |> List.exists (fun t -> State.bulkClosable t && t <> tab)
+    let rightExist =
+        match List.tryFindIndex ((=) tab) vis with
+        | Some i -> vis |> List.indexed |> List.exists (fun (j, t) -> j > i && State.bulkClosable t)
+        | None   -> false
+    // SubPatchOptions.Always throughout: the menu is rebuilt per chip and
+    // the captured `tab` shifts as the strip re-renders (same FuncUI
+    // closure-freezing trap as the chip buttons).
+    ContextMenu.create [
+        ContextMenu.viewItems [
+            MenuItem.create [
+                MenuItem.header "Close"
+                MenuItem.onClick ((fun _ -> dispatch (CloseTab tab)), SubPatchOptions.Always)
+            ]
+            MenuItem.create [
+                MenuItem.header "Close others"
+                MenuItem.isEnabled othersExist
+                MenuItem.onClick ((fun _ -> dispatch (CloseOtherTabs tab)), SubPatchOptions.Always)
+            ]
+            MenuItem.create [
+                MenuItem.header "Close to the right"
+                MenuItem.isEnabled rightExist
+                MenuItem.onClick ((fun _ -> dispatch (CloseTabsToRight tab)), SubPatchOptions.Always)
+            ]
+        ]
+    ]
+
 let private tabChip
         (model: Model)
         (tab: RootTab)
         (isActive: bool)
         (dispatch: Msg -> unit)
         : IView =
-    Border.create [
+    let baseAttrs = [
         Border.borderThickness (Thickness(0.0, 0.0, 0.0, 2.0))
         Border.borderBrush (if isActive then accent else stripBg)
         Border.background (if isActive then activeBg else stripBg)
@@ -148,7 +179,14 @@ let private tabChip
                 ]
             ]
         )
-    ] :> _
+    ]
+    // Attach the right-click bulk-close menu only to closable chips
+    // (Home has nothing to close).
+    let attrs =
+        if tabClosable tab then
+            Border.contextMenu (tabContextMenu model tab dispatch) :: baseAttrs
+        else baseAttrs
+    Border.create attrs :> _
 
 /// One project-switch pill. Highlighted when it's the current context.
 /// Pure click → OpenProject (idempotent on an already-open tab) — no
@@ -815,25 +853,29 @@ let private historyHeaderRow : IView list =
         cell 3 "started"
         cell 4 "duration"
         cell 5 "run id"
+        cell 6 " "
     ]
 
 let private historyDataRow
         (row: int)
         (num: int)
         (pid: ProjectId)
+        (isOpen: bool)
         (e: RunHistoryEntry)
         (dispatch: Msg -> unit)
         : IView list =
     let startedLocal = e.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
     let cellMargin = Thickness(8.0, 3.0)
-    [
-        // Clickable backdrop. Transparent (not null) background so the
-        // Border catches pointer events; cells above set
-        // IsHitTestVisible=false so clicks fall through to the backdrop.
+    let cells = [
+        // Clickable backdrop spanning the whole row. Transparent (not null)
+        // background so the Border catches pointer events; the text cells
+        // set IsHitTestVisible=false so clicks fall through to it. The close
+        // button (column 6) is hit-test-visible and rendered on top, so it
+        // intercepts its own clicks without also opening the run.
         Border.create [
             Grid.row row
             Grid.column 0
-            Grid.columnSpan 6
+            Grid.columnSpan 7
             Border.background (Brushes.Transparent :> IBrush)
             Border.cursor handCursor
             Border.onPointerPressed (fun _ -> dispatch (OpenRunDetail (pid, e.RunId)))
@@ -886,10 +928,32 @@ let private historyDataRow
             TextBlock.isHitTestVisible false
         ] :> IView
     ]
+    // Close-tab affordance, shown only when this run's RunDetail tab is
+    // open. Sits in column 6 immediately after the run id (left-aligned),
+    // on top of the backdrop so it intercepts its own click.
+    let closeCell =
+        if isOpen then
+            [ Button.create [
+                Grid.row row
+                Grid.column 6
+                Button.content "×"
+                Button.background Brushes.Transparent
+                Button.borderThickness 0.0
+                Button.foreground mutedBrush
+                Button.padding (Thickness(8.0, 0.0))
+                Button.verticalAlignment VerticalAlignment.Center
+                Button.horizontalAlignment HorizontalAlignment.Left
+                Button.onClick (
+                    (fun _ -> dispatch (CloseTab (RunDetail (pid, e.RunId)))),
+                    SubPatchOptions.Always)
+              ] :> IView ]
+        else []
+    cells @ closeCell
 
 let private historyBody
         (pid: ProjectId)
         (entries: RunHistoryEntry list)
+        (openRunIds: Set<RunId>)
         (dispatch: Msg -> unit)
         : IView =
     DockPanel.create [
@@ -923,7 +987,7 @@ let private historyBody
                     ScrollViewer.content (
                         Grid.create [
                             Grid.margin (Thickness(8.0, 0.0, 16.0, 16.0))
-                            Grid.columnDefinitions "Auto,Auto,Auto,Auto,Auto,*"
+                            Grid.columnDefinitions "Auto,Auto,Auto,Auto,Auto,Auto,*"
                             Grid.rowDefinitions
                                 (String.concat ","
                                     (List.replicate (List.length entries + 1) "Auto"))
@@ -933,7 +997,8 @@ let private historyBody
                                 // entries are newest-first; chronological # is
                                 // total - i so it matches State.runNumber.
                                 for i, e in List.indexed entries do
-                                    yield! historyDataRow (i + 1) (total - i) pid e dispatch
+                                    let isOpen = Set.contains e.RunId openRunIds
+                                    yield! historyDataRow (i + 1) (total - i) pid isOpen e dispatch
                             ]
                         ]
                     )
@@ -987,7 +1052,15 @@ let private projectView
                      let entries =
                          Map.tryFind pid model.ProjectHistory
                          |> Option.defaultValue []
-                     historyBody pid entries dispatch
+                     // Run ids that currently have an open RunDetail tab, so
+                     // the History list can show a close affordance per row.
+                     let openRunIds =
+                         model.OpenTabs
+                         |> List.choose (function
+                             | RunDetail (p, r) when p = pid -> Some r
+                             | _ -> None)
+                         |> Set.ofList
+                     historyBody pid entries openRunIds dispatch
                  | ProjectSettings ->
                      let load =
                          Map.tryFind pid model.ProjectInfo

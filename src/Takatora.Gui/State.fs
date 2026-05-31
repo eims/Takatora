@@ -161,6 +161,12 @@ type Msg =
     | OpenProject of ProjectId
     | ActivateTab of RootTab
     | CloseTab of RootTab
+    /// Close every other closable tab in the current context, keeping
+    /// Home, the project root, and the given tab.
+    | CloseOtherTabs of RootTab
+    /// Close the closable tabs that sit to the right of the given tab in
+    /// the visible strip order (later RunDetail/LiveRun chips).
+    | CloseTabsToRight of RootTab
     | ActivateSubTab of ProjectId * ProjectSubTab
     | RefreshHistory of ProjectId
     | RefreshFlows of ProjectId
@@ -505,6 +511,61 @@ let private scaffoldFlowsToml () : string =
         ""
     ]
 
+/// Tabs that *bulk* close operations may remove: closable run tabs only.
+/// Home and the project root are anchors — bulk ops never touch them.
+let bulkClosable (tab: RootTab) : bool =
+    match tab with
+    | Home | Project _        -> false
+    | RunDetail _ | LiveRun _ -> true
+
+/// Remove `toClose` from the model in one pass: drop the per-tab caches,
+/// recompute the active tab within the current context (keeping the same
+/// strip position where possible), and fall back to Home/no-context if
+/// the current project has no tabs left. Home is never closed. Shared by
+/// CloseTab and the bulk close handlers so they all reassign consistently.
+let closeTabs (toClose: RootTab list) (model: Model) : Model * Cmd<Msg> =
+    let toCloseSet =
+        toClose |> List.filter (function Home -> false | _ -> true) |> Set.ofList
+    if Set.isEmpty toCloseSet then model, Cmd.none
+    else
+        let cleanCaches (m: Model) (t: RootTab) : Model =
+            match t with
+            | Project pid ->
+                { m with
+                    ProjectSubTabs = Map.remove pid m.ProjectSubTabs
+                    ProjectHistory = Map.remove pid m.ProjectHistory
+                    ProjectFlows   = Map.remove pid m.ProjectFlows
+                    ProjectInfo    = Map.remove pid m.ProjectInfo }
+            | RunDetail (pid, rid) -> { m with RunDetails = Map.remove (pid, rid) m.RunDetails }
+            | LiveRun _ | Home     -> m
+        // Pick the next active tab within the strip the user is looking at,
+        // keeping the same slot index where possible (survivors always
+        // include Home). LiveRuns entries are intentionally NOT dropped for
+        // still-Pending tabs — LiveRunCompleted needs them to find the pid.
+        let oldVisible = visibleTabs model
+        let newActive =
+            if not (Set.contains model.ActiveTab toCloseSet) then model.ActiveTab
+            else
+                match List.tryFindIndex ((=) model.ActiveTab) oldVisible with
+                | None -> Home
+                | Some idx ->
+                    let survivors =
+                        oldVisible |> List.filter (fun t -> not (Set.contains t toCloseSet))
+                    if List.isEmpty survivors then Home
+                    elif idx < List.length survivors then List.item idx survivors
+                    else List.last survivors
+        let cleaned = Set.fold cleanCaches model toCloseSet
+        let intermediate =
+            { cleaned with
+                OpenTabs  = model.OpenTabs |> List.filter (fun t -> not (Set.contains t toCloseSet))
+                ActiveTab = newActive }
+        let contextStillOpen =
+            match model.CurrentProject with
+            | Some pid -> openProjects intermediate |> List.contains pid
+            | None     -> false
+        if contextStillOpen then intermediate, Cmd.none
+        else { intermediate with ActiveTab = Home; CurrentProject = None }, Cmd.none
+
 let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | RefreshProjects ->
@@ -540,73 +601,31 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             { model with ActiveTab = tab; CurrentProject = current }, Cmd.none
         else model, Cmd.none
     | CloseTab Home -> model, Cmd.none  // Home is not closable.
-    | CloseTab tab ->
-        let newTabs = List.filter ((<>) tab) model.OpenTabs
-        // Drop per-tab caches when the corresponding tab closes; reopen
-        // reloads from disk anyway, and keeping stale entries would let
-        // the cache grow without bound across a long session.
-        //
-        // LiveRuns entries are intentionally NOT dropped here for tabs
-        // closed while still Pending — LiveRunCompleted needs the entry
-        // to find the project id for the post-run history refresh. It
-        // drops the entry itself when it sees the tab is no longer in
-        // OpenTabs.
-        let subTabs, history, flows, info, details =
-            match tab with
-            | Project pid ->
-                Map.remove pid model.ProjectSubTabs,
-                Map.remove pid model.ProjectHistory,
-                Map.remove pid model.ProjectFlows,
-                Map.remove pid model.ProjectInfo,
-                model.RunDetails
-            | RunDetail (pid, runId) ->
-                model.ProjectSubTabs,
-                model.ProjectHistory,
-                model.ProjectFlows,
-                model.ProjectInfo,
-                Map.remove (pid, runId) model.RunDetails
-            | LiveRun _ | Home ->
-                model.ProjectSubTabs,
-                model.ProjectHistory,
-                model.ProjectFlows,
-                model.ProjectInfo,
-                model.RunDetails
-        // Pick the next active tab *within the current project context*
-        // only — never jump to a sibling project. Neighbor is chosen from
-        // the strip the user is actually looking at (visibleTabs = Home +
-        // the current project's tabs).
-        let oldVisible = visibleTabs model
-        let newActive =
-            if model.ActiveTab <> tab then model.ActiveTab  // closed a background tab
-            else
-                match List.tryFindIndex ((=) tab) oldVisible with
-                | None -> Home
-                | Some idx ->
-                    let afterRemoval = List.filter ((<>) tab) oldVisible
-                    // afterRemoval always contains at least Home.
-                    if idx < List.length afterRemoval then afterRemoval.[idx]
-                    else List.last afterRemoval
-        let intermediate =
-            { model with
-                OpenTabs       = newTabs
-                ActiveTab      = newActive
-                ProjectSubTabs = subTabs
-                ProjectHistory = history
-                ProjectFlows   = flows
-                ProjectInfo    = info
-                RunDetails     = details }
-        // If the just-closed tab was the current project's last tab, drop
-        // the context (→ "No project open") and focus Home, rather than
-        // following newActive into another project. Other projects stay
-        // open and reachable via the selector.
-        let contextStillOpen =
-            match model.CurrentProject with
-            | Some pid -> openProjects intermediate |> List.contains pid
-            | None     -> false
-        if contextStillOpen then
-            intermediate, Cmd.none
-        else
-            { intermediate with ActiveTab = Home; CurrentProject = None }, Cmd.none
+    | CloseTab tab -> closeTabs [ tab ] model
+    | CloseOtherTabs keep ->
+        // Close every other run tab in this context; keep Home, the project
+        // root, and `keep` (which also becomes the active tab).
+        let toClose =
+            visibleTabs model
+            |> List.filter (fun t -> bulkClosable t && t <> keep)
+        let m, cmd = closeTabs toClose model
+        let current =
+            match tabProject m keep with
+            | Some pid -> Some pid
+            | None     -> m.CurrentProject
+        { m with ActiveTab = keep; CurrentProject = current }, cmd
+    | CloseTabsToRight tab ->
+        // Close the closable tabs that come after `tab` in the visible strip.
+        let vis = visibleTabs model
+        match List.tryFindIndex ((=) tab) vis with
+        | None -> model, Cmd.none
+        | Some idx ->
+            let toClose =
+                vis
+                |> List.indexed
+                |> List.choose (fun (i, t) ->
+                    if i > idx && bulkClosable t then Some t else None)
+            closeTabs toClose model
     | ActivateSubTab (pid, sub) ->
         { model with ProjectSubTabs = Map.add pid sub model.ProjectSubTabs }, Cmd.none
     | RefreshHistory pid ->
