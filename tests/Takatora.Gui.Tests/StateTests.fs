@@ -40,7 +40,8 @@ type StateTests() =
           ProjectFlows   = Map.empty
           ProjectInfo    = Map.empty
           RunDetails     = Map.empty
-          LiveRuns       = Map.empty }
+          LiveRuns       = Map.empty
+          AddProject     = None }
 
     let modelWithTabs (active: RootTab) (tabs: RootTab list) : Model =
         { baseModel with OpenTabs = tabs; ActiveTab = active }

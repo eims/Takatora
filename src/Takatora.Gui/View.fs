@@ -188,26 +188,139 @@ let private projectRow
         )
     ] :> _
 
-let private homeBody (model: Model) (dispatch: Msg -> unit) : IView =
-    if List.isEmpty model.Projects then
+let private engineChoiceButton
+        (label: string)
+        (isActive: bool)
+        (onClick: unit -> unit)
+        : IView =
+    Button.create [
+        Button.content label
+        Button.background (if isActive then activeBg else (Brushes.Transparent :> IBrush))
+        Button.foreground (if isActive then (Brushes.White :> IBrush) else dimBrush)
+        Button.borderBrush (if isActive then accent else stripBorder)
+        Button.borderThickness (Thickness 1.0)
+        Button.padding (Thickness(16.0, 6.0))
+        Button.onClick (fun _ -> onClick ())
+    ] :> _
+
+let private addProjectForm (form: AddProjectForm) (dispatch: Msg -> unit) : IView =
+    let fieldLabel (text: string) : IView =
         TextBlock.create [
-            TextBlock.text "No projects registered. Use `takatora project add <path>` from the CLI to register one, then click Refresh."
-            TextBlock.margin (Thickness 16.0)
-            TextBlock.foreground mutedBrush
-            TextBlock.textWrapping TextWrapping.Wrap
+            TextBlock.text text
+            TextBlock.foreground dimBrush
+            TextBlock.fontSize 12.0
+            TextBlock.margin (Thickness(0.0, 6.0, 0.0, 2.0))
         ] :> _
-    else
-        ScrollViewer.create [
-            ScrollViewer.content (
-                StackPanel.create [
-                    StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
-                    StackPanel.spacing 6.0
-                    StackPanel.children [
-                        for p in model.Projects -> projectRow p dispatch
+    Border.create [
+        Border.padding (Thickness 16.0)
+        Border.cornerRadius 4.0
+        Border.background cardBg
+        Border.borderBrush stripBorder
+        Border.borderThickness (Thickness 1.0)
+        Border.margin (Thickness(0.0, 0.0, 0.0, 12.0))
+        Border.child (
+            StackPanel.create [
+                StackPanel.spacing 2.0
+                StackPanel.children [
+                    TextBlock.create [
+                        TextBlock.text "Add a project"
+                        TextBlock.fontSize 16.0
+                        TextBlock.fontWeight FontWeight.SemiBold
+                    ]
+                    TextBlock.create [
+                        TextBlock.text "Creates the folder (if needed) and a starter .ci/project.toml, then registers it."
+                        TextBlock.foreground mutedBrush
+                        TextBlock.fontSize 12.0
+                        TextBlock.textWrapping TextWrapping.Wrap
+                    ]
+
+                    fieldLabel "Directory"
+                    TextBox.create [
+                        TextBox.text form.Dir
+                        TextBox.watermark "C:\\path\\to\\your\\game"
+                        TextBox.onTextChanged (fun s -> dispatch (AddProjectSetDir s))
+                    ]
+
+                    fieldLabel "Project name (optional — defaults to folder name)"
+                    TextBox.create [
+                        TextBox.text form.Name
+                        TextBox.watermark "my-game"
+                        TextBox.onTextChanged (fun s -> dispatch (AddProjectSetName s))
+                    ]
+
+                    fieldLabel "Engine"
+                    StackPanel.create [
+                        StackPanel.orientation Orientation.Horizontal
+                        StackPanel.spacing 8.0
+                        StackPanel.children [
+                            engineChoiceButton "Unreal" (form.Engine = EngineKind.Unreal) (fun () -> dispatch (AddProjectSetEngine EngineKind.Unreal))
+                            engineChoiceButton "Unity"  (form.Engine = EngineKind.Unity)  (fun () -> dispatch (AddProjectSetEngine EngineKind.Unity))
+                            engineChoiceButton "Godot"  (form.Engine = EngineKind.Godot)  (fun () -> dispatch (AddProjectSetEngine EngineKind.Godot))
+                        ]
+                    ]
+
+                    (match form.Error with
+                     | Some msg ->
+                         TextBlock.create [
+                             TextBlock.text msg
+                             TextBlock.foreground (brush "#f15a5a")
+                             TextBlock.textWrapping TextWrapping.Wrap
+                             TextBlock.margin (Thickness(0.0, 8.0, 0.0, 0.0))
+                         ] :> IView
+                     | None ->
+                         TextBlock.create [ TextBlock.text "" ] :> IView)
+
+                    StackPanel.create [
+                        StackPanel.orientation Orientation.Horizontal
+                        StackPanel.spacing 8.0
+                        StackPanel.margin (Thickness(0.0, 12.0, 0.0, 0.0))
+                        StackPanel.children [
+                            Button.create [
+                                Button.content "Create & Register"
+                                Button.background accent
+                                Button.foreground (Brushes.White :> IBrush)
+                                Button.onClick (fun _ -> dispatch SubmitAddProject)
+                            ]
+                            Button.create [
+                                Button.content "Cancel"
+                                Button.onClick (fun _ -> dispatch HideAddProject)
+                            ]
+                        ]
                     ]
                 ]
-            )
-        ] :> _
+            ]
+        )
+    ] :> _
+
+let private homeBody (model: Model) (dispatch: Msg -> unit) : IView =
+    let projectList : IView =
+        if List.isEmpty model.Projects then
+            TextBlock.create [
+                TextBlock.text "No projects registered yet. Click \"Add Project\" above, or use `takatora project add <path>` from the CLI."
+                TextBlock.foreground mutedBrush
+                TextBlock.textWrapping TextWrapping.Wrap
+            ] :> _
+        else
+            StackPanel.create [
+                StackPanel.spacing 6.0
+                StackPanel.children [
+                    for p in model.Projects -> projectRow p dispatch
+                ]
+            ] :> _
+    ScrollViewer.create [
+        ScrollViewer.content (
+            StackPanel.create [
+                StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
+                StackPanel.spacing 6.0
+                StackPanel.children [
+                    (match model.AddProject with
+                     | Some form -> addProjectForm form dispatch
+                     | None      -> StackPanel.create [] :> IView)
+                    projectList
+                ]
+            ]
+        )
+    ] :> _
 
 let private homeView (model: Model) (dispatch: Msg -> unit) : IView =
     DockPanel.create [
@@ -222,6 +335,11 @@ let private homeView (model: Model) (dispatch: Msg -> unit) : IView =
                         TextBlock.text "Projects"
                         TextBlock.fontSize 20.0
                         TextBlock.verticalAlignment VerticalAlignment.Center
+                    ]
+                    Button.create [
+                        Button.content (if model.AddProject.IsSome then "Close" else "Add Project")
+                        Button.onClick (fun _ ->
+                            dispatch (if model.AddProject.IsSome then HideAddProject else ShowAddProject))
                     ]
                     Button.create [
                         Button.content "Refresh"
