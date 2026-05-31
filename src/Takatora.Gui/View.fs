@@ -4,8 +4,11 @@ open System
 open Avalonia
 open Avalonia.Controls
 open Avalonia.Input
+open Avalonia.Interactivity
 open Avalonia.Layout
 open Avalonia.Media
+open Avalonia.Platform.Storage
+open Avalonia.Threading
 open Avalonia.FuncUI.DSL
 open Avalonia.FuncUI.Types
 open Takatora.Core
@@ -203,6 +206,40 @@ let private engineChoiceButton
         Button.onClick (fun _ -> onClick ())
     ] :> _
 
+/// Open a native folder picker and feed the chosen path back into the
+/// Add-Project form. Reaches the StorageProvider through the TopLevel of
+/// whatever control raised the click — the only handle we have to the
+/// window from inside a stateless FuncUI view.
+let private browseForFolder (dispatch: Msg -> unit) (e: RoutedEventArgs) : unit =
+    match e.Source with
+    | :? Visual as v ->
+        match TopLevel.GetTopLevel v with
+        | null -> ()
+        | top ->
+            async {
+                let opts =
+                    FolderPickerOpenOptions(
+                        Title = "Select project folder",
+                        AllowMultiple = false)
+                let! folders =
+                    top.StorageProvider.OpenFolderPickerAsync opts |> Async.AwaitTask
+                match Seq.tryHead folders with
+                | Some folder ->
+                    // Prefer the real filesystem path; some providers only
+                    // expose a non-file URI, in which case we skip rather
+                    // than feed the form a bogus path.
+                    match folder.TryGetLocalPath() with
+                    | null -> ()
+                    | path ->
+                        Dispatcher.UIThread.Post(fun () ->
+                            dispatch (AddProjectSetDir path))
+                | None -> ()
+            }
+            // onClick runs on the UI thread; StartImmediate keeps the
+            // picker's continuation on the captured UI sync-context.
+            |> Async.StartImmediate
+    | _ -> ()
+
 let private addProjectForm (form: AddProjectForm) (dispatch: Msg -> unit) : IView =
     let fieldLabel (text: string) : IView =
         TextBlock.create [
@@ -235,10 +272,20 @@ let private addProjectForm (form: AddProjectForm) (dispatch: Msg -> unit) : IVie
                     ]
 
                     fieldLabel "Directory"
-                    TextBox.create [
-                        TextBox.text form.Dir
-                        TextBox.watermark "C:\\path\\to\\your\\game"
-                        TextBox.onTextChanged (fun s -> dispatch (AddProjectSetDir s))
+                    DockPanel.create [
+                        DockPanel.children [
+                            Button.create [
+                                DockPanel.dock Dock.Right
+                                Button.content "Browse…"
+                                Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                                Button.onClick (browseForFolder dispatch)
+                            ]
+                            TextBox.create [
+                                TextBox.text form.Dir
+                                TextBox.watermark "C:\\path\\to\\your\\game"
+                                TextBox.onTextChanged (fun s -> dispatch (AddProjectSetDir s))
+                            ]
+                        ]
                     ]
 
                     fieldLabel "Project name (optional — defaults to folder name)"
