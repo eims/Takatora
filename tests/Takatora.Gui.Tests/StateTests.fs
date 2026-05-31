@@ -31,6 +31,7 @@ type StateTests() =
           ProjectSubTabs = Map.empty
           ProjectHistory = Map.empty
           ProjectFlows   = Map.empty
+          ProjectInfo    = Map.empty
           RunDetails     = Map.empty }
 
     let modelWithTabs (active: RootTab) (tabs: RootTab list) : Model =
@@ -77,6 +78,7 @@ type StateTests() =
         Assert.True(Map.isEmpty m.ProjectSubTabs)
         Assert.True(Map.isEmpty m.ProjectHistory)
         Assert.True(Map.isEmpty m.ProjectFlows)
+        Assert.True(Map.isEmpty m.ProjectInfo)
         Assert.True(Map.isEmpty m.RunDetails)
 
     // ─── OpenProject ────────────────────────────────────────────────
@@ -130,6 +132,45 @@ type StateTests() =
         match Map.find "tp-bad-flows" m.ProjectFlows with
         | FlowsError _ -> ()
         | other -> Assert.Fail(sprintf "expected FlowsError, got %A" other)
+
+    [<Fact>]
+    member _.``OpenProject populates ProjectInfo with parsed project.toml`` () =
+        let entry = setupProjectDir "tp-info" None
+        let m =
+            { baseModel with Projects = [ entry ] }
+            |> update (OpenProject "tp-info")
+        match Map.tryFind "tp-info" m.ProjectInfo with
+        | Some (ProjectInfoOk proj) ->
+            Assert.Equal("tp-info", proj.Name)
+            Assert.Equal(EngineKind.Godot, proj.Engine.Kind)
+        | other -> Assert.Fail(sprintf "expected ProjectInfoOk, got %A" other)
+
+    [<Fact>]
+    member _.``OpenProject yields ProjectInfoMissing when project.toml absent`` () =
+        // Create a registry entry pointing at a dir with no .ci/project.toml.
+        let pdir = Path.Combine(tmpRoot, "tp-no-info")
+        Directory.CreateDirectory(pdir) |> ignore
+        let entry =
+            { Name = "tp-no-info"; Path = pdir; AddedAt = DateTimeOffset.UtcNow }
+        let m =
+            { baseModel with Projects = [ entry ] }
+            |> update (OpenProject "tp-no-info")
+        Assert.Equal(ProjectInfoMissing, Map.find "tp-no-info" m.ProjectInfo)
+
+    [<Fact>]
+    member _.``OpenProject yields ProjectInfoError when project.toml is malformed`` () =
+        let pdir = Path.Combine(tmpRoot, "tp-bad-info")
+        let ci = Path.Combine(pdir, ".ci")
+        Directory.CreateDirectory(ci) |> ignore
+        File.WriteAllText(Path.Combine(ci, "project.toml"), "garbage [[")
+        let entry =
+            { Name = "tp-bad-info"; Path = pdir; AddedAt = DateTimeOffset.UtcNow }
+        let m =
+            { baseModel with Projects = [ entry ] }
+            |> update (OpenProject "tp-bad-info")
+        match Map.find "tp-bad-info" m.ProjectInfo with
+        | ProjectInfoError _ -> ()
+        | other -> Assert.Fail(sprintf "expected ProjectInfoError, got %A" other)
 
     // ─── ActivateTab ────────────────────────────────────────────────
 
@@ -200,16 +241,19 @@ type StateTests() =
                 ProjectSubTabs = Map.ofList [ "p1", ProjectHistory; "p2", ProjectFlows ]
                 ProjectHistory = Map.ofList [ "p1", []; "p2", [] ]
                 ProjectFlows   = Map.ofList [ "p1", FlowsMissing; "p2", FlowsMissing ]
+                ProjectInfo    = Map.ofList [ "p1", ProjectInfoMissing; "p2", ProjectInfoMissing ]
                 RunDetails     = Map.ofList [ ("p1", "r1"), (fakeEntry "r1", []) ] }
         let m = update (CloseTab (Project "p1")) m0
         // p1's per-project caches gone
         Assert.False(Map.containsKey "p1" m.ProjectSubTabs)
         Assert.False(Map.containsKey "p1" m.ProjectHistory)
         Assert.False(Map.containsKey "p1" m.ProjectFlows)
+        Assert.False(Map.containsKey "p1" m.ProjectInfo)
         // p2 untouched
         Assert.True(Map.containsKey "p2" m.ProjectSubTabs)
         Assert.True(Map.containsKey "p2" m.ProjectHistory)
         Assert.True(Map.containsKey "p2" m.ProjectFlows)
+        Assert.True(Map.containsKey "p2" m.ProjectInfo)
         // RunDetails cache for p1's run is NOT dropped by closing the
         // Project tab — RunDetail tabs own that cache and may still
         // be open after the Project tab is gone.
@@ -283,5 +327,12 @@ type StateTests() =
     member _.``RefreshFlows leaves OpenTabs and ActiveTab untouched`` () =
         let m0 = modelWithTabs (Project "p1") [Home; Project "p1"]
         let m  = update (RefreshFlows "p1") m0
+        Assert.Equal<RootTab list>(m0.OpenTabs, m.OpenTabs)
+        Assert.Equal(m0.ActiveTab, m.ActiveTab)
+
+    [<Fact>]
+    member _.``RefreshProjectInfo leaves OpenTabs and ActiveTab untouched`` () =
+        let m0 = modelWithTabs (Project "p1") [Home; Project "p1"]
+        let m  = update (RefreshProjectInfo "p1") m0
         Assert.Equal<RootTab list>(m0.OpenTabs, m.OpenTabs)
         Assert.Equal(m0.ActiveTab, m.ActiveTab)

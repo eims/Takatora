@@ -63,6 +63,14 @@ let private runShortLabel (runId: string) : string =
     if parts.Length > 0 then sprintf "Run %s" (Array.last parts)
     else sprintf "Run %s" runId
 
+let private sectionHeader (text: string) : IView =
+    TextBlock.create [
+        TextBlock.text text
+        TextBlock.fontSize 14.0
+        TextBlock.fontWeight FontWeight.SemiBold
+        TextBlock.margin (Thickness(0.0, 12.0, 0.0, 4.0))
+    ] :> _
+
 // ─── Root tab strip ─────────────────────────────────────────────────────
 
 let private tabLabel = function
@@ -368,12 +376,134 @@ let private flowsBody
         ]
     ] :> _
 
-let private settingsBody (_p: ProjectRegistration) : IView =
-    TextBlock.create [
-        TextBlock.text "Project settings (engine override, history retention, etc.) land in a later slice."
-        TextBlock.margin (Thickness 16.0)
-        TextBlock.foreground mutedBrush
-        TextBlock.textWrapping TextWrapping.Wrap
+let private engineKindLabel = function
+    | EngineKind.Unreal -> "Unreal Engine"
+    | EngineKind.Unity  -> "Unity"
+    | EngineKind.Godot  -> "Godot"
+
+let private vcsKindLabel = function
+    | VcsKind.Git -> "Git"
+
+let private settingsField (label: string) (value: string) : IView =
+    DockPanel.create [
+        DockPanel.margin (Thickness(0.0, 2.0))
+        DockPanel.children [
+            TextBlock.create [
+                DockPanel.dock Dock.Left
+                TextBlock.text label
+                TextBlock.width 160.0
+                TextBlock.foreground dimBrush
+            ]
+            TextBlock.create [
+                TextBlock.text value
+                TextBlock.textWrapping TextWrapping.Wrap
+            ]
+        ]
+    ] :> _
+
+let private optStr (label: string) (v: string option) : IView =
+    settingsField label (Option.defaultValue "(autodetect)" v)
+
+let private projectInfoBlock (proj: Project) : IView =
+    StackPanel.create [
+        StackPanel.spacing 2.0
+        StackPanel.children [
+            sectionHeader "Engine"
+            settingsField "type"           (engineKindLabel proj.Engine.Kind)
+            optStr        "project_file"   proj.Engine.ProjectFile
+            optStr        "engine_path"    proj.Engine.EnginePath
+            optStr        "engine_version" proj.Engine.EngineVersion
+            optStr        "executable"     proj.Engine.Executable
+
+            sectionHeader "VCS"
+            (match proj.Vcs with
+             | Some vcs ->
+                 StackPanel.create [
+                     StackPanel.children [
+                         settingsField "type" (vcsKindLabel vcs.Kind)
+                         settingsField "lfs"  (if vcs.Lfs then "enabled" else "disabled")
+                     ]
+                 ] :> IView
+             | None ->
+                 TextBlock.create [
+                     TextBlock.text "(not configured)"
+                     TextBlock.foreground mutedBrush
+                 ] :> IView)
+
+            sectionHeader "History retention"
+            settingsField "keep_last_n_runs" (string proj.History.KeepLastNRuns)
+
+            sectionHeader "Working dir"
+            settingsField "working_dir" proj.WorkingDir
+        ]
+    ] :> _
+
+let private settingsBody
+        (pid: ProjectId)
+        (load: ProjectInfoLoad)
+        (dispatch: Msg -> unit)
+        : IView =
+    let header =
+        StackPanel.create [
+            DockPanel.dock Dock.Top
+            StackPanel.orientation Orientation.Horizontal
+            StackPanel.margin (Thickness(16.0, 12.0))
+            StackPanel.spacing 12.0
+            StackPanel.children [
+                TextBlock.create [
+                    TextBlock.text
+                        (match load with
+                         | ProjectInfoOk _      -> "From .ci/project.toml — read-only in this slice"
+                         | ProjectInfoMissing   -> "(no .ci/project.toml)"
+                         | ProjectInfoError _   -> "(project.toml error)")
+                    TextBlock.foreground mutedBrush
+                    TextBlock.verticalAlignment VerticalAlignment.Center
+                ]
+                Button.create [
+                    Button.content "Refresh"
+                    Button.onClick (fun _ -> dispatch (RefreshProjectInfo pid))
+                ]
+            ]
+        ]
+    let body : IView =
+        match load with
+        | ProjectInfoMissing ->
+            TextBlock.create [
+                TextBlock.text "No `.ci/project.toml` under this project's working directory. The registry entry expects one — has it been moved or deleted?"
+                TextBlock.margin (Thickness 16.0)
+                TextBlock.foreground mutedBrush
+                TextBlock.textWrapping TextWrapping.Wrap
+            ] :> _
+        | ProjectInfoError msg ->
+            StackPanel.create [
+                StackPanel.margin (Thickness 16.0)
+                StackPanel.spacing 6.0
+                StackPanel.children [
+                    TextBlock.create [
+                        TextBlock.text "Could not parse `.ci/project.toml`:"
+                        TextBlock.foreground (brush "#f15a5a")
+                    ]
+                    TextBlock.create [
+                        TextBlock.text msg
+                        TextBlock.foreground dimBrush
+                        TextBlock.textWrapping TextWrapping.Wrap
+                    ]
+                ]
+            ] :> _
+        | ProjectInfoOk proj ->
+            ScrollViewer.create [
+                ScrollViewer.content (
+                    StackPanel.create [
+                        StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
+                        StackPanel.children [ projectInfoBlock proj ]
+                    ]
+                )
+            ] :> _
+    DockPanel.create [
+        DockPanel.children [
+            header
+            body
+        ]
     ] :> _
 
 let private historyHeaderRow : IView list =
@@ -553,7 +683,11 @@ let private projectView
                          Map.tryFind pid model.ProjectHistory
                          |> Option.defaultValue []
                      historyBody pid entries dispatch
-                 | ProjectSettings -> settingsBody p)
+                 | ProjectSettings ->
+                     let load =
+                         Map.tryFind pid model.ProjectInfo
+                         |> Option.defaultValue ProjectInfoMissing
+                     settingsBody pid load dispatch)
             ]
         ] :> _
 
@@ -606,14 +740,6 @@ let private stepLine (s: StepSummary) : IView =
                 TextBlock.textWrapping TextWrapping.Wrap
             ]
         ]
-    ] :> _
-
-let private sectionHeader (text: string) : IView =
-    TextBlock.create [
-        TextBlock.text text
-        TextBlock.fontSize 14.0
-        TextBlock.fontWeight FontWeight.SemiBold
-        TextBlock.margin (Thickness(0.0, 12.0, 0.0, 4.0))
     ] :> _
 
 let private runDetailBody
