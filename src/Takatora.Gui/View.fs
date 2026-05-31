@@ -1049,75 +1049,167 @@ let private liveRunOutcomeBlock
         ]
     ] :> _
 
+let private liveStepIcon = function
+    | StepRunning   -> "▶"
+    | StepOk        -> "✓"
+    | StepFailed    -> "✗"
+    | StepSkipped   -> "·"
+    | StepCancelled -> "⊘"
+
+let private liveStepBrush = function
+    | StepRunning   -> accent
+    | StepOk        -> brush "#4ec97a"
+    | StepFailed    -> brush "#f15a5a"
+    | StepSkipped   -> mutedBrush
+    | StepCancelled -> mutedBrush
+
+let private liveStepLine (step: LiveStep) : IView =
+    StackPanel.create [
+        StackPanel.orientation Orientation.Horizontal
+        StackPanel.spacing 8.0
+        StackPanel.margin (Thickness(0.0, 2.0))
+        StackPanel.children [
+            TextBlock.create [
+                TextBlock.text (liveStepIcon step.Status)
+                TextBlock.foreground (liveStepBrush step.Status)
+                TextBlock.width 20.0
+            ]
+            TextBlock.create [
+                TextBlock.text step.Id
+                TextBlock.width 180.0
+            ]
+            TextBlock.create [
+                TextBlock.text step.Type
+                TextBlock.foreground mutedBrush
+                TextBlock.width 160.0
+            ]
+            TextBlock.create [
+                TextBlock.text
+                    (match step.Status with
+                     | StepRunning -> "running…"
+                     | _           -> formatDuration step.DurationSec)
+                TextBlock.foreground mutedBrush
+            ]
+        ]
+    ] :> _
+
+let private liveStepsSection (steps: LiveStep list) : IView =
+    StackPanel.create [
+        StackPanel.children [
+            sectionHeader "Steps"
+            StackPanel.create [
+                StackPanel.children [ for st in steps -> liveStepLine st ]
+            ]
+        ]
+    ] :> _
+
+let private liveLogSection (logTail: string list) : IView =
+    StackPanel.create [
+        StackPanel.children [
+            sectionHeader "Output (tail)"
+            Border.create [
+                Border.background (brush "#161616")
+                Border.borderBrush stripBorder
+                Border.borderThickness (Thickness 1.0)
+                Border.cornerRadius 4.0
+                Border.padding (Thickness 8.0)
+                Border.maxHeight 280.0
+                Border.child (
+                    ScrollViewer.create [
+                        ScrollViewer.content (
+                            TextBlock.create [
+                                TextBlock.text (String.concat "\n" logTail)
+                                TextBlock.fontFamily (FontFamily "Consolas, Menlo, monospace")
+                                TextBlock.fontSize 12.0
+                                TextBlock.foreground dimBrush
+                                TextBlock.textWrapping TextWrapping.NoWrap
+                            ]
+                        )
+                    ]
+                )
+            ]
+        ]
+    ] :> _
+
 let private liveRunBody
         (s: LiveRunState)
         (dispatch: Msg -> unit)
         : IView =
     let started = s.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
-    StackPanel.create [
-        StackPanel.margin (Thickness 16.0)
-        StackPanel.spacing 6.0
-        StackPanel.children [
+    let phaseBlock : IView =
+        match s.Phase with
+        | LivePending ->
             TextBlock.create [
-                TextBlock.text s.ProjectId
-                TextBlock.foreground dimBrush
-                TextBlock.fontSize 12.0
-            ]
+                TextBlock.text "Running on a background thread. Steps and output below update live as the run progresses."
+                TextBlock.foreground mutedBrush
+                TextBlock.margin (Thickness(0.0, 8.0, 0.0, 0.0))
+                TextBlock.textWrapping TextWrapping.Wrap
+            ] :> IView
+        | LiveCompleted (Ok outcome) -> liveRunOutcomeBlock outcome dispatch s.ProjectId
+        | LiveCompleted (Error failure) ->
             StackPanel.create [
-                StackPanel.orientation Orientation.Horizontal
-                StackPanel.spacing 12.0
+                StackPanel.spacing 4.0
                 StackPanel.children [
                     TextBlock.create [
-                        TextBlock.text (liveRunIcon s.Phase)
-                        TextBlock.fontSize 24.0
-                        TextBlock.foreground
-                            (match s.Phase with
-                             | LivePending -> accent
-                             | LiveCompleted (Ok o) ->
-                                 (match o.Result with
-                                  | RunResult.Success   -> brush "#4ec97a"
-                                  | RunResult.Failure   -> brush "#f15a5a"
-                                  | RunResult.Cancelled -> mutedBrush)
-                             | LiveCompleted (Error _) -> brush "#f15a5a")
+                        TextBlock.text "Failed before producing an outcome:"
+                        TextBlock.foreground (brush "#f15a5a")
+                        TextBlock.fontSize 16.0
                     ]
                     TextBlock.create [
-                        TextBlock.text s.FlowId
-                        TextBlock.fontSize 22.0
-                        TextBlock.fontWeight FontWeight.SemiBold
-                        TextBlock.verticalAlignment VerticalAlignment.Center
+                        TextBlock.text (failureMessage failure)
+                        TextBlock.foreground dimBrush
+                        TextBlock.textWrapping TextWrapping.Wrap
                     ]
                 ]
+            ] :> IView
+    ScrollViewer.create [
+        ScrollViewer.content (
+            StackPanel.create [
+                StackPanel.margin (Thickness 16.0)
+                StackPanel.spacing 6.0
+                StackPanel.children [
+                    TextBlock.create [
+                        TextBlock.text s.ProjectId
+                        TextBlock.foreground dimBrush
+                        TextBlock.fontSize 12.0
+                    ]
+                    StackPanel.create [
+                        StackPanel.orientation Orientation.Horizontal
+                        StackPanel.spacing 12.0
+                        StackPanel.children [
+                            TextBlock.create [
+                                TextBlock.text (liveRunIcon s.Phase)
+                                TextBlock.fontSize 24.0
+                                TextBlock.foreground
+                                    (match s.Phase with
+                                     | LivePending -> accent
+                                     | LiveCompleted (Ok o) ->
+                                         (match o.Result with
+                                          | RunResult.Success   -> brush "#4ec97a"
+                                          | RunResult.Failure   -> brush "#f15a5a"
+                                          | RunResult.Cancelled -> mutedBrush)
+                                     | LiveCompleted (Error _) -> brush "#f15a5a")
+                            ]
+                            TextBlock.create [
+                                TextBlock.text s.FlowId
+                                TextBlock.fontSize 22.0
+                                TextBlock.fontWeight FontWeight.SemiBold
+                                TextBlock.verticalAlignment VerticalAlignment.Center
+                            ]
+                        ]
+                    ]
+                    TextBlock.create [
+                        TextBlock.text (sprintf "Started: %s" started)
+                        TextBlock.foreground dimBrush
+                    ]
+                    phaseBlock
+                    if not (List.isEmpty s.Progress.Steps) then
+                        liveStepsSection s.Progress.Steps
+                    if not (List.isEmpty s.Progress.LogTail) then
+                        liveLogSection s.Progress.LogTail
+                ]
             ]
-            TextBlock.create [
-                TextBlock.text (sprintf "Started: %s" started)
-                TextBlock.foreground dimBrush
-            ]
-            (match s.Phase with
-             | LivePending ->
-                 TextBlock.create [
-                     TextBlock.text "Running on a background thread. Live stdout / step progression is not streamed yet — this tab will update when the run finishes."
-                     TextBlock.foreground mutedBrush
-                     TextBlock.margin (Thickness(0.0, 8.0, 0.0, 0.0))
-                     TextBlock.textWrapping TextWrapping.Wrap
-                 ] :> IView
-             | LiveCompleted (Ok outcome) -> liveRunOutcomeBlock outcome dispatch s.ProjectId
-             | LiveCompleted (Error failure) ->
-                 StackPanel.create [
-                     StackPanel.spacing 4.0
-                     StackPanel.children [
-                         TextBlock.create [
-                             TextBlock.text "Failed before producing an outcome:"
-                             TextBlock.foreground (brush "#f15a5a")
-                             TextBlock.fontSize 16.0
-                         ]
-                         TextBlock.create [
-                             TextBlock.text (failureMessage failure)
-                             TextBlock.foreground dimBrush
-                             TextBlock.textWrapping TextWrapping.Wrap
-                         ]
-                     ]
-                 ] :> IView)
-        ]
+        )
     ] :> _
 
 let private liveRunView

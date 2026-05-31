@@ -2,6 +2,7 @@ module Takatora.Gui.State
 
 open System
 open System.IO
+open System.Text.Json
 open Elmish
 open Avalonia.Threading
 open Takatora.Core
@@ -29,11 +30,46 @@ type LiveRunPhase =
     | LivePending
     | LiveCompleted of Result<RunOutcome, RunFailure>
 
+/// Status of a single step as observed live from events.ndjson. Distinct
+/// from Core.StepStatus because mid-run we have a "still running" state
+/// the persisted record never has.
+type LiveStepStatus =
+    | StepRunning
+    | StepOk
+    | StepFailed
+    | StepSkipped
+    | StepCancelled
+
+type LiveStep = {
+    Id: string
+    Type: string
+    Status: LiveStepStatus
+    DurationSec: float
+}
+
+/// A snapshot parsed from a run's events.ndjson + log.txt by the live
+/// poller. Replaces the LiveRunState's previous snapshot wholesale on
+/// each tick (cheap — these files are tiny).
+type LiveProgress = {
+    /// Discovered run dir, once the poller has matched it. None until then.
+    RunDir: string option
+    Steps: LiveStep list
+    /// Tail of log.txt (most recent lines, capped).
+    LogTail: string list
+    /// True once a `run.end` event has been observed.
+    Ended: bool
+}
+
+module LiveProgress =
+    let empty = { RunDir = None; Steps = []; LogTail = []; Ended = false }
+
 type LiveRunState = {
     ProjectId: ProjectId
     FlowId: string
     StartedAt: DateTimeOffset
     Phase: LiveRunPhase
+    /// Latest live snapshot from the poller (steps + log tail).
+    Progress: LiveProgress
 }
 
 /// Root tab variants. Home + Project + RunDetail + LiveRun are wired;
@@ -122,6 +158,7 @@ type Msg =
     | OpenRunDetail of ProjectId * RunId
     | RunFlow of ProjectId * flowId:string
     | LiveRunCompleted of LiveRunKey * Result<RunOutcome, RunFailure>
+    | LiveRunProgress  of LiveRunKey * LiveProgress
     | LiveRunFailed    of LiveRunKey * exn
     // Add-Project wizard
     | ShowAddProject
@@ -216,6 +253,105 @@ let private sdkAssemblyPath () =
 
 let private builtinTasksDir () =
     Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+
+// ─── Live run tailing ───────────────────────────────────────────────
+//
+// The runner writes events.ndjson + log.txt under
+// `<root>/.ci/runs/<runId>/` while it executes (each step appends as it
+// goes). The GUI never learns the runId — Run.execute generates it
+// internally — so we detect the new run dir by diffing `.ci/runs/`
+// against a snapshot captured the instant before the run starts, then
+// poll that dir on a background thread, marshaling snapshots to the UI.
+
+/// Run-dir names present under `<root>/.ci/runs/` right now. Captured at
+/// launch so the poller can spot the one this run creates.
+let private existingRunDirs (root: string) : Set<string> =
+    let runsDir = Path.Combine(root, ".ci", "runs")
+    if Directory.Exists runsDir then
+        Directory.GetDirectories runsDir
+        |> Array.map Path.GetFileName
+        |> Set.ofArray
+    else Set.empty
+
+/// The newest run dir under `<root>/.ci/runs/` not present in `before`.
+/// Run ids sort lexicographically by time, so the max name is the latest.
+let private findNewRunDir (root: string) (before: Set<string>) : string option =
+    let runsDir = Path.Combine(root, ".ci", "runs")
+    if not (Directory.Exists runsDir) then None
+    else
+        Directory.GetDirectories runsDir
+        |> Array.map Path.GetFileName
+        |> Array.filter (fun n -> not (Set.contains n before))
+        |> Array.sortDescending
+        |> Array.tryHead
+        |> Option.map (fun n -> Path.Combine(runsDir, n))
+
+/// Read all non-empty lines from a file the runner may be appending to
+/// concurrently. FileShare.ReadWrite avoids fighting the writer's lock.
+let private readSharedLines (path: string) : string list =
+    try
+        if not (File.Exists path) then []
+        else
+            use fs =
+                new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)
+            use sr = new StreamReader(fs)
+            sr.ReadToEnd().Split('\n')
+            |> Array.choose (fun l ->
+                let t = l.TrimEnd('\r')
+                if t.Trim() = "" then None else Some t)
+            |> Array.toList
+    with _ -> []
+
+let private maxLogTail = 300
+
+/// Parse a run dir's events.ndjson + log.txt into a LiveProgress
+/// snapshot. Tolerant of partial/garbled trailing lines (the writer may
+/// be mid-append) — bad lines are skipped rather than failing the tick.
+let private readProgress (runDir: string) : LiveProgress =
+    let events = readSharedLines (Path.Combine(runDir, "events.ndjson"))
+    // Ordered, de-duplicated step list keyed by step_id.
+    let steps = System.Collections.Generic.List<LiveStep>()
+    let indexOf (id: string) =
+        let mutable found = -1
+        for i in 0 .. steps.Count - 1 do
+            if steps.[i].Id = id then found <- i
+        found
+    let upsert (id: string) (typ: string) (status: LiveStepStatus) (dur: float) =
+        let i = indexOf id
+        let step = { Id = id; Type = typ; Status = status; DurationSec = dur }
+        if i < 0 then steps.Add step else steps.[i] <- step
+    let mutable ended = false
+    for line in events do
+        try
+            use doc = JsonDocument.Parse(line)
+            let root = doc.RootElement
+            let str (name: string) =
+                match root.TryGetProperty name with
+                | true, v when v.ValueKind = JsonValueKind.String -> v.GetString()
+                | _ -> ""
+            let num (name: string) =
+                match root.TryGetProperty name with
+                | true, v when v.ValueKind = JsonValueKind.Number -> v.GetDouble()
+                | _ -> 0.0
+            match str "kind" with
+            | "step.start" -> upsert (str "step_id") (str "type") StepRunning 0.0
+            | "step.end" ->
+                let status =
+                    match str "status" with
+                    | "success"   -> StepOk
+                    | "cancelled" -> StepCancelled
+                    | _           -> StepFailed
+                upsert (str "step_id") (str "type") status (num "duration_sec")
+            | "step.skip" -> upsert (str "step_id") (str "type") StepSkipped 0.0
+            | "run.end"   -> ended <- true
+            | _ -> ()
+        with _ -> ()
+    let logTail =
+        let all = readSharedLines (Path.Combine(runDir, "log.txt"))
+        if List.length all > maxLogTail then
+            all |> List.skip (List.length all - maxLogTail)
+        else all
+    { RunDir = Some runDir; Steps = List.ofSeq steps; LogTail = logTail; Ended = ended }
 
 /// Same shape as `loadFlowsFor` but for `.ci/project.toml`.
 let private loadProjectInfoFor
@@ -393,7 +529,11 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 FlowId    = flowId
                 StartedAt = DateTimeOffset.UtcNow
                 Phase     = LivePending
+                Progress  = LiveProgress.empty
             }
+            // Snapshot the runs dir before launching so the poller can
+            // identify the dir this run is about to create.
+            let runsBefore = existingRunDirs root
             let opts : Run.Options = {
                 WorkingDir       = root
                 FlowId           = flowId
@@ -413,7 +553,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             // rebuild the view off the UI thread and crash the whole
             // app. Dispatcher.UIThread.Post guarantees the dispatch —
             // and thus the re-render — happens on the UI thread.
-            let cmd : Cmd<Msg> =
+            let runCmd : Cmd<Msg> =
                 [ fun dispatch ->
                     async {
                         do! Async.SwitchToThreadPool ()
@@ -423,11 +563,39 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                         Dispatcher.UIThread.Post(fun () -> dispatch msg)
                     }
                     |> Async.Start ]
+            // Independent tail poller. Reads the run's events/log files
+            // (which Run.execute appends to live) every ~300ms and posts
+            // a LiveRunProgress snapshot to the UI thread, until it sees
+            // a run.end event or hits the safety cap. Runs concurrently
+            // with the executor above; both are UI-thread-safe via Post.
+            let pollCmd : Cmd<Msg> =
+                [ fun dispatch ->
+                    async {
+                        do! Async.SwitchToThreadPool ()
+                        let mutable runDir = None
+                        let mutable finished = false
+                        let mutable ticks = 0
+                        // Cap ~ 1 hour at 300ms cadence; a stuck run won't
+                        // poll forever if run.end is somehow never written.
+                        while not finished && ticks < 12000 do
+                            ticks <- ticks + 1
+                            if Option.isNone runDir then
+                                runDir <- findNewRunDir root runsBefore
+                            match runDir with
+                            | Some dir ->
+                                let progress = readProgress dir
+                                Dispatcher.UIThread.Post(fun () ->
+                                    dispatch (LiveRunProgress (key, progress)))
+                                if progress.Ended then finished <- true
+                            | None -> ()
+                            if not finished then do! Async.Sleep 300
+                    }
+                    |> Async.Start ]
             { model with
                 OpenTabs  = moveOrAppend tab model.OpenTabs
                 ActiveTab = tab
                 LiveRuns  = Map.add key liveState model.LiveRuns },
-            cmd
+            Cmd.batch [ runCmd; pollCmd ]
     | LiveRunCompleted (key, result) ->
         match Map.tryFind key model.LiveRuns with
         | None -> model, Cmd.none  // should not happen; guard.
@@ -450,6 +618,18 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 LiveRuns       = newLiveRuns
                 ProjectHistory = newHistory },
             Cmd.none
+    | LiveRunProgress (key, progress) ->
+        // Merge a poller snapshot into the live state's Progress. Never
+        // touches Phase, so it can't regress a Completed run back to
+        // Pending; updating Progress even after completion just ensures
+        // the final step states land if the last poller tick races the
+        // executor's LiveRunCompleted. No-op if the tab is gone.
+        match Map.tryFind key model.LiveRuns with
+        | Some state ->
+            { model with
+                LiveRuns = Map.add key { state with Progress = progress } model.LiveRuns },
+            Cmd.none
+        | None -> model, Cmd.none
     | ShowAddProject ->
         { model with
             AddProject =
