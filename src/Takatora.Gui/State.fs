@@ -70,6 +70,10 @@ type LiveRunState = {
     Phase: LiveRunPhase
     /// Latest live snapshot from the poller (steps + log tail).
     Progress: LiveProgress
+    /// Set once the user clicks Cancel (we've written the CANCEL flag).
+    /// Drives the button's "Cancelling…" / disabled state; the run keeps
+    /// going until the runner observes the flag and tears down.
+    CancelRequested: bool
 }
 
 /// Root tab variants. Home + Project + RunDetail + LiveRun are wired;
@@ -160,6 +164,7 @@ type Msg =
     | LiveRunCompleted of LiveRunKey * Result<RunOutcome, RunFailure>
     | LiveRunProgress  of LiveRunKey * LiveProgress
     | LiveRunFailed    of LiveRunKey * exn
+    | CancelLiveRun    of LiveRunKey
     // Add-Project wizard
     | ShowAddProject
     | HideAddProject
@@ -530,6 +535,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 StartedAt = DateTimeOffset.UtcNow
                 Phase     = LivePending
                 Progress  = LiveProgress.empty
+                CancelRequested = false
             }
             // Snapshot the runs dir before launching so the poller can
             // identify the dir this run is about to create.
@@ -630,6 +636,22 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 LiveRuns = Map.add key { state with Progress = progress } model.LiveRuns },
             Cmd.none
         | None -> model, Cmd.none
+    | CancelLiveRun key ->
+        // Drop a CANCEL flag in the run dir; the runner polls for it
+        // (200ms) and kills the active step's process tree, ending the
+        // run as Cancelled. Only actionable once the poller has matched
+        // the run dir and while the run is still Pending.
+        match Map.tryFind key model.LiveRuns with
+        | Some state when (match state.Phase with LivePending -> true | _ -> false) ->
+            match state.Progress.RunDir with
+            | Some dir ->
+                try File.WriteAllText(Path.Combine(dir, "CANCEL"), "") with _ -> ()
+                { model with
+                    LiveRuns =
+                        Map.add key { state with CancelRequested = true } model.LiveRuns },
+                Cmd.none
+            | None -> model, Cmd.none
+        | _ -> model, Cmd.none
     | ShowAddProject ->
         { model with
             AddProject =

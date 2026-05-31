@@ -1179,6 +1179,7 @@ let private liveLogSection (logTail: string list) : IView =
     ] :> _
 
 let private liveRunBody
+        (key: LiveRunKey)
         (s: LiveRunState)
         (dispatch: Msg -> unit)
         : IView =
@@ -1186,11 +1187,26 @@ let private liveRunBody
     let phaseBlock : IView =
         match s.Phase with
         | LivePending ->
-            TextBlock.create [
-                TextBlock.text "Running on a background thread. Steps and output below update live as the run progresses."
-                TextBlock.foreground mutedBrush
-                TextBlock.margin (Thickness(0.0, 8.0, 0.0, 0.0))
-                TextBlock.textWrapping TextWrapping.Wrap
+            StackPanel.create [
+                StackPanel.spacing 8.0
+                StackPanel.margin (Thickness(0.0, 8.0, 0.0, 0.0))
+                StackPanel.children [
+                    TextBlock.create [
+                        TextBlock.text "Running on a background thread. Steps and output below update live as the run progresses."
+                        TextBlock.foreground mutedBrush
+                        TextBlock.textWrapping TextWrapping.Wrap
+                    ]
+                    Button.create [
+                        Button.content (if s.CancelRequested then "Cancelling…" else "Cancel")
+                        Button.horizontalAlignment HorizontalAlignment.Left
+                        // Only enabled once the poller has matched the run
+                        // dir (so we know where to drop CANCEL) and not yet
+                        // requested.
+                        Button.isEnabled
+                            (not s.CancelRequested && Option.isSome s.Progress.RunDir)
+                        Button.onClick (fun _ -> dispatch (CancelLiveRun key))
+                    ]
+                ]
             ] :> IView
         | LiveCompleted (Ok outcome) -> liveRunOutcomeBlock outcome dispatch s.ProjectId
         | LiveCompleted (Error failure) ->
@@ -1265,7 +1281,7 @@ let private liveRunView
         (dispatch: Msg -> unit)
         : IView =
     match Map.tryFind key model.LiveRuns with
-    | Some s -> liveRunBody s dispatch
+    | Some s -> liveRunBody key s dispatch
     | None ->
         TextBlock.create [
             TextBlock.text "(LiveRun state unavailable — the run completed and its tab state was cleaned up.)"
