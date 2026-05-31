@@ -148,6 +148,12 @@ type Model = {
     /// Add-Project wizard state. None = panel collapsed; Some = open with
     /// in-progress field values. Lives on the Home tab.
     AddProject: AddProjectForm option
+    /// The project whose tabs the root strip is currently scoped to.
+    /// Sticky: opening/activating a project's tab sets it, but clicking
+    /// Home does NOT clear it (Home is a global overlay, not a context),
+    /// so the project's tabs stay in the strip. None until the first
+    /// project is opened.
+    CurrentProject: ProjectId option
 }
 
 type Msg =
@@ -183,38 +189,63 @@ let init () : Model * Cmd<Msg> =
       ProjectInfo    = Map.empty
       RunDetails     = Map.empty
       LiveRuns       = Map.empty
-      AddProject     = None },
+      AddProject     = None
+      CurrentProject = None },
     Cmd.none
 
 let private moveOrAppend (tab: RootTab) (tabs: RootTab list) : RootTab list =
     if List.contains tab tabs then tabs else tabs @ [ tab ]
-
-/// Compute the post-close tab list plus the next active tab. When the
-/// closed tab was the active one, prefer the tab that was to its right
-/// (browser convention); fall back to the previous tab, finally Home.
-let private closeAndPickActive
-        (target: RootTab) (active: RootTab) (tabs: RootTab list)
-        : RootTab list * RootTab =
-    if target = Home then tabs, active
-    else
-        match List.tryFindIndex ((=) target) tabs with
-        | None -> tabs, active
-        | Some idx ->
-            let newTabs = List.filter ((<>) target) tabs
-            let newActive =
-                if active <> target then active
-                elif idx < List.length newTabs then newTabs.[idx]
-                else
-                    match newTabs with
-                    | [] -> Home
-                    | _  -> List.last newTabs
-            newTabs, newActive
 
 /// Look up the active sub-tab for a project, defaulting to Flows. Used
 /// by views; not used by `update` (which writes the map directly).
 let projectSubTab (pid: ProjectId) (model: Model) : ProjectSubTab =
     Map.tryFind pid model.ProjectSubTabs
     |> Option.defaultValue ProjectFlows
+
+// ─── Per-project tab scoping ─────────────────────────────────────────
+// The root strip used to show every open tab in one flat row, mixing
+// projects together. These helpers let the view scope the strip to the
+// "current project" (the one owning the active tab) so the user only
+// ever sees one project's tabs at a time. None of this lives in the
+// model — it's all derived from OpenTabs/ActiveTab, so there's no extra
+// state to keep in sync.
+
+/// The project a tab belongs to, if any. Home is global (None). A
+/// LiveRun tab's project is read from its live state; an entry always
+/// exists while the tab is open (LiveRunCompleted only drops the entry
+/// when the tab is also closed), so this is reliable for open tabs.
+let tabProject (model: Model) (tab: RootTab) : ProjectId option =
+    match tab with
+    | Home               -> None
+    | Project pid        -> Some pid
+    | RunDetail (pid, _) -> Some pid
+    | LiveRun key ->
+        Map.tryFind key model.LiveRuns
+        |> Option.map (fun s -> s.ProjectId)
+
+/// The project context the strip is scoped to. Sticky model state, not
+/// derived from the active tab — so clicking Home keeps the project's
+/// tabs visible rather than wiping the strip.
+let currentProject (model: Model) : ProjectId option =
+    model.CurrentProject
+
+/// Distinct open project contexts, in first-seen order across OpenTabs.
+/// Drives the project selector's choice list.
+let openProjects (model: Model) : ProjectId list =
+    model.OpenTabs
+    |> List.choose (tabProject model)
+    |> List.distinct
+
+/// Tabs the strip should show: Home always (it's a global overlay),
+/// plus the tabs belonging to the current project context. With no
+/// context (CurrentProject = None) only Home shows.
+let visibleTabs (model: Model) : RootTab list =
+    let ctx = model.CurrentProject
+    model.OpenTabs
+    |> List.filter (fun tab ->
+        match tab with
+        | Home -> true
+        | _    -> tabProject model tab = ctx)
 
 let private projectRoot
         (pid: ProjectId)
@@ -453,16 +484,25 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         { model with
             OpenTabs       = moveOrAppend tab model.OpenTabs
             ActiveTab      = tab
+            CurrentProject = Some pid
             ProjectHistory = history
             ProjectFlows   = flows
             ProjectInfo    = info },
         Cmd.none
     | ActivateTab tab ->
         if List.contains tab model.OpenTabs then
-            { model with ActiveTab = tab }, Cmd.none
+            // Activating a project-owning tab switches the context to it;
+            // activating Home leaves CurrentProject sticky so the strip
+            // keeps showing the project's tabs.
+            let current =
+                match tabProject model tab with
+                | Some pid -> Some pid
+                | None     -> model.CurrentProject
+            { model with ActiveTab = tab; CurrentProject = current }, Cmd.none
         else model, Cmd.none
+    | CloseTab Home -> model, Cmd.none  // Home is not closable.
     | CloseTab tab ->
-        let newTabs, newActive = closeAndPickActive tab model.ActiveTab model.OpenTabs
+        let newTabs = List.filter ((<>) tab) model.OpenTabs
         // Drop per-tab caches when the corresponding tab closes; reopen
         // reloads from disk anyway, and keeping stale entries would let
         // the cache grow without bound across a long session.
@@ -492,15 +532,42 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 model.ProjectFlows,
                 model.ProjectInfo,
                 model.RunDetails
-        { model with
-            OpenTabs       = newTabs
-            ActiveTab      = newActive
-            ProjectSubTabs = subTabs
-            ProjectHistory = history
-            ProjectFlows   = flows
-            ProjectInfo    = info
-            RunDetails     = details },
-        Cmd.none
+        // Pick the next active tab *within the current project context*
+        // only — never jump to a sibling project. Neighbor is chosen from
+        // the strip the user is actually looking at (visibleTabs = Home +
+        // the current project's tabs).
+        let oldVisible = visibleTabs model
+        let newActive =
+            if model.ActiveTab <> tab then model.ActiveTab  // closed a background tab
+            else
+                match List.tryFindIndex ((=) tab) oldVisible with
+                | None -> Home
+                | Some idx ->
+                    let afterRemoval = List.filter ((<>) tab) oldVisible
+                    // afterRemoval always contains at least Home.
+                    if idx < List.length afterRemoval then afterRemoval.[idx]
+                    else List.last afterRemoval
+        let intermediate =
+            { model with
+                OpenTabs       = newTabs
+                ActiveTab      = newActive
+                ProjectSubTabs = subTabs
+                ProjectHistory = history
+                ProjectFlows   = flows
+                ProjectInfo    = info
+                RunDetails     = details }
+        // If the just-closed tab was the current project's last tab, drop
+        // the context (→ "No project open") and focus Home, rather than
+        // following newActive into another project. Other projects stay
+        // open and reachable via the selector.
+        let contextStillOpen =
+            match model.CurrentProject with
+            | Some pid -> openProjects intermediate |> List.contains pid
+            | None     -> false
+        if contextStillOpen then
+            intermediate, Cmd.none
+        else
+            { intermediate with ActiveTab = Home; CurrentProject = None }, Cmd.none
     | ActivateSubTab (pid, sub) ->
         { model with ProjectSubTabs = Map.add pid sub model.ProjectSubTabs }, Cmd.none
     | RefreshHistory pid ->
@@ -528,9 +595,10 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     | Some data -> Map.add key data model.RunDetails
                     | None      -> model.RunDetails
         { model with
-            OpenTabs   = moveOrAppend tab model.OpenTabs
-            ActiveTab  = tab
-            RunDetails = details },
+            OpenTabs       = moveOrAppend tab model.OpenTabs
+            ActiveTab      = tab
+            CurrentProject = Some pid
+            RunDetails     = details },
         Cmd.none
     | RunFlow (pid, flowId) ->
         // Async in-process run: spin up a LiveRun tab immediately so
@@ -612,9 +680,10 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     }
                     |> Async.Start ]
             { model with
-                OpenTabs  = moveOrAppend tab model.OpenTabs
-                ActiveTab = tab
-                LiveRuns  = Map.add key liveState model.LiveRuns },
+                OpenTabs       = moveOrAppend tab model.OpenTabs
+                ActiveTab      = tab
+                CurrentProject = Some pid
+                LiveRuns       = Map.add key liveState model.LiveRuns },
             Cmd.batch [ runCmd; pollCmd ]
     | LiveRunCompleted (key, result) ->
         match Map.tryFind key model.LiveRuns with

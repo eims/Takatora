@@ -41,10 +41,17 @@ type StateTests() =
           ProjectInfo    = Map.empty
           RunDetails     = Map.empty
           LiveRuns       = Map.empty
-          AddProject     = None }
+          AddProject     = None
+          CurrentProject = None }
 
     let modelWithTabs (active: RootTab) (tabs: RootTab list) : Model =
         { baseModel with OpenTabs = tabs; ActiveTab = active }
+
+    /// A model scoped to one project with several of its own tabs open.
+    let scopedToP1 (active: RootTab) : Model =
+        { modelWithTabs active
+            [Home; Project "p1"; RunDetail ("p1", "r1"); RunDetail ("p1", "r2")]
+            with CurrentProject = Some "p1" }
 
     let fakeEntry (runId: string) : RunHistoryEntry =
         { RunId       = runId
@@ -210,34 +217,51 @@ type StateTests() =
     [<Fact>]
     member _.``CloseTab on a non-active tab leaves ActiveTab untouched`` () =
         let m =
-            modelWithTabs (Project "p1") [Home; Project "p1"; Project "p2"]
-            |> apply (CloseTab (Project "p2"))
-        Assert.Equal<RootTab list>([Home; Project "p1"], m.OpenTabs)
+            scopedToP1 (Project "p1")
+            |> apply (CloseTab (RunDetail ("p1", "r2")))
+        Assert.Equal<RootTab list>(
+            [Home; Project "p1"; RunDetail ("p1", "r1")], m.OpenTabs)
         Assert.Equal(Project "p1", m.ActiveTab)
+        Assert.Equal<ProjectId option>(Some "p1", m.CurrentProject)
 
     [<Fact>]
-    member _.``CloseTab on the active tab picks its right neighbor`` () =
+    member _.``CloseTab on the active tab picks its right neighbor in-context`` () =
         let m =
-            modelWithTabs (Project "p2") [Home; Project "p1"; Project "p2"; Project "p3"]
-            |> apply (CloseTab (Project "p2"))
-        Assert.Equal<RootTab list>([Home; Project "p1"; Project "p3"], m.OpenTabs)
-        Assert.Equal(Project "p3", m.ActiveTab)
+            scopedToP1 (RunDetail ("p1", "r1"))
+            |> apply (CloseTab (RunDetail ("p1", "r1")))
+        Assert.Equal(RunDetail ("p1", "r2"), m.ActiveTab)
+        Assert.Equal<ProjectId option>(Some "p1", m.CurrentProject)
 
     [<Fact>]
     member _.``CloseTab on the active rightmost tab falls back to the previous`` () =
         let m =
-            modelWithTabs (Project "p2") [Home; Project "p1"; Project "p2"]
-            |> apply (CloseTab (Project "p2"))
-        Assert.Equal<RootTab list>([Home; Project "p1"], m.OpenTabs)
-        Assert.Equal(Project "p1", m.ActiveTab)
+            scopedToP1 (RunDetail ("p1", "r2"))
+            |> apply (CloseTab (RunDetail ("p1", "r2")))
+        Assert.Equal(RunDetail ("p1", "r1"), m.ActiveTab)
+        Assert.Equal<ProjectId option>(Some "p1", m.CurrentProject)
 
     [<Fact>]
-    member _.``CloseTab on the only non-Home active tab falls back to Home`` () =
+    member _.``CloseTab on a project's last tab returns to no-project Home`` () =
         let m =
-            modelWithTabs (Project "p1") [Home; Project "p1"]
+            { modelWithTabs (Project "p1") [Home; Project "p1"]
+                with CurrentProject = Some "p1" }
             |> apply (CloseTab (Project "p1"))
         Assert.Equal<RootTab list>([Home], m.OpenTabs)
         Assert.Equal(Home, m.ActiveTab)
+        Assert.Equal<ProjectId option>(None, m.CurrentProject)
+
+    [<Fact>]
+    member _.``CloseTab of a context's last tab goes to Home, not a sibling project`` () =
+        // p1 (active, single tab) and p2 both open. Closing p1 must NOT
+        // jump focus into p2 — it returns to the neutral no-project state,
+        // leaving p2 open and reachable via the selector.
+        let m =
+            { modelWithTabs (Project "p1") [Home; Project "p1"; Project "p2"]
+                with CurrentProject = Some "p1" }
+            |> apply (CloseTab (Project "p1"))
+        Assert.Equal<RootTab list>([Home; Project "p2"], m.OpenTabs)
+        Assert.Equal(Home, m.ActiveTab)
+        Assert.Equal<ProjectId option>(None, m.CurrentProject)
 
     // ─── CloseTab — cache cleanup ───────────────────────────────────
 
@@ -345,6 +369,76 @@ type StateTests() =
         let m  = apply (RefreshProjectInfo "p1") m0
         Assert.Equal<RootTab list>(m0.OpenTabs, m.OpenTabs)
         Assert.Equal(m0.ActiveTab, m.ActiveTab)
+
+    // ─── Per-project tab scoping ────────────────────────────────────
+
+    [<Fact>]
+    member _.``tabProject maps each tab kind to its owning project`` () =
+        Assert.Equal<ProjectId option>(None,        tabProject baseModel Home)
+        Assert.Equal<ProjectId option>(Some "p1",   tabProject baseModel (Project "p1"))
+        Assert.Equal<ProjectId option>(Some "p1",   tabProject baseModel (RunDetail ("p1", "r1")))
+
+    [<Fact>]
+    member _.``currentProject reflects the sticky CurrentProject field`` () =
+        Assert.Equal<ProjectId option>(None, currentProject baseModel)
+        Assert.Equal<ProjectId option>(
+            Some "p1",
+            currentProject { baseModel with CurrentProject = Some "p1" })
+
+    [<Fact>]
+    member _.``OpenProject sets the sticky context``  () =
+        let m = apply (OpenProject "p1") baseModel
+        Assert.Equal<ProjectId option>(Some "p1", m.CurrentProject)
+
+    [<Fact>]
+    member _.``Activating Home keeps the project context sticky`` () =
+        let m =
+            baseModel
+            |> apply (OpenProject "p1")
+            |> apply (ActivateTab Home)
+        Assert.Equal(Home, m.ActiveTab)
+        Assert.Equal<ProjectId option>(Some "p1", m.CurrentProject)
+
+    [<Fact>]
+    member _.``Activating a project's tab switches the context`` () =
+        let m =
+            baseModel
+            |> apply (OpenProject "p1")
+            |> apply (OpenProject "p2")
+            |> apply (ActivateTab (Project "p1"))
+        Assert.Equal<ProjectId option>(Some "p1", m.CurrentProject)
+
+    [<Fact>]
+    member _.``openProjects lists distinct contexts in first-seen order`` () =
+        let m =
+            modelWithTabs Home
+                [Home; Project "p1"; RunDetail ("p1", "r1"); Project "p2"]
+        Assert.Equal<ProjectId list>(["p1"; "p2"], openProjects m)
+
+    [<Fact>]
+    member _.``visibleTabs shows only Home when no context is set`` () =
+        let m = modelWithTabs Home [Home; Project "p1"; Project "p2"]
+        Assert.Equal<RootTab list>([Home], visibleTabs m)
+
+    [<Fact>]
+    member _.``visibleTabs scopes to the current project's tabs plus Home`` () =
+        let m =
+            { modelWithTabs (Project "p1")
+                [Home; Project "p1"; RunDetail ("p1", "r1"); Project "p2"; RunDetail ("p2", "r2")]
+                with CurrentProject = Some "p1" }
+        Assert.Equal<RootTab list>(
+            [Home; Project "p1"; RunDetail ("p1", "r1")],
+            visibleTabs m)
+
+    [<Fact>]
+    member _.``closing the last tab of a context falls back off that project`` () =
+        // p1 has only its Project tab open; closing it should drop the
+        // sticky context (no p1 tabs remain) rather than keep pointing at p1.
+        let m =
+            { modelWithTabs (Project "p1") [Home; Project "p1"]
+                with CurrentProject = Some "p1" }
+            |> apply (CloseTab (Project "p1"))
+        Assert.Equal<ProjectId option>(None, m.CurrentProject)
 
     // ─── RunFlow ────────────────────────────────────────────────────
 

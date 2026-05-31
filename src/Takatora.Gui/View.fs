@@ -135,19 +135,64 @@ let private tabChip
         )
     ] :> _
 
+/// One project-switch pill. Highlighted when it's the current context.
+/// Pure click → OpenProject (idempotent on an already-open tab) — no
+/// two-way binding, so none of the ComboBox focus/popup churn that was
+/// eating the next click on the tab chips.
+let private projectPill
+        (pid: ProjectId)
+        (isCurrent: bool)
+        (dispatch: Msg -> unit)
+        : IView =
+    Button.create [
+        Button.content ("\U0001F4C1  " + pid)
+        Button.margin (Thickness(2.0, 0.0))
+        Button.padding (Thickness(10.0, 4.0))
+        Button.background (if isCurrent then activeBg else (Brushes.Transparent :> IBrush))
+        Button.foreground (if isCurrent then (Brushes.White :> IBrush) else dimBrush)
+        Button.borderBrush (if isCurrent then accent else stripBorder)
+        Button.borderThickness (Thickness(1.0, 1.0, 1.0, if isCurrent then 2.0 else 1.0))
+        Button.onClick (fun _ -> dispatch (OpenProject pid))
+    ] :> _
+
+/// Project-context switcher at the left of the strip: a pill per open
+/// project (Home is always a separate chip). Picking one scopes the strip
+/// to that project. Empty state shows a muted hint.
+let private projectSelector (model: Model) (dispatch: Msg -> unit) : IView =
+    let projects = State.openProjects model
+    if List.isEmpty projects then
+        TextBlock.create [
+            TextBlock.text "No project open"
+            TextBlock.foreground mutedBrush
+            TextBlock.fontSize 12.0
+            TextBlock.verticalAlignment VerticalAlignment.Center
+            TextBlock.margin (Thickness(12.0, 0.0))
+        ] :> _
+    else
+        let current = State.currentProject model
+        StackPanel.create [
+            StackPanel.orientation Orientation.Horizontal
+            StackPanel.verticalAlignment VerticalAlignment.Center
+            StackPanel.margin (Thickness(6.0, 0.0))
+            StackPanel.children [
+                for p in projects -> projectPill p (current = Some p) dispatch
+            ]
+        ] :> _
+
 let private rootTabStrip (model: Model) (dispatch: Msg -> unit) : IView =
     Border.create [
         DockPanel.dock Dock.Top
         Border.borderThickness (Thickness(0.0, 0.0, 0.0, 1.0))
         Border.borderBrush stripBorder
         Border.background stripBg
-        Border.height 36.0
+        Border.height 40.0
         Border.child (
             StackPanel.create [
                 StackPanel.orientation Orientation.Horizontal
                 StackPanel.children [
-                    for tab in model.OpenTabs ->
-                        tabChip model tab (tab = model.ActiveTab) dispatch
+                    yield projectSelector model dispatch
+                    for tab in State.visibleTabs model do
+                        yield tabChip model tab (tab = model.ActiveTab) dispatch
                 ]
             ]
         )
