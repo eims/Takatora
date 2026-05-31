@@ -14,7 +14,7 @@ type MainWindow() as this =
         base.Title  <- Version.Product
         base.Width  <- 1024.0
         base.Height <- 700.0
-        Program.mkSimple State.init State.update View.view
+        Program.mkProgram State.init State.update View.view
         |> Program.withHost this
         |> Program.run
 

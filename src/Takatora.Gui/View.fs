@@ -73,16 +73,32 @@ let private sectionHeader (text: string) : IView =
 
 // ─── Root tab strip ─────────────────────────────────────────────────────
 
-let private tabLabel = function
+let private liveRunIcon (phase: LiveRunPhase) : string =
+    match phase with
+    | LivePending -> "▶"
+    | LiveCompleted (Ok outcome) ->
+        match outcome.Result with
+        | RunResult.Success   -> "✓"
+        | RunResult.Failure   -> "✗"
+        | RunResult.Cancelled -> "⊘"
+    | LiveCompleted (Error _) -> "✗"
+
+let private tabLabel (model: Model) (tab: RootTab) : string =
+    match tab with
     | Home                  -> "Home"
     | Project pid           -> pid
     | RunDetail (pid, rid)  -> sprintf "%s · %s" (runShortLabel rid) pid
+    | LiveRun key ->
+        match Map.tryFind key model.LiveRuns with
+        | None   -> "Run"
+        | Some s -> sprintf "%s %s · %s" (liveRunIcon s.Phase) s.FlowId s.ProjectId
 
 let private tabClosable = function
     | Home -> false
     | _    -> true
 
 let private tabChip
+        (model: Model)
         (tab: RootTab)
         (isActive: bool)
         (dispatch: Msg -> unit)
@@ -97,7 +113,7 @@ let private tabChip
                 StackPanel.verticalAlignment VerticalAlignment.Center
                 StackPanel.children [
                     Button.create [
-                        Button.content (tabLabel tab)
+                        Button.content (tabLabel model tab)
                         Button.background Brushes.Transparent
                         Button.borderThickness 0.0
                         Button.padding (Thickness(10.0, 4.0))
@@ -128,7 +144,7 @@ let private rootTabStrip (model: Model) (dispatch: Msg -> unit) : IView =
                 StackPanel.orientation Orientation.Horizontal
                 StackPanel.children [
                     for tab in model.OpenTabs ->
-                        tabChip tab (tab = model.ActiveTab) dispatch
+                        tabChip model tab (tab = model.ActiveTab) dispatch
                 ]
             ]
         )
@@ -868,6 +884,139 @@ let private runDetailView
             TextBlock.textWrapping TextWrapping.Wrap
         ] :> _
 
+// ─── LiveRun tab ────────────────────────────────────────────────────────
+
+let private failureMessage = function
+    | RunFailure.FlowNotFound flowId   -> sprintf "flow '%s' not found in flows.toml" flowId
+    | RunFailure.TaskNotFound stepType -> sprintf "no task .fsx for type '%s'" stepType
+    | RunFailure.ConfigError (src, m)  -> sprintf "config error in %s: %s" src m
+    | RunFailure.InternalError m       -> sprintf "internal error: %s" m
+
+let private liveRunOutcomeBlock
+        (outcome: RunOutcome)
+        (dispatch: Msg -> unit)
+        (pid: ProjectId)
+        : IView =
+    let resultLabel =
+        match outcome.Result with
+        | RunResult.Success   -> "success"
+        | RunResult.Failure   -> "failure"
+        | RunResult.Cancelled -> "cancelled"
+    let resultBrush =
+        match outcome.Result with
+        | RunResult.Success   -> brush "#4ec97a"
+        | RunResult.Failure   -> brush "#f15a5a"
+        | RunResult.Cancelled -> mutedBrush
+    StackPanel.create [
+        StackPanel.spacing 4.0
+        StackPanel.children [
+            TextBlock.create [
+                TextBlock.text (sprintf "Completed: %s" resultLabel)
+                TextBlock.foreground resultBrush
+                TextBlock.fontSize 16.0
+            ]
+            TextBlock.create [
+                TextBlock.text
+                    (sprintf "Duration: %.2fs · Run id: %s"
+                        (outcome.FinishedAt - outcome.StartedAt).TotalSeconds
+                        outcome.RunId)
+                TextBlock.foreground mutedBrush
+            ]
+            Button.create [
+                Button.content "Open run details"
+                Button.margin (Thickness(0.0, 8.0, 0.0, 0.0))
+                Button.horizontalAlignment HorizontalAlignment.Left
+                Button.onClick (fun _ -> dispatch (OpenRunDetail (pid, outcome.RunId)))
+            ]
+        ]
+    ] :> _
+
+let private liveRunBody
+        (s: LiveRunState)
+        (dispatch: Msg -> unit)
+        : IView =
+    let started = s.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+    StackPanel.create [
+        StackPanel.margin (Thickness 16.0)
+        StackPanel.spacing 6.0
+        StackPanel.children [
+            TextBlock.create [
+                TextBlock.text s.ProjectId
+                TextBlock.foreground dimBrush
+                TextBlock.fontSize 12.0
+            ]
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 12.0
+                StackPanel.children [
+                    TextBlock.create [
+                        TextBlock.text (liveRunIcon s.Phase)
+                        TextBlock.fontSize 24.0
+                        TextBlock.foreground
+                            (match s.Phase with
+                             | LivePending -> accent
+                             | LiveCompleted (Ok o) ->
+                                 (match o.Result with
+                                  | RunResult.Success   -> brush "#4ec97a"
+                                  | RunResult.Failure   -> brush "#f15a5a"
+                                  | RunResult.Cancelled -> mutedBrush)
+                             | LiveCompleted (Error _) -> brush "#f15a5a")
+                    ]
+                    TextBlock.create [
+                        TextBlock.text s.FlowId
+                        TextBlock.fontSize 22.0
+                        TextBlock.fontWeight FontWeight.SemiBold
+                        TextBlock.verticalAlignment VerticalAlignment.Center
+                    ]
+                ]
+            ]
+            TextBlock.create [
+                TextBlock.text (sprintf "Started: %s" started)
+                TextBlock.foreground dimBrush
+            ]
+            (match s.Phase with
+             | LivePending ->
+                 TextBlock.create [
+                     TextBlock.text "Running on a background thread. Live stdout / step progression is not streamed yet — this tab will update when the run finishes."
+                     TextBlock.foreground mutedBrush
+                     TextBlock.margin (Thickness(0.0, 8.0, 0.0, 0.0))
+                     TextBlock.textWrapping TextWrapping.Wrap
+                 ] :> IView
+             | LiveCompleted (Ok outcome) -> liveRunOutcomeBlock outcome dispatch s.ProjectId
+             | LiveCompleted (Error failure) ->
+                 StackPanel.create [
+                     StackPanel.spacing 4.0
+                     StackPanel.children [
+                         TextBlock.create [
+                             TextBlock.text "Failed before producing an outcome:"
+                             TextBlock.foreground (brush "#f15a5a")
+                             TextBlock.fontSize 16.0
+                         ]
+                         TextBlock.create [
+                             TextBlock.text (failureMessage failure)
+                             TextBlock.foreground dimBrush
+                             TextBlock.textWrapping TextWrapping.Wrap
+                         ]
+                     ]
+                 ] :> IView)
+        ]
+    ] :> _
+
+let private liveRunView
+        (key: LiveRunKey)
+        (model: Model)
+        (dispatch: Msg -> unit)
+        : IView =
+    match Map.tryFind key model.LiveRuns with
+    | Some s -> liveRunBody s dispatch
+    | None ->
+        TextBlock.create [
+            TextBlock.text "(LiveRun state unavailable — the run completed and its tab state was cleaned up.)"
+            TextBlock.margin (Thickness 16.0)
+            TextBlock.foreground mutedBrush
+            TextBlock.textWrapping TextWrapping.Wrap
+        ] :> _
+
 // ─── Top-level ──────────────────────────────────────────────────────────
 
 let view (model: Model) (dispatch: Msg -> unit) : IView =
@@ -877,6 +1026,7 @@ let view (model: Model) (dispatch: Msg -> unit) : IView =
             (match model.ActiveTab with
              | Home                  -> homeView model dispatch
              | Project pid           -> projectView pid model dispatch
-             | RunDetail (pid, rid)  -> runDetailView pid rid model dispatch)
+             | RunDetail (pid, rid)  -> runDetailView pid rid model dispatch
+             | LiveRun key           -> liveRunView key model dispatch)
         ]
     ] :> _
