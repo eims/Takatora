@@ -64,6 +64,9 @@ type StateTests() =
           Params      = Map.empty
           RunDir      = "/tmp/fake" }
 
+    let fakeEntryFlow (runId: string) (flowId: string) : RunHistoryEntry =
+        { fakeEntry runId with FlowId = flowId }
+
     /// Write a minimal `.ci/` tree under tmpRoot and return a
     /// ProjectRegistration pointing at it.
     let setupProjectDir (name: string) (flowsToml: string option) : ProjectRegistration =
@@ -450,3 +453,35 @@ type StateTests() =
         Assert.Equal<RootTab list>(baseModel.OpenTabs, m.OpenTabs)
         Assert.Equal(baseModel.ActiveTab, m.ActiveTab)
         Assert.True(Map.isEmpty m.ProjectHistory)
+
+    // ─── run numbering / flow lookup (tab labels) ───────────────────
+
+    [<Fact>]
+    member _.``runNumber is chronological: oldest is #1, newest is #N`` () =
+        // History is stored newest-first (RunHistory.load sorts descending),
+        // so [r3; r2; r1] means r1 is the oldest → #1, r3 the newest → #3.
+        let m =
+            { baseModel with
+                ProjectHistory =
+                    Map.ofList [ "p1", [ fakeEntry "r3"; fakeEntry "r2"; fakeEntry "r1" ] ] }
+        Assert.Equal<int option>(Some 1, runNumber m "p1" "r1")
+        Assert.Equal<int option>(Some 2, runNumber m "p1" "r2")
+        Assert.Equal<int option>(Some 3, runNumber m "p1" "r3")
+
+    [<Fact>]
+    member _.``runNumber is None when the project or run is not cached`` () =
+        let m =
+            { baseModel with
+                ProjectHistory = Map.ofList [ "p1", [ fakeEntry "r1" ] ] }
+        Assert.Equal<int option>(None, runNumber m "p1" "missing")
+        Assert.Equal<int option>(None, runNumber m "p2" "r1")
+
+    [<Fact>]
+    member _.``runFlowId returns the recorded flow, None when absent`` () =
+        let m =
+            { baseModel with
+                ProjectHistory =
+                    Map.ofList [ "p1", [ fakeEntryFlow "r1" "build"; fakeEntryFlow "r2" "test" ] ] }
+        Assert.Equal<string option>(Some "build", runFlowId m "p1" "r1")
+        Assert.Equal<string option>(Some "test", runFlowId m "p1" "r2")
+        Assert.Equal<string option>(None, runFlowId m "p1" "missing")

@@ -3,11 +3,13 @@ module Takatora.Gui.View
 open System
 open Avalonia
 open Avalonia.Controls
+open Avalonia.Controls.Primitives
 open Avalonia.Input
 open Avalonia.Interactivity
 open Avalonia.Layout
 open Avalonia.Media
 open Avalonia.Platform.Storage
+open Avalonia.VisualTree
 open Avalonia.Threading
 open Avalonia.FuncUI.DSL
 open Avalonia.FuncUI.Types
@@ -87,14 +89,23 @@ let private liveRunIcon (phase: LiveRunPhase) : string =
     | LiveCompleted (Error _) -> "✗"
 
 let private tabLabel (model: Model) (tab: RootTab) : string =
+    // Project name is intentionally dropped — the strip is scoped to one
+    // project (shown in the pinned pill), so repeating it on every chip is
+    // noise. RunDetail chips read "#N flow"; the serial number is the run's
+    // chronological position in the project (see State.runNumber).
     match tab with
     | Home                  -> "Home"
     | Project pid           -> pid
-    | RunDetail (pid, rid)  -> sprintf "%s · %s" (runShortLabel rid) pid
+    | RunDetail (pid, rid)  ->
+        let flow = State.runFlowId model pid rid
+        match State.runNumber model pid rid, flow with
+        | Some n, Some f -> sprintf "#%d %s" n f
+        | Some n, None   -> sprintf "#%d" n
+        | None,   _      -> runShortLabel rid
     | LiveRun key ->
         match Map.tryFind key model.LiveRuns with
         | None   -> "Run"
-        | Some s -> sprintf "%s %s · %s" (liveRunIcon s.Phase) s.FlowId s.ProjectId
+        | Some s -> sprintf "%s %s" (liveRunIcon s.Phase) s.FlowId
 
 let private tabClosable = function
     | Home -> false
@@ -120,7 +131,11 @@ let private tabChip
                         Button.background Brushes.Transparent
                         Button.borderThickness 0.0
                         Button.padding (Thickness(10.0, 4.0))
-                        Button.onClick (fun _ -> dispatch (ActivateTab tab))
+                        // SubPatchOptions.Always: this chip is reused by
+                        // position across context switches, so the captured
+                        // `tab` changes; without re-subscribing, the frozen
+                        // first-render closure dispatches the wrong tab.
+                        Button.onClick ((fun _ -> dispatch (ActivateTab tab)), SubPatchOptions.Always)
                     ]
                     if tabClosable tab then
                         Button.create [
@@ -128,7 +143,7 @@ let private tabChip
                             Button.background Brushes.Transparent
                             Button.borderThickness 0.0
                             Button.padding (Thickness(6.0, 4.0))
-                            Button.onClick (fun _ -> dispatch (CloseTab tab))
+                            Button.onClick ((fun _ -> dispatch (CloseTab tab)), SubPatchOptions.Always)
                         ]
                 ]
             ]
@@ -152,7 +167,7 @@ let private projectPill
         Button.foreground (if isCurrent then (Brushes.White :> IBrush) else dimBrush)
         Button.borderBrush (if isCurrent then accent else stripBorder)
         Button.borderThickness (Thickness(1.0, 1.0, 1.0, if isCurrent then 2.0 else 1.0))
-        Button.onClick (fun _ -> dispatch (OpenProject pid))
+        Button.onClick ((fun _ -> dispatch (OpenProject pid)), SubPatchOptions.Always)
     ] :> _
 
 /// Project-context switcher at the left of the strip: a pill per open
@@ -187,12 +202,48 @@ let private rootTabStrip (model: Model) (dispatch: Msg -> unit) : IView =
         Border.background stripBg
         Border.height 40.0
         Border.child (
-            StackPanel.create [
-                StackPanel.orientation Orientation.Horizontal
-                StackPanel.children [
-                    yield projectSelector model dispatch
-                    for tab in State.visibleTabs model do
-                        yield tabChip model tab (tab = model.ActiveTab) dispatch
+            // Home and the project root chip stay pinned (they're the
+            // navigation anchors); only the per-run RunDetail/LiveRun chips
+            // scroll when they overflow.
+            let pinned, scrolling =
+                State.visibleTabs model
+                |> List.partition (function Home | Project _ -> true | _ -> false)
+            DockPanel.create [
+                DockPanel.children [
+                    // Context switcher + pinned anchor chips — never scroll away.
+                    StackPanel.create [
+                        DockPanel.dock Dock.Left
+                        StackPanel.orientation Orientation.Horizontal
+                        StackPanel.children [
+                            yield projectSelector model dispatch
+                            for tab in pinned do
+                                yield tabChip model tab (tab = model.ActiveTab) dispatch
+                        ]
+                    ]
+                    // Per-run chips scroll horizontally when they overflow.
+                    // The visible bar is hidden (Fluent's overlay bar is thick
+                    // and covers the chip text); horizontal scroll is driven by
+                    // the mouse wheel instead (Avalonia maps the wheel to the
+                    // vertical axis by default, so we translate it manually).
+                    ScrollViewer.create [
+                        ScrollViewer.horizontalScrollBarVisibility ScrollBarVisibility.Hidden
+                        ScrollViewer.verticalScrollBarVisibility ScrollBarVisibility.Disabled
+                        ScrollViewer.onPointerWheelChanged (fun e ->
+                            match (e.Source :?> Visual).FindAncestorOfType<ScrollViewer>() with
+                            | null -> ()
+                            | sv ->
+                                sv.Offset <- Vector(sv.Offset.X - e.Delta.Y * 60.0, sv.Offset.Y)
+                                e.Handled <- true)
+                        ScrollViewer.content (
+                            StackPanel.create [
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.children [
+                                    for tab in scrolling do
+                                        yield tabChip model tab (tab = model.ActiveTab) dispatch
+                                ]
+                            ]
+                        )
+                    ]
                 ]
             ]
         )
@@ -758,15 +809,17 @@ let private historyHeaderRow : IView list =
             TextBlock.isHitTestVisible false
         ] :> IView
     [
-        cell 0 " "
-        cell 1 "flow"
-        cell 2 "started"
-        cell 3 "duration"
-        cell 4 "run id"
+        cell 0 "#"
+        cell 1 " "
+        cell 2 "flow"
+        cell 3 "started"
+        cell 4 "duration"
+        cell 5 "run id"
     ]
 
 let private historyDataRow
         (row: int)
+        (num: int)
         (pid: ProjectId)
         (e: RunHistoryEntry)
         (dispatch: Msg -> unit)
@@ -780,14 +833,23 @@ let private historyDataRow
         Border.create [
             Grid.row row
             Grid.column 0
-            Grid.columnSpan 5
+            Grid.columnSpan 6
             Border.background (Brushes.Transparent :> IBrush)
             Border.cursor handCursor
             Border.onPointerPressed (fun _ -> dispatch (OpenRunDetail (pid, e.RunId)))
         ] :> IView
+        // Serial number — matches the "#N" shown on the RunDetail tab chip.
         TextBlock.create [
             Grid.row row
             Grid.column 0
+            TextBlock.text (sprintf "#%d" num)
+            TextBlock.foreground mutedBrush
+            TextBlock.margin cellMargin
+            TextBlock.isHitTestVisible false
+        ] :> IView
+        TextBlock.create [
+            Grid.row row
+            Grid.column 1
             TextBlock.text (statusIcon e.Result)
             TextBlock.foreground (statusBrush e.Result)
             TextBlock.margin cellMargin
@@ -795,28 +857,28 @@ let private historyDataRow
         ] :> IView
         TextBlock.create [
             Grid.row row
-            Grid.column 1
+            Grid.column 2
             TextBlock.text e.FlowId
             TextBlock.margin cellMargin
             TextBlock.isHitTestVisible false
         ] :> IView
         TextBlock.create [
             Grid.row row
-            Grid.column 2
+            Grid.column 3
             TextBlock.text startedLocal
             TextBlock.margin cellMargin
             TextBlock.isHitTestVisible false
         ] :> IView
         TextBlock.create [
             Grid.row row
-            Grid.column 3
+            Grid.column 4
             TextBlock.text (formatDuration e.DurationSec)
             TextBlock.margin cellMargin
             TextBlock.isHitTestVisible false
         ] :> IView
         TextBlock.create [
             Grid.row row
-            Grid.column 4
+            Grid.column 5
             TextBlock.text e.RunId
             TextBlock.foreground mutedBrush
             TextBlock.fontSize 11.0
@@ -861,14 +923,17 @@ let private historyBody
                     ScrollViewer.content (
                         Grid.create [
                             Grid.margin (Thickness(8.0, 0.0, 16.0, 16.0))
-                            Grid.columnDefinitions "Auto,Auto,Auto,Auto,*"
+                            Grid.columnDefinitions "Auto,Auto,Auto,Auto,Auto,*"
                             Grid.rowDefinitions
                                 (String.concat ","
                                     (List.replicate (List.length entries + 1) "Auto"))
                             Grid.children [
+                                let total = List.length entries
                                 yield! historyHeaderRow
+                                // entries are newest-first; chronological # is
+                                // total - i so it matches State.runNumber.
                                 for i, e in List.indexed entries do
-                                    yield! historyDataRow (i + 1) pid e dispatch
+                                    yield! historyDataRow (i + 1) (total - i) pid e dispatch
                             ]
                         ]
                     )

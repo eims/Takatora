@@ -247,6 +247,28 @@ let visibleTabs (model: Model) : RootTab list =
         | Home -> true
         | _    -> tabProject model tab = ctx)
 
+/// Stable, human-friendly serial number for a run within its project,
+/// derived from chronological order: the oldest run is #1, the newest is
+/// #N. `RunHistory.load` returns newest-first, so the number is
+/// `count - index`. Stays stable as new runs are appended (existing runs
+/// keep their number). None when the run isn't in the cached history.
+let runNumber (model: Model) (pid: ProjectId) (rid: RunId) : int option =
+    match Map.tryFind pid model.ProjectHistory with
+    | Some entries ->
+        match List.tryFindIndex (fun (e: RunHistoryEntry) -> e.RunId = rid) entries with
+        | Some i -> Some (entries.Length - i)
+        | None   -> None
+    | None -> None
+
+/// Flow id recorded for a run, looked up from the cached history.
+let runFlowId (model: Model) (pid: ProjectId) (rid: RunId) : string option =
+    match Map.tryFind pid model.ProjectHistory with
+    | Some entries ->
+        entries
+        |> List.tryFind (fun (e: RunHistoryEntry) -> e.RunId = rid)
+        |> Option.map (fun e -> e.FlowId)
+    | None -> None
+
 let private projectRoot
         (pid: ProjectId)
         (projects: ProjectRegistration list)
