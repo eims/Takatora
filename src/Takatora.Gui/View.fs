@@ -34,6 +34,9 @@ let private rowHoverBg  = brush "#262626"
 // subtle hue tint (which looked like hover/active or vanished entirely).
 let private dividerBrush = brush "#4d4d4d"
 let private transparentBrush = Brushes.Transparent :> IBrush
+// Semi-transparent scrim behind the run-parameters modal (AARRGGBB).
+let private overlayBg   = brush "#aa101010"
+let private errorBrush  = brush "#f15a5a"
 
 let private handCursor = new Cursor(StandardCursorType.Hand)
 
@@ -601,7 +604,7 @@ let private flowCard
                         DockPanel.dock Dock.Right
                         Button.content "Run"
                         Button.verticalAlignment VerticalAlignment.Center
-                        Button.onClick (fun _ -> dispatch (RunFlow (pid, f.Id)))
+                        Button.onClick ((fun _ -> dispatch (RequestRun (pid, f.Id))), SubPatchOptions.Always)
                     ]
                     StackPanel.create [
                         StackPanel.spacing 2.0
@@ -1549,16 +1552,170 @@ let private liveRunView
             TextBlock.textWrapping TextWrapping.Wrap
         ] :> _
 
+// ─── Run-with-parameters modal ──────────────────────────────────────────
+
+/// One field row: a label + a kind-appropriate inline widget. Bool and
+/// enum use pill buttons (the proven click-only pattern — FuncUI ComboBox
+/// churns focus in re-rendered regions, see slice 14); everything else is
+/// a text box. Values are parsed/validated at confirm, not per-keystroke.
+let private runDialogField
+        (v: FlowVar)
+        (current: string)
+        (dispatch: Msg -> unit)
+        : IView =
+    // Fixed-width label column on the left, control fills the rest, so the
+    // control column starts at the same x on every row (calm single-column
+    // read). Pill groups left-align within the control column.
+    let label =
+        TextBlock.create [
+            DockPanel.dock Dock.Left
+            TextBlock.text v.Name
+            TextBlock.width 110.0
+            TextBlock.textAlignment TextAlignment.Right
+            TextBlock.foreground dimBrush
+            TextBlock.fontSize 12.0
+            TextBlock.margin (Thickness(0.0, 0.0, 12.0, 0.0))
+            TextBlock.verticalAlignment VerticalAlignment.Center
+        ] :> IView
+    let widget : IView =
+        match v.Kind with
+        | VarKind.Bool ->
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 8.0
+                StackPanel.children [
+                    engineChoiceButton "true"  (current = "true")  (fun () -> dispatch (RunDialogSetValue (v.Name, "true")))
+                    engineChoiceButton "false" (current = "false") (fun () -> dispatch (RunDialogSetValue (v.Name, "false")))
+                ]
+            ] :> _
+        | VarKind.Enum values ->
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 8.0
+                StackPanel.children [
+                    for vv in values ->
+                        engineChoiceButton vv (current = vv) (fun () -> dispatch (RunDialogSetValue (v.Name, vv)))
+                ]
+            ] :> _
+        | _ ->
+            TextBox.create [
+                TextBox.text current
+                TextBox.verticalAlignment VerticalAlignment.Center
+                TextBox.onTextChanged (fun s -> dispatch (RunDialogSetValue (v.Name, s)))
+            ] :> _
+    DockPanel.create [
+        DockPanel.margin (Thickness(0.0, 0.0, 0.0, 10.0))
+        DockPanel.children [ label; widget ]
+    ] :> _
+
+let private runParamsDialog (d: RunDialogState) (dispatch: Msg -> unit) : IView =
+    // Full-bleed scrim with a centered card on top.
+    Border.create [
+        Border.background overlayBg
+        Border.child (
+            Border.create [
+                Border.horizontalAlignment HorizontalAlignment.Center
+                Border.verticalAlignment VerticalAlignment.Center
+                Border.width 460.0
+                Border.padding (Thickness 20.0)
+                Border.cornerRadius 6.0
+                Border.background cardBg
+                Border.borderBrush stripBorder
+                Border.borderThickness (Thickness 1.0)
+                Border.child (
+                    StackPanel.create [
+                        StackPanel.spacing 0.0
+                        StackPanel.children [
+                            yield DockPanel.create [
+                                DockPanel.margin (Thickness(0.0, 0.0, 0.0, 16.0))
+                                DockPanel.children [
+                                    Button.create [
+                                        DockPanel.dock Dock.Right
+                                        Button.content "Reset"
+                                        Button.verticalAlignment VerticalAlignment.Center
+                                        Button.onClick ((fun _ -> dispatch RunDialogReset), SubPatchOptions.Always)
+                                    ]
+                                    StackPanel.create [
+                                        StackPanel.spacing 1.0
+                                        StackPanel.verticalAlignment VerticalAlignment.Center
+                                        StackPanel.children [
+                                            // Project context first (accent), so an
+                                            // interrupted user doesn't lose track of
+                                            // which project + job this run is for.
+                                            TextBlock.create [
+                                                TextBlock.text d.ProjectId
+                                                TextBlock.fontSize 12.0
+                                                TextBlock.fontWeight FontWeight.SemiBold
+                                                TextBlock.foreground accent
+                                            ]
+                                            TextBlock.create [
+                                                TextBlock.text (sprintf "Run \"%s\" with parameters" d.FlowId)
+                                                TextBlock.fontSize 16.0
+                                                TextBlock.fontWeight FontWeight.SemiBold
+                                            ]
+                                        ]
+                                    ]
+                                ]
+                            ] :> IView
+                            for v in d.Vars do
+                                let current =
+                                    Map.tryFind v.Name d.Values
+                                    |> Option.defaultValue (varDefaultText v)
+                                yield runDialogField v current dispatch
+                            match d.Error with
+                            | Some msg ->
+                                yield TextBlock.create [
+                                    TextBlock.text msg
+                                    TextBlock.foreground errorBrush
+                                    TextBlock.textWrapping TextWrapping.Wrap
+                                    TextBlock.margin (Thickness(0.0, 10.0, 0.0, 0.0))
+                                ] :> IView
+                            | None -> ()
+                            yield StackPanel.create [
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.horizontalAlignment HorizontalAlignment.Right
+                                StackPanel.spacing 8.0
+                                StackPanel.margin (Thickness(0.0, 16.0, 0.0, 0.0))
+                                StackPanel.children [
+                                    Button.create [
+                                        Button.content "Cancel"
+                                        Button.onClick ((fun _ -> dispatch RunDialogCancel), SubPatchOptions.Always)
+                                    ]
+                                    Button.create [
+                                        Button.content "Run"
+                                        Button.background accent
+                                        Button.foreground (Brushes.White :> IBrush)
+                                        Button.onClick ((fun _ -> dispatch RunDialogConfirm), SubPatchOptions.Always)
+                                    ]
+                                ]
+                            ] :> IView
+                        ]
+                    ]
+                )
+            ]
+        )
+    ] :> _
+
 // ─── Top-level ──────────────────────────────────────────────────────────
 
 let view (model: Model) (dispatch: Msg -> unit) : IView =
-    DockPanel.create [
-        DockPanel.children [
-            rootTabStrip model dispatch
-            (match model.ActiveTab with
-             | Home                  -> homeView model dispatch
-             | Project pid           -> projectView pid model dispatch
-             | RunDetail (pid, rid)  -> runDetailView pid rid model dispatch
-             | LiveRun key           -> liveRunView key model dispatch)
+    let content =
+        DockPanel.create [
+            DockPanel.children [
+                rootTabStrip model dispatch
+                (match model.ActiveTab with
+                 | Home                  -> homeView model dispatch
+                 | Project pid           -> projectView pid model dispatch
+                 | RunDetail (pid, rid)  -> runDetailView pid rid model dispatch
+                 | LiveRun key           -> liveRunView key model dispatch)
+            ]
+        ] :> IView
+    // Stack the param dialog on top of everything when it's open.
+    Panel.create [
+        Panel.children [
+            yield content
+            match model.RunDialog with
+            | Some d -> yield runParamsDialog d dispatch
+            | None   -> ()
         ]
     ] :> _

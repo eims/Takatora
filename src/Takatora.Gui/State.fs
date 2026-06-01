@@ -113,6 +113,21 @@ type AddProjectForm = {
     Error: string option
 }
 
+/// "Run with parameters" dialog state. Present (Some) while the modal
+/// overlay is open. `Values` holds the raw editing text per var name
+/// (bool as "true"/"false", enum as the selected value); parsing into
+/// typed `VarOverrides` happens at confirm so partial numeric input
+/// doesn't fight the user mid-keystroke.
+type RunDialogState = {
+    ProjectId: ProjectId
+    FlowId: string
+    /// Scalar vars only (string/int/float/bool/enum), declaration order.
+    Vars: FlowVar list
+    Values: Map<string, string>
+    /// Validation error from the last confirm attempt, cleared on edit.
+    Error: string option
+}
+
 /// Same shape as FlowsLoad but for `.ci/project.toml`. Project info
 /// is technically validated at `project add` time, but the file may
 /// have been edited or deleted between registration and now.
@@ -154,6 +169,9 @@ type Model = {
     /// so the project's tabs stay in the strip. None until the first
     /// project is opened.
     CurrentProject: ProjectId option
+    /// "Run with parameters" modal state. None = closed. Opened by
+    /// RequestRun when the chosen flow declares scalar vars.
+    RunDialog: RunDialogState option
 }
 
 type Msg =
@@ -172,7 +190,15 @@ type Msg =
     | RefreshFlows of ProjectId
     | RefreshProjectInfo of ProjectId
     | OpenRunDetail of ProjectId * RunId
+    /// Run button entry point: opens the param dialog if the flow has
+    /// scalar vars, otherwise runs immediately with no overrides.
+    | RequestRun of ProjectId * flowId:string
     | RunFlow of ProjectId * flowId:string
+    // Run-with-parameters dialog
+    | RunDialogSetValue of name:string * value:string
+    | RunDialogReset
+    | RunDialogConfirm
+    | RunDialogCancel
     | LiveRunCompleted of LiveRunKey * Result<RunOutcome, RunFailure>
     | LiveRunProgress  of LiveRunKey * LiveProgress
     | LiveRunFailed    of LiveRunKey * exn
@@ -196,7 +222,8 @@ let init () : Model * Cmd<Msg> =
       RunDetails     = Map.empty
       LiveRuns       = Map.empty
       AddProject     = None
-      CurrentProject = None },
+      CurrentProject = None
+      RunDialog      = None },
     Cmd.none
 
 let private moveOrAppend (tab: RootTab) (tabs: RootTab list) : RootTab list =
@@ -338,6 +365,83 @@ let private loadFlowsFor
         else
             try FlowsOk (TomlConfig.loadFlows path)
             with ex -> FlowsError ex.Message
+
+// ─── Run-with-parameters helpers ────────────────────────────────────
+
+/// Scalar var kinds get a simple inline widget in the run dialog;
+/// list/path/file/dir/secret/multiline need pickers/keychain/array
+/// editors and are deferred to a later slice.
+let isScalarVarKind (kind: VarKind) : bool =
+    match kind with
+    | VarKind.String | VarKind.Int | VarKind.Float
+    | VarKind.Bool | VarKind.Enum _ -> true
+    | _ -> false
+
+/// Initial editing text for a var's input: its declared default, or a
+/// sensible empty/first value when no default is given.
+let varDefaultText (v: FlowVar) : string =
+    match v.Default with
+    | Some (TString s) -> s
+    | Some (TInt i)    -> string i
+    | Some (TFloat f)  -> Convert.ToString(f, System.Globalization.CultureInfo.InvariantCulture)
+    | Some (TBool b)   -> if b then "true" else "false"
+    | Some _           -> ""   // array/table — not a scalar kind
+    | None ->
+        match v.Kind with
+        | VarKind.Bool       -> "false"
+        | VarKind.Enum (h :: _) -> h
+        | _                  -> ""
+
+/// The scalar vars of a flow (declaration order), or [] if the flow /
+/// its flows.toml isn't loaded or has no scalar vars.
+let flowScalarVars (model: Model) (pid: ProjectId) (flowId: string) : FlowVar list =
+    match Map.tryFind pid model.ProjectFlows with
+    | Some (FlowsOk flows) ->
+        match flows |> List.tryFind (fun f -> f.Id = flowId) with
+        | Some f -> f.Vars |> List.filter (fun v -> isScalarVarKind v.Kind)
+        | None   -> []
+    | _ -> []
+
+/// Parse one edited field into a typed value per its declared kind.
+let private parseOverrideValue (v: FlowVar) (text: string) : Result<TomlValue, string> =
+    match v.Kind with
+    | VarKind.String | VarKind.Multiline | VarKind.Path
+    | VarKind.File | VarKind.Dir | VarKind.Secret | VarKind.List _ -> Ok (TString text)
+    | VarKind.Bool -> Ok (TBool (text = "true"))
+    | VarKind.Enum values ->
+        if List.contains text values then Ok (TString text)
+        else Error (sprintf "%s: '%s' is not one of %s" v.Name text (String.concat ", " values))
+    | VarKind.Int ->
+        match Int64.TryParse(text.Trim(),
+                             System.Globalization.NumberStyles.Integer,
+                             System.Globalization.CultureInfo.InvariantCulture) with
+        | true, i -> Ok (TInt i)
+        | _ -> Error (sprintf "%s: '%s' is not an integer" v.Name text)
+    | VarKind.Float ->
+        match Double.TryParse(text.Trim(),
+                              System.Globalization.NumberStyles.Float,
+                              System.Globalization.CultureInfo.InvariantCulture) with
+        | true, f -> Ok (TFloat f)
+        | _ -> Error (sprintf "%s: '%s' is not a number" v.Name text)
+
+/// Parse all edited fields, keeping only the ones that differ from the
+/// declared default (so RunHistory's OverriddenKeys stays honest). Stops
+/// at the first parse error.
+let buildOverrides (d: RunDialogState) : Result<Map<string, TomlValue>, string> =
+    let rec go acc vars =
+        match vars with
+        | [] -> Ok acc
+        | (v: FlowVar) :: rest ->
+            let text = Map.tryFind v.Name d.Values |> Option.defaultValue (varDefaultText v)
+            match parseOverrideValue v text with
+            | Error e -> Error e
+            | Ok value ->
+                let isOverride =
+                    match v.Default with
+                    | Some def -> def <> value
+                    | None     -> true
+                go (if isOverride then Map.add v.Name value acc else acc) rest
+    go Map.empty d.Vars
 
 /// Resolve the Tasks SDK assembly + builtin tasks dir from the host
 /// process layout. Same defaults the CLI uses; works here because the
@@ -566,6 +670,96 @@ let closeTabs (toClose: RootTab list) (model: Model) : Model * Cmd<Msg> =
         if contextStillOpen then intermediate, Cmd.none
         else { intermediate with ActiveTab = Home; CurrentProject = None }, Cmd.none
 
+/// Kick off an in-process flow run with the given var overrides: spin up
+/// a LiveRun tab immediately, then schedule Run.execute + the tail poller
+/// on the thread pool (marshaling results back via Dispatcher.UIThread).
+/// Shared by the no-vars Run path and the param-dialog confirm.
+let private startRun
+        (pid: ProjectId)
+        (flowId: string)
+        (overrides: Map<string, TomlValue>)
+        (model: Model)
+        : Model * Cmd<Msg> =
+    match projectRoot pid model.Projects with
+    | None -> model, Cmd.none
+    | Some root ->
+        let key = Guid.NewGuid()
+        let tab = LiveRun key
+        let liveState = {
+            ProjectId = pid
+            FlowId    = flowId
+            StartedAt = DateTimeOffset.UtcNow
+            Phase     = LivePending
+            Progress  = LiveProgress.empty
+            CancelRequested = false
+        }
+        // Snapshot the runs dir before launching so the poller can
+        // identify the dir this run is about to create.
+        let runsBefore = existingRunDirs root
+        let opts : Run.Options = {
+            WorkingDir       = root
+            FlowId           = flowId
+            VarOverrides     = overrides
+            SdkAssemblyPath  = sdkAssemblyPath ()
+            BuiltinTasksDir  = builtinTasksDir ()
+            UserTasksDir     = None
+        }
+        // Run on the thread pool, then marshal the result message
+        // back onto the Avalonia UI thread before dispatching.
+        //
+        // We deliberately do NOT use Cmd.OfAsync.either here: in
+        // Elmish, the dispatch loop runs `setState` (→ FuncUI's
+        // host.Update → Avalonia view rebuild) on whatever thread
+        // calls `dispatch`. FuncUI.Elmish 1.5.1's withHost does not
+        // marshal, so dispatching from the thread-pool thread would
+        // rebuild the view off the UI thread and crash the whole
+        // app. Dispatcher.UIThread.Post guarantees the dispatch —
+        // and thus the re-render — happens on the UI thread.
+        let runCmd : Cmd<Msg> =
+            [ fun dispatch ->
+                async {
+                    do! Async.SwitchToThreadPool ()
+                    let msg =
+                        try LiveRunCompleted (key, Run.execute opts)
+                        with ex -> LiveRunFailed (key, ex)
+                    Dispatcher.UIThread.Post(fun () -> dispatch msg)
+                }
+                |> Async.Start ]
+        // Independent tail poller. Reads the run's events/log files
+        // (which Run.execute appends to live) every ~300ms and posts
+        // a LiveRunProgress snapshot to the UI thread, until it sees
+        // a run.end event or hits the safety cap. Runs concurrently
+        // with the executor above; both are UI-thread-safe via Post.
+        let pollCmd : Cmd<Msg> =
+            [ fun dispatch ->
+                async {
+                    do! Async.SwitchToThreadPool ()
+                    let mutable runDir = None
+                    let mutable finished = false
+                    let mutable ticks = 0
+                    // Cap ~ 1 hour at 300ms cadence; a stuck run won't
+                    // poll forever if run.end is somehow never written.
+                    while not finished && ticks < 12000 do
+                        ticks <- ticks + 1
+                        if Option.isNone runDir then
+                            runDir <- findNewRunDir root runsBefore
+                        match runDir with
+                        | Some dir ->
+                            let progress = readProgress dir
+                            Dispatcher.UIThread.Post(fun () ->
+                                dispatch (LiveRunProgress (key, progress)))
+                            if progress.Ended then finished <- true
+                        | None -> ()
+                        if not finished then do! Async.Sleep 300
+                }
+                |> Async.Start ]
+        { model with
+            OpenTabs       = moveOrAppend tab model.OpenTabs
+            ActiveTab      = tab
+            CurrentProject = Some pid
+            LiveRuns       = Map.add key liveState model.LiveRuns },
+        Cmd.batch [ runCmd; pollCmd ]
+
 let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | RefreshProjects ->
@@ -658,91 +852,61 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             CurrentProject = Some pid
             RunDetails     = details },
         Cmd.none
-    | RunFlow (pid, flowId) ->
-        // Async in-process run: spin up a LiveRun tab immediately so
-        // the user sees the dispatch land, then schedule Run.execute on
-        // the thread pool. LiveRunCompleted (or LiveRunFailed on an
-        // unexpected exn) closes the loop by updating the tab's phase
-        // and reloading history.
-        match projectRoot pid model.Projects with
-        | None -> model, Cmd.none
-        | Some root ->
-            let key = Guid.NewGuid()
-            let tab = LiveRun key
-            let liveState = {
-                ProjectId = pid
-                FlowId    = flowId
-                StartedAt = DateTimeOffset.UtcNow
-                Phase     = LivePending
-                Progress  = LiveProgress.empty
-                CancelRequested = false
-            }
-            // Snapshot the runs dir before launching so the poller can
-            // identify the dir this run is about to create.
-            let runsBefore = existingRunDirs root
-            let opts : Run.Options = {
-                WorkingDir       = root
-                FlowId           = flowId
-                VarOverrides     = Map.empty
-                SdkAssemblyPath  = sdkAssemblyPath ()
-                BuiltinTasksDir  = builtinTasksDir ()
-                UserTasksDir     = None
-            }
-            // Run on the thread pool, then marshal the result message
-            // back onto the Avalonia UI thread before dispatching.
-            //
-            // We deliberately do NOT use Cmd.OfAsync.either here: in
-            // Elmish, the dispatch loop runs `setState` (→ FuncUI's
-            // host.Update → Avalonia view rebuild) on whatever thread
-            // calls `dispatch`. FuncUI.Elmish 1.5.1's withHost does not
-            // marshal, so dispatching from the thread-pool thread would
-            // rebuild the view off the UI thread and crash the whole
-            // app. Dispatcher.UIThread.Post guarantees the dispatch —
-            // and thus the re-render — happens on the UI thread.
-            let runCmd : Cmd<Msg> =
-                [ fun dispatch ->
-                    async {
-                        do! Async.SwitchToThreadPool ()
-                        let msg =
-                            try LiveRunCompleted (key, Run.execute opts)
-                            with ex -> LiveRunFailed (key, ex)
-                        Dispatcher.UIThread.Post(fun () -> dispatch msg)
-                    }
-                    |> Async.Start ]
-            // Independent tail poller. Reads the run's events/log files
-            // (which Run.execute appends to live) every ~300ms and posts
-            // a LiveRunProgress snapshot to the UI thread, until it sees
-            // a run.end event or hits the safety cap. Runs concurrently
-            // with the executor above; both are UI-thread-safe via Post.
-            let pollCmd : Cmd<Msg> =
-                [ fun dispatch ->
-                    async {
-                        do! Async.SwitchToThreadPool ()
-                        let mutable runDir = None
-                        let mutable finished = false
-                        let mutable ticks = 0
-                        // Cap ~ 1 hour at 300ms cadence; a stuck run won't
-                        // poll forever if run.end is somehow never written.
-                        while not finished && ticks < 12000 do
-                            ticks <- ticks + 1
-                            if Option.isNone runDir then
-                                runDir <- findNewRunDir root runsBefore
-                            match runDir with
-                            | Some dir ->
-                                let progress = readProgress dir
-                                Dispatcher.UIThread.Post(fun () ->
-                                    dispatch (LiveRunProgress (key, progress)))
-                                if progress.Ended then finished <- true
-                            | None -> ()
-                            if not finished then do! Async.Sleep 300
-                    }
-                    |> Async.Start ]
+    | RequestRun (pid, flowId) ->
+        // Run button entry point. If the flow declares scalar vars, open
+        // the param dialog (pre-filled with declared defaults); otherwise
+        // there's nothing to fill in, so run straight away.
+        match flowScalarVars model pid flowId with
+        | [] -> startRun pid flowId Map.empty model
+        | vars ->
+            let values =
+                vars
+                |> List.map (fun v -> v.Name, varDefaultText v)
+                |> Map.ofList
             { model with
-                OpenTabs       = moveOrAppend tab model.OpenTabs
-                ActiveTab      = tab
-                CurrentProject = Some pid
-                LiveRuns       = Map.add key liveState model.LiveRuns },
-            Cmd.batch [ runCmd; pollCmd ]
+                RunDialog =
+                    Some { ProjectId = pid
+                           FlowId    = flowId
+                           Vars      = vars
+                           Values    = values
+                           Error     = None } },
+            Cmd.none
+    | RunDialogSetValue (name, value) ->
+        match model.RunDialog with
+        | None -> model, Cmd.none
+        | Some d ->
+            { model with
+                RunDialog =
+                    Some { d with
+                            Values = Map.add name value d.Values
+                            Error  = None } },
+            Cmd.none
+    | RunDialogReset ->
+        // Restore every field to its declared default.
+        match model.RunDialog with
+        | None -> model, Cmd.none
+        | Some d ->
+            let values =
+                d.Vars |> List.map (fun v -> v.Name, varDefaultText v) |> Map.ofList
+            { model with RunDialog = Some { d with Values = values; Error = None } },
+            Cmd.none
+    | RunDialogCancel ->
+        { model with RunDialog = None }, Cmd.none
+    | RunDialogConfirm ->
+        match model.RunDialog with
+        | None -> model, Cmd.none
+        | Some d ->
+            match buildOverrides d with
+            | Error msg ->
+                { model with RunDialog = Some { d with Error = Some msg } }, Cmd.none
+            | Ok overrides ->
+                // Clear the dialog first so startRun's model carries the
+                // closed state regardless of whether the run kicks off.
+                startRun d.ProjectId d.FlowId overrides { model with RunDialog = None }
+    | RunFlow (pid, flowId) ->
+        // Direct run with no overrides (used internally / by RequestRun
+        // for flows that declare no scalar vars).
+        startRun pid flowId Map.empty model
     | LiveRunCompleted (key, result) ->
         match Map.tryFind key model.LiveRuns with
         | None -> model, Cmd.none  // should not happen; guard.

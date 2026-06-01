@@ -42,7 +42,8 @@ type StateTests() =
           RunDetails     = Map.empty
           LiveRuns       = Map.empty
           AddProject     = None
-          CurrentProject = None }
+          CurrentProject = None
+          RunDialog      = None }
 
     let modelWithTabs (active: RootTab) (tabs: RootTab list) : Model =
         { baseModel with OpenTabs = tabs; ActiveTab = active }
@@ -87,6 +88,15 @@ type StateTests() =
         | Some text -> File.WriteAllText(Path.Combine(ci, "flows.toml"), text)
         | None -> ()
         { Name = name; Path = pdir; AddedAt = DateTimeOffset.UtcNow }
+
+    let mkVar (name: string) (kind: VarKind) (dflt: TomlValue option) : FlowVar =
+        { Name = name; Kind = kind; Default = dflt }
+
+    /// A model with one project flow cached, carrying the given vars.
+    let modelWithFlow (pid: string) (flowId: string) (vars: FlowVar list) : Model =
+        { baseModel with
+            ProjectFlows =
+                Map.ofList [ pid, FlowsOk [ { Id = flowId; Name = None; Vars = vars; Steps = [] } ] ] }
 
     interface IDisposable with
         member _.Dispose() =
@@ -546,3 +556,138 @@ type StateTests() =
             [ Home; Project "p1"; RunDetail ("p1", "r1") ], m.OpenTabs)
         Assert.Equal(RunDetail ("p1", "r1"), m.ActiveTab)
         Assert.Equal<ProjectId option>(Some "p1", m.CurrentProject)
+
+    // ─── run-with-parameters dialog ─────────────────────────────────
+
+    [<Fact>]
+    member _.``isScalarVarKind accepts scalars and rejects compound kinds`` () =
+        Assert.True(isScalarVarKind VarKind.String)
+        Assert.True(isScalarVarKind VarKind.Int)
+        Assert.True(isScalarVarKind VarKind.Bool)
+        Assert.True(isScalarVarKind (VarKind.Enum [ "a"; "b" ]))
+        Assert.False(isScalarVarKind (VarKind.List VarKind.String))
+        Assert.False(isScalarVarKind VarKind.Path)
+        Assert.False(isScalarVarKind VarKind.Secret)
+
+    [<Fact>]
+    member _.``varDefaultText renders defaults and falls back sensibly`` () =
+        Assert.Equal("main",  varDefaultText (mkVar "b" VarKind.String (Some (TString "main"))))
+        Assert.Equal("3",     varDefaultText (mkVar "n" VarKind.Int (Some (TInt 3L))))
+        Assert.Equal("true",  varDefaultText (mkVar "c" VarKind.Bool (Some (TBool true))))
+        // No default: bool → "false", enum → first value, others → "".
+        Assert.Equal("false", varDefaultText (mkVar "c" VarKind.Bool None))
+        Assert.Equal("Win64", varDefaultText (mkVar "p" (VarKind.Enum [ "Win64"; "Linux" ]) None))
+        Assert.Equal("",      varDefaultText (mkVar "s" VarKind.String None))
+
+    [<Fact>]
+    member _.``RequestRun with no scalar vars does not open the dialog`` () =
+        // Flow has only a (non-scalar) list var → nothing to fill in.
+        let model = modelWithFlow "p1" "build" [ mkVar "maps" (VarKind.List VarKind.String) None ]
+        let m = apply (RequestRun ("p1", "build")) model
+        Assert.Equal<RunDialogState option>(None, m.RunDialog)
+
+    [<Fact>]
+    member _.``RequestRun with scalar vars opens the dialog pre-filled with defaults`` () =
+        let vars =
+            [ mkVar "branch" VarKind.String (Some (TString "main"))
+              mkVar "clean"  VarKind.Bool   (Some (TBool false)) ]
+        let m = apply (RequestRun ("p1", "release")) (modelWithFlow "p1" "release" vars)
+        match m.RunDialog with
+        | None -> Assert.True(false, "dialog should be open")
+        | Some d ->
+            Assert.Equal("p1", d.ProjectId)
+            Assert.Equal("release", d.FlowId)
+            Assert.Equal<string option>(None, d.Error)
+            Assert.Equal("main",  Map.find "branch" d.Values)
+            Assert.Equal("false", Map.find "clean" d.Values)
+
+    [<Fact>]
+    member _.``RequestRun keeps only scalar vars in the dialog`` () =
+        let vars =
+            [ mkVar "branch" VarKind.String None
+              mkVar "maps"   (VarKind.List VarKind.String) None ]
+        let m = apply (RequestRun ("p1", "release")) (modelWithFlow "p1" "release" vars)
+        match m.RunDialog with
+        | Some d -> Assert.Equal<string list>([ "branch" ], d.Vars |> List.map (fun v -> v.Name))
+        | None   -> Assert.True(false, "dialog should be open")
+
+    [<Fact>]
+    member _.``RunDialogSetValue updates the value and clears the error`` () =
+        let vars = [ mkVar "n" VarKind.Int (Some (TInt 1L)) ]
+        let opened = apply (RequestRun ("p1", "f")) (modelWithFlow "p1" "f" vars)
+        // Force an error first.
+        let errored = apply RunDialogConfirm { opened with RunDialog = opened.RunDialog |> Option.map (fun d -> { d with Values = Map.add "n" "oops" d.Values }) }
+        Assert.True((errored.RunDialog |> Option.bind (fun d -> d.Error)).IsSome)
+        let fixed' = apply (RunDialogSetValue ("n", "42")) errored
+        match fixed'.RunDialog with
+        | Some d ->
+            Assert.Equal("42", Map.find "n" d.Values)
+            Assert.Equal<string option>(None, d.Error)
+        | None -> Assert.True(false, "dialog should still be open")
+
+    [<Fact>]
+    member _.``RunDialogReset restores defaults and clears the error`` () =
+        let vars = [ mkVar "branch" VarKind.String (Some (TString "main")) ]
+        let opened = apply (RequestRun ("p1", "f")) (modelWithFlow "p1" "f" vars)
+        let edited = apply (RunDialogSetValue ("branch", "dev")) opened
+        let m = apply RunDialogReset edited
+        match m.RunDialog with
+        | Some d ->
+            Assert.Equal("main", Map.find "branch" d.Values)
+            Assert.Equal<string option>(None, d.Error)
+        | None -> Assert.True(false, "dialog should still be open")
+
+    [<Fact>]
+    member _.``RunDialogCancel closes the dialog`` () =
+        let vars = [ mkVar "branch" VarKind.String None ]
+        let opened = apply (RequestRun ("p1", "f")) (modelWithFlow "p1" "f" vars)
+        let m = apply RunDialogCancel opened
+        Assert.Equal<RunDialogState option>(None, m.RunDialog)
+
+    [<Fact>]
+    member _.``RunDialogConfirm with an invalid number keeps the dialog open with an error`` () =
+        let vars = [ mkVar "n" VarKind.Int (Some (TInt 1L)) ]
+        let opened = apply (RequestRun ("p1", "f")) (modelWithFlow "p1" "f" vars)
+        let bad = { opened with RunDialog = opened.RunDialog |> Option.map (fun d -> { d with Values = Map.add "n" "abc" d.Values }) }
+        let m = apply RunDialogConfirm bad
+        match m.RunDialog with
+        | Some d -> Assert.True(d.Error.IsSome)
+        | None   -> Assert.True(false, "dialog should stay open on a parse error")
+
+    [<Fact>]
+    member _.``RunDialogConfirm with valid values closes the dialog`` () =
+        // No registered project → the run itself no-ops, but the dialog
+        // must still close on a successful parse.
+        let vars = [ mkVar "n" VarKind.Int (Some (TInt 1L)) ]
+        let opened = apply (RequestRun ("p1", "f")) (modelWithFlow "p1" "f" vars)
+        let m = apply RunDialogConfirm opened
+        Assert.Equal<RunDialogState option>(None, m.RunDialog)
+
+    [<Fact>]
+    member _.``buildOverrides includes only values that differ from defaults`` () =
+        let d =
+            { ProjectId = "p1"
+              FlowId    = "f"
+              Vars =
+                [ mkVar "branch" VarKind.String (Some (TString "main"))
+                  mkVar "clean"  VarKind.Bool   (Some (TBool false)) ]
+              Values = Map.ofList [ "branch", "main"; "clean", "true" ]
+              Error  = None }
+        match buildOverrides d with
+        | Ok overrides ->
+            // branch unchanged (default) → omitted; clean flipped → present.
+            Assert.False(Map.containsKey "branch" overrides)
+            Assert.Equal<TomlValue>(TBool true, Map.find "clean" overrides)
+        | Error e -> Assert.True(false, e)
+
+    [<Fact>]
+    member _.``buildOverrides reports the first parse error`` () =
+        let d =
+            { ProjectId = "p1"
+              FlowId    = "f"
+              Vars   = [ mkVar "n" VarKind.Int None ]
+              Values = Map.ofList [ "n", "not-a-number" ]
+              Error  = None }
+        match buildOverrides d with
+        | Ok _    -> Assert.True(false, "expected a parse error")
+        | Error _ -> Assert.True(true)
