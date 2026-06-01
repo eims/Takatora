@@ -355,6 +355,42 @@ module Run =
             try mtx.Dispose() with _ -> ()
         | None -> ()
 
+    // ─── Secret redaction ─────────────────────────────────────────
+    //
+    // Secret var values must never land in on-disk run artifacts
+    // (manifest.toml's [params] or inputs/*.json) in plaintext. The real
+    // value is handed to the task only through the `TAKATORA_SECRET_<name>`
+    // environment variable. We scrub by literal-value replacement so a
+    // secret that's been interpolated into a larger param string
+    // (e.g. "--password=SECRET") is also masked.
+
+    let private secretMask = "***"
+
+    /// Secret var names declared on the flow.
+    let internal secretVarNames (flow: Flow) : Set<string> =
+        flow.Vars
+        |> List.choose (fun v -> if v.Kind = VarKind.Secret then Some v.Name else None)
+        |> Set.ofList
+
+    /// The non-empty resolved values of those secret vars.
+    let private secretValuesFrom (secretNames: Set<string>) (vars: Map<string, TomlValue>) : string list =
+        secretNames
+        |> Set.toList
+        |> List.choose (fun n ->
+            match Map.tryFind n vars with
+            | Some (TString s) when s <> "" -> Some s
+            | _ -> None)
+
+    let private redactString (secretValues: string list) (s: string) : string =
+        secretValues |> List.fold (fun (acc: string) sv -> acc.Replace(sv, secretMask)) s
+
+    let rec private redactValue (secretValues: string list) (v: TomlValue) : TomlValue =
+        match v with
+        | TString s -> TString (redactString secretValues s)
+        | TArray xs -> TArray (List.map (redactValue secretValues) xs)
+        | TTable m  -> TTable (Map.map (fun _ x -> redactValue secretValues x) m)
+        | other     -> other
+
     /// Spawn `dotnet fsi <wrapper>` for one step. Stdout/stderr get
     /// pumped into log.txt; the .fsx itself writes its own events +
     /// outputs through the env var paths. While the subprocess runs,
@@ -371,6 +407,7 @@ module Run =
             (logPath: string)
             (priorOutputs: Map<string, Map<string, TomlValue>>)
             (resolveCtx: ResolveContext)
+            (secretNames: Set<string>)
             (index: int)
             (step: Step)
             : StepRecord =
@@ -429,13 +466,20 @@ module Run =
             step.Params |> Map.fold (fun acc k v -> Map.add k v acc) baseMap
         let resolvedParams =
             mergedParams |> Map.map (fun _ v -> Vars.resolve resolveCtx v)
+        // Keep secret values out of the on-disk input.json — scrub them
+        // from the params written to disk; the real values reach the task
+        // through TAKATORA_SECRET_<name> env vars set on the fsi process.
+        let secretValues = secretValuesFrom secretNames resolveCtx.Vars
+        let inputParams =
+            if List.isEmpty secretValues then resolvedParams
+            else resolvedParams |> Map.map (fun _ v -> redactValue secretValues v)
         let inputPath  = Path.Combine(runDir, "inputs",   $"{id}.json")
         let outputPath = Path.Combine(runDir, "outputs",  $"{id}.ndjson")
         let wrapperPath = Path.Combine(runDir, "_wrapper", $"{id}.fsx")
         Directory.CreateDirectory(Path.GetDirectoryName inputPath)   |> ignore
         Directory.CreateDirectory(Path.GetDirectoryName outputPath)  |> ignore
         Directory.CreateDirectory(Path.GetDirectoryName wrapperPath) |> ignore
-        File.WriteAllText(inputPath, buildInputJson project effectiveWorkingDir resolvedParams priorOutputs)
+        File.WriteAllText(inputPath, buildInputJson project effectiveWorkingDir inputParams priorOutputs)
         File.WriteAllText(wrapperPath, wrapperScript opts.SdkAssemblyPath resolved.Path)
         // Touch the output file so the SDK can `FileMode.Append` it cleanly.
         File.WriteAllText(outputPath, "")
@@ -489,6 +533,11 @@ module Run =
         psi.Environment.["TAKATORA_TASK_INPUT"]  <- inputPath
         psi.Environment.["TAKATORA_OUTPUT_FILE"] <- outputPath
         psi.Environment.["TAKATORA_EVENTS_FILE"] <- eventsPath
+        // Real secret values travel only in-process, never to disk.
+        for n in secretNames do
+            match Map.tryFind n resolveCtx.Vars with
+            | Some (TString s) -> psi.Environment.[$"TAKATORA_SECRET_{n}"] <- s
+            | _ -> ()
 
         use proc = new Process()
         proc.StartInfo <- psi
@@ -572,15 +621,20 @@ module Run =
         sb.AppendLine() |> ignore
 
         if not (Map.isEmpty vars) then
+            // Secret vars are masked so the manifest (the history-facing
+            // artifact) never records their plaintext value.
+            let secretNames = secretVarNames flow
             sb.AppendLine("[params]") |> ignore
             for KeyValue (k, v) in vars do
                 let lit =
-                    match v with
-                    | TString s -> sprintf "\"%s\"" (s.Replace("\"", "\\\""))
-                    | TBool b -> if b then "true" else "false"
-                    | TInt i -> string i
-                    | TFloat f -> f.ToString("R", CultureInfo.InvariantCulture)
-                    | _ -> sprintf "\"%s\"" (sprintf "%A" v)
+                    if Set.contains k secretNames then sprintf "\"%s\"" secretMask
+                    else
+                        match v with
+                        | TString s -> sprintf "\"%s\"" (s.Replace("\"", "\\\""))
+                        | TBool b -> if b then "true" else "false"
+                        | TInt i -> string i
+                        | TFloat f -> f.ToString("R", CultureInfo.InvariantCulture)
+                        | _ -> sprintf "\"%s\"" (sprintf "%A" v)
                 sb.AppendFormat("{0} = {1}\n", k, lit) |> ignore
             sb.AppendLine() |> ignore
 
@@ -764,6 +818,7 @@ module Run =
             ]
 
             let vars = effectiveVars flow opts.VarOverrides
+            let secretNames = secretVarNames flow
 
             let envReader (name: string) =
                 match Environment.GetEnvironmentVariable(name) with
@@ -803,7 +858,7 @@ module Run =
                         Project = project
                         Env = envReader
                     }
-                    let record = runStep opts project projectRoot effectiveWorkingDir runDir eventsPath logPath priorOutputs ctx (i + 1) step
+                    let record = runStep opts project projectRoot effectiveWorkingDir runDir eventsPath logPath priorOutputs ctx secretNames (i + 1) step
                     steps <- record :: steps
                     match record.Status with
                     | StepStatus.Success ->

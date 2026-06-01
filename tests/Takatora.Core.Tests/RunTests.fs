@@ -391,6 +391,69 @@ type = "shell"
         let log = File.ReadAllText(Path.Combine(outcome.RunDir, "log.txt"))
         Assert.Contains(marker, log)
 
+    // ─── secret redaction ─────────────────────────────────────────
+
+    [<Fact>]
+    member _.``secret var values are masked in manifest and input json`` () =
+        writeFile ".ci/project.toml" projectToml
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "sec"
+[flow.vars]
+password = { type = "secret" }
+[[flow.steps]]
+id = "say"
+type = "notify.console"
+message = "leak ${vars.password}"
+"""
+        let builtinDir = Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+        let opts =
+            { buildOptions "sec" (Map.ofList [ "password", TString "topsecret123" ])
+                with BuiltinTasksDir = builtinDir }
+        let outcome =
+            match Run.execute opts with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        // Manifest masks the secret var, never records the plaintext.
+        let manifest = File.ReadAllText(Path.Combine(outcome.RunDir, "manifest.toml"))
+        Assert.Contains("password = \"***\"", manifest)
+        Assert.DoesNotContain("topsecret123", manifest)
+        // Resolved value scrubbed from the on-disk input json too.
+        for f in Directory.GetFiles(Path.Combine(outcome.RunDir, "inputs")) do
+            Assert.DoesNotContain("topsecret123", File.ReadAllText f)
+        // The task read the scrubbed param, so even the log lacks it.
+        let log = File.ReadAllText(Path.Combine(outcome.RunDir, "log.txt"))
+        Assert.DoesNotContain("topsecret123", log)
+
+    [<Fact>]
+    member _.``secret real value reaches the task via TAKATORA_SECRET env var`` () =
+        writeFile ".ci/project.toml" projectToml
+        // Project-local task that echoes the secret env var into the log,
+        // proving the real value is delivered out-of-band (not via disk).
+        writeFile ".ci/tasks/echo.secret.fsx" """
+open Takatora.Tasks
+let v = System.Environment.GetEnvironmentVariable "TAKATORA_SECRET_password"
+Step.run "echo" (fun () -> printfn "ENV=%s" v)
+"""
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "sec2"
+[flow.vars]
+password = { type = "secret" }
+[[flow.steps]]
+id = "e"
+type = "echo.secret"
+"""
+        let opts = buildOptions "sec2" (Map.ofList [ "password", TString "envsecret999" ])
+        let outcome =
+            match Run.execute opts with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        let log = File.ReadAllText(Path.Combine(outcome.RunDir, "log.txt"))
+        Assert.Contains("ENV=envsecret999", log)
+
     // ─── engine mutex ─────────────────────────────────────────────
 
     [<Fact>]
