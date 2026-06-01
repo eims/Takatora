@@ -53,6 +53,7 @@ type StateTests() =
           ProjectHistory = Map.empty
           ProjectFlows   = Map.empty
           ProjectInfo    = Map.empty
+          ProjectSecrets = Map.empty
           RunDetails     = Map.empty
           LiveRuns       = Map.empty
           AddProject     = None
@@ -789,6 +790,17 @@ type StateTests() =
             Assert.True(Set.contains "token" d.Stored)
             Assert.True(Set.contains "token" d.Remember)
         | None -> Assert.True(false, "dialog should be open")
+
+    [<Fact>]
+    member _.``DeleteSecret removes the keychain entry and refreshes the cache`` () =
+        Secrets.write "p1" "token" "v"
+        Secrets.write "p1" "keep" "v"
+        // Seed the cache as if Settings had loaded it.
+        let seeded = { baseModel with ProjectSecrets = Map.ofList [ "p1", [ "keep"; "token" ] ] }
+        let m = apply (DeleteSecret ("p1", "token")) seeded
+        Assert.Equal<string option>(None, Secrets.read "p1" "token")
+        // Cache no longer lists the deleted entry (drives the re-render).
+        Assert.Equal<string list>([ "keep" ], Map.find "p1" m.ProjectSecrets)
 
     [<Fact>]
     member _.``RunDialogForget deletes the stored secret and clears the field`` () =

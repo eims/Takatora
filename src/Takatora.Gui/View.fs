@@ -825,9 +825,56 @@ let private projectInfoBlock (proj: Project) : IView =
         ]
     ] :> _
 
+/// Keychain-backed secrets for this project, with per-entry delete. The
+/// names come from the model cache (State.ProjectSecrets), refreshed when
+/// Settings is opened/refreshed and updated in-place on delete — so the
+/// list stays a pure function of model state (and re-renders reliably).
+let private secretsBlock (pid: ProjectId) (names: string list) (dispatch: Msg -> unit) : IView =
+    let rows : IView =
+        if List.isEmpty names then
+            TextBlock.create [
+                TextBlock.text "No secrets stored for this project."
+                TextBlock.foreground mutedBrush
+            ] :> _
+        else
+            StackPanel.create [
+                StackPanel.spacing 4.0
+                StackPanel.children [
+                    for n in names ->
+                        DockPanel.create [
+                            DockPanel.children [
+                                Button.create [
+                                    DockPanel.dock Dock.Right
+                                    Button.content "Delete"
+                                    Button.onClick ((fun _ -> dispatch (DeleteSecret (pid, n))), SubPatchOptions.Always)
+                                ] :> IView
+                                TextBlock.create [
+                                    TextBlock.text n
+                                    TextBlock.verticalAlignment VerticalAlignment.Center
+                                ] :> IView
+                            ]
+                        ] :> IView
+                ]
+            ] :> _
+    StackPanel.create [
+        StackPanel.spacing 2.0
+        StackPanel.children [
+            sectionHeader "Secrets"
+            (TextBlock.create [
+                TextBlock.text "Stored in the OS keychain; the flow's secret vars read these at run time."
+                TextBlock.foreground mutedBrush
+                TextBlock.fontSize 12.0
+                TextBlock.textWrapping TextWrapping.Wrap
+                TextBlock.margin (Thickness(0.0, 0.0, 0.0, 6.0))
+             ] :> IView)
+            rows
+        ]
+    ] :> _
+
 let private settingsBody
         (pid: ProjectId)
         (load: ProjectInfoLoad)
+        (secrets: string list)
         (dispatch: Msg -> unit)
         : IView =
     let header =
@@ -882,7 +929,11 @@ let private settingsBody
                 ScrollViewer.content (
                     StackPanel.create [
                         StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
-                        StackPanel.children [ projectInfoBlock proj ]
+                        StackPanel.spacing 8.0
+                        StackPanel.children [
+                            projectInfoBlock proj
+                            secretsBlock pid secrets dispatch
+                        ]
                     ]
                 )
             ] :> _
@@ -1131,7 +1182,10 @@ let private projectView
                      let load =
                          Map.tryFind pid model.ProjectInfo
                          |> Option.defaultValue ProjectInfoMissing
-                     settingsBody pid load dispatch)
+                     let secrets =
+                         Map.tryFind pid model.ProjectSecrets
+                         |> Option.defaultValue []
+                     settingsBody pid load secrets dispatch)
             ]
         ] :> _
 

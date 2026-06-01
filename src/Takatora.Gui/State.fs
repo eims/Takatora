@@ -158,6 +158,10 @@ type Model = {
     /// Cached `TomlConfig.loadProject` results, keyed by project id.
     /// Loaded on OpenProject alongside flows.
     ProjectInfo: Map<ProjectId, ProjectInfoLoad>
+    /// Cached keychain secret var names per project (for the Settings
+    /// manager). Refreshed when Settings is opened/refreshed and on
+    /// delete, so the list stays a pure function of model state.
+    ProjectSecrets: Map<ProjectId, string list>
     /// Cached `RunHistory.findRun` results for open RunDetail tabs,
     /// keyed by (project, run id). Loaded on OpenRunDetail, dropped
     /// when the corresponding tab closes.
@@ -207,6 +211,8 @@ type Msg =
     | RunDialogReset
     | RunDialogConfirm
     | RunDialogCancel
+    /// Delete a stored secret from the keychain (Settings manager).
+    | DeleteSecret of ProjectId * varName:string
     | LiveRunCompleted of LiveRunKey * Result<RunOutcome, RunFailure>
     | LiveRunProgress  of LiveRunKey * LiveProgress
     | LiveRunFailed    of LiveRunKey * exn
@@ -227,6 +233,7 @@ let init () : Model * Cmd<Msg> =
       ProjectHistory = Map.empty
       ProjectFlows   = Map.empty
       ProjectInfo    = Map.empty
+      ProjectSecrets = Map.empty
       RunDetails     = Map.empty
       LiveRuns       = Map.empty
       AddProject     = None
@@ -807,13 +814,17 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         let info =
             if Map.containsKey pid model.ProjectInfo then model.ProjectInfo
             else Map.add pid (loadProjectInfoFor pid model.Projects) model.ProjectInfo
+        let secrets =
+            if Map.containsKey pid model.ProjectSecrets then model.ProjectSecrets
+            else Map.add pid (Secrets.listForProject pid) model.ProjectSecrets
         { model with
             OpenTabs       = moveOrAppend tab model.OpenTabs
             ActiveTab      = tab
             CurrentProject = Some pid
             ProjectHistory = history
             ProjectFlows   = flows
-            ProjectInfo    = info },
+            ProjectInfo    = info
+            ProjectSecrets = secrets },
         Cmd.none
     | ActivateTab tab ->
         if List.contains tab model.OpenTabs then
@@ -853,7 +864,16 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     if i > idx && bulkClosable t then Some t else None)
             closeTabs toClose model
     | ActivateSubTab (pid, sub) ->
-        { model with ProjectSubTabs = Map.add pid sub model.ProjectSubTabs }, Cmd.none
+        // Entering Settings re-reads the keychain so a secret saved via the
+        // run dialog (or removed in the OS) shows up without a manual refresh.
+        let secrets =
+            match sub with
+            | ProjectSettings -> Map.add pid (Secrets.listForProject pid) model.ProjectSecrets
+            | _               -> model.ProjectSecrets
+        { model with
+            ProjectSubTabs = Map.add pid sub model.ProjectSubTabs
+            ProjectSecrets = secrets },
+        Cmd.none
     | RefreshHistory pid ->
         { model with
             ProjectHistory = Map.add pid (loadHistoryFor pid model.Projects) model.ProjectHistory },
@@ -864,7 +884,8 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         Cmd.none
     | RefreshProjectInfo pid ->
         { model with
-            ProjectInfo = Map.add pid (loadProjectInfoFor pid model.Projects) model.ProjectInfo },
+            ProjectInfo    = Map.add pid (loadProjectInfoFor pid model.Projects) model.ProjectInfo
+            ProjectSecrets = Map.add pid (Secrets.listForProject pid) model.ProjectSecrets },
         Cmd.none
     | OpenRunDetail (pid, runId) ->
         let tab = RunDetail (pid, runId)
@@ -980,6 +1001,13 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         // Direct run with no overrides (used internally / by RequestRun
         // for flows that declare no scalar vars).
         startRun pid flowId Map.empty model
+    | DeleteSecret (pid, varName) ->
+        // Delete from the keychain, then refresh the cached list so the
+        // model changes and the Settings view re-renders without it.
+        Secrets.delete pid varName |> ignore
+        { model with
+            ProjectSecrets = Map.add pid (Secrets.listForProject pid) model.ProjectSecrets },
+        Cmd.none
     | LiveRunCompleted (key, result) ->
         match Map.tryFind key model.LiveRuns with
         | None -> model, Cmd.none  // should not happen; guard.
