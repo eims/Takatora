@@ -29,6 +29,9 @@
     <!-- ProjectRegistry exposes a test-only path override so tests
          don't pollute the real %APPDATA%\Takatora\projects.toml. -->
     <InternalsVisibleTo Include="Takatora.Core.Tests" />
+    <!-- GUI tests swap Secrets' backend (setBackendForTests) so the run
+         dialog's secret path never touches the real OS keychain. -->
+    <InternalsVisibleTo Include="Takatora.Gui.Tests" />
   </ItemGroup>
 
 </Project>

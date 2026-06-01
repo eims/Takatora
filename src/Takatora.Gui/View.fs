@@ -1602,6 +1602,8 @@ let private liveRunView
 let private runDialogField
         (v: FlowVar)
         (current: string)
+        (isRemembered: bool)
+        (isStored: bool)
         (dispatch: Msg -> unit)
         : IView =
     // Fixed-width label column on the left, control fills the rest, so the
@@ -1661,6 +1663,40 @@ let private runDialogField
                         TextBox.text current
                         TextBox.verticalAlignment VerticalAlignment.Center
                         TextBox.onTextChanged (fun s -> dispatch (RunDialogSetValue (v.Name, s)))
+                    ]
+                ]
+            ] :> _
+        | VarKind.Secret ->
+            // Masked input + a Remember toggle; a Forget button + "saved ✓"
+            // appear once a keychain entry exists. The real value is kept in
+            // memory only — the runner redacts it from disk artifacts.
+            StackPanel.create [
+                StackPanel.spacing 6.0
+                StackPanel.children [
+                    TextBox.create [
+                        TextBox.text current
+                        TextBox.passwordChar '●'
+                        TextBox.verticalAlignment VerticalAlignment.Center
+                        TextBox.onTextChanged (fun s -> dispatch (RunDialogSetValue (v.Name, s)))
+                    ]
+                    StackPanel.create [
+                        StackPanel.orientation Orientation.Horizontal
+                        StackPanel.spacing 8.0
+                        StackPanel.children [
+                            yield engineChoiceButton "Remember" isRemembered
+                                    (fun () -> dispatch (RunDialogToggleRemember v.Name))
+                            if isStored then
+                                yield TextBlock.create [
+                                    TextBlock.text "saved ✓"
+                                    TextBlock.foreground mutedBrush
+                                    TextBlock.fontSize 12.0
+                                    TextBlock.verticalAlignment VerticalAlignment.Center
+                                ] :> IView
+                                yield Button.create [
+                                    Button.content "Forget"
+                                    Button.onClick ((fun _ -> dispatch (RunDialogForget v.Name)), SubPatchOptions.Always)
+                                ] :> IView
+                        ]
                     ]
                 ]
             ] :> _
@@ -1728,7 +1764,10 @@ let private runParamsDialog (d: RunDialogState) (dispatch: Msg -> unit) : IView 
                                 let current =
                                     Map.tryFind v.Name d.Values
                                     |> Option.defaultValue (varDefaultText v)
-                                yield runDialogField v current dispatch
+                                yield runDialogField v current
+                                        (Set.contains v.Name d.Remember)
+                                        (Set.contains v.Name d.Stored)
+                                        dispatch
                             match d.Error with
                             | Some msg ->
                                 yield TextBlock.create [

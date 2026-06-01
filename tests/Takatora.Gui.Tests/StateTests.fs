@@ -2,9 +2,21 @@ namespace Takatora.Gui.Tests
 
 open System
 open System.IO
+open System.Collections.Generic
 open Xunit
 open Takatora.Core
 open Takatora.Gui.State
+
+/// In-memory secret store so dialog secret tests never touch the real
+/// OS keychain.
+type private InMemorySecretStore() =
+    let d = Dictionary<string, string>()
+    interface ISecretStore with
+        member _.Read(key) = match d.TryGetValue key with | true, v -> Some v | _ -> None
+        member _.Write(key, value) = d.[key] <- value
+        member _.Delete(key) = d.Remove key
+        member _.List(prefix) =
+            [ for kv in d do if kv.Key.StartsWith(prefix, StringComparison.Ordinal) then yield kv.Key ]
 
 /// State tests construct Model values directly rather than going
 /// through `init`, so they don't depend on (or mutate) the real
@@ -21,6 +33,8 @@ type StateTests() =
             "takatora-gui-state-tests",
             Guid.NewGuid().ToString("N"))
     do Directory.CreateDirectory(tmpRoot) |> ignore
+    // Keep the run dialog's secret path off the real keychain.
+    do Secrets.setBackendForTests (InMemorySecretStore() :> ISecretStore)
 
     // ─── helpers ────────────────────────────────────────────────────
 
@@ -100,6 +114,7 @@ type StateTests() =
 
     interface IDisposable with
         member _.Dispose() =
+            Secrets.resetBackend ()
             try Directory.Delete(tmpRoot, recursive = true) with _ -> ()
 
     // ─── init ───────────────────────────────────────────────────────
@@ -560,7 +575,7 @@ type StateTests() =
     // ─── run-with-parameters dialog ─────────────────────────────────
 
     [<Fact>]
-    member _.``isDialogVarKind accepts rendered kinds and rejects list/secret`` () =
+    member _.``isDialogVarKind accepts rendered kinds and rejects list`` () =
         Assert.True(isDialogVarKind VarKind.String)
         Assert.True(isDialogVarKind VarKind.Int)
         Assert.True(isDialogVarKind VarKind.Bool)
@@ -569,9 +584,9 @@ type StateTests() =
         Assert.True(isDialogVarKind VarKind.File)
         Assert.True(isDialogVarKind VarKind.Dir)
         Assert.True(isDialogVarKind VarKind.Multiline)
-        // Still deferred.
+        Assert.True(isDialogVarKind VarKind.Secret)
+        // Still deferred — needs the array editor (and Core parse support).
         Assert.False(isDialogVarKind (VarKind.List VarKind.String))
-        Assert.False(isDialogVarKind VarKind.Secret)
 
     [<Fact>]
     member _.``varDefaultText renders defaults and falls back sensibly`` () =
@@ -585,11 +600,10 @@ type StateTests() =
 
     [<Fact>]
     member _.``RequestRun with no renderable vars does not open the dialog`` () =
-        // Flow has only deferred kinds (list + secret) → nothing to fill in.
+        // Flow has only the deferred list kind → nothing to fill in.
         let model =
             modelWithFlow "p1" "build"
-                [ mkVar "maps" (VarKind.List VarKind.String) None
-                  mkVar "token" VarKind.Secret None ]
+                [ mkVar "maps" (VarKind.List VarKind.String) None ]
         let m = apply (RequestRun ("p1", "build")) model
         Assert.Equal<RunDialogState option>(None, m.RunDialog)
 
@@ -622,14 +636,14 @@ type StateTests() =
             Assert.Equal("false", Map.find "clean" d.Values)
 
     [<Fact>]
-    member _.``RequestRun drops deferred kinds (list/secret) from the dialog`` () =
+    member _.``RequestRun drops the deferred list kind but keeps secret`` () =
         let vars =
             [ mkVar "branch" VarKind.String None
               mkVar "maps"   (VarKind.List VarKind.String) None
               mkVar "token"  VarKind.Secret None ]
         let m = apply (RequestRun ("p1", "release")) (modelWithFlow "p1" "release" vars)
         match m.RunDialog with
-        | Some d -> Assert.Equal<string list>([ "branch" ], d.Vars |> List.map (fun v -> v.Name))
+        | Some d -> Assert.Equal<string list>([ "branch"; "token" ], d.Vars |> List.map (fun v -> v.Name))
         | None   -> Assert.True(false, "dialog should be open")
 
     [<Fact>]
@@ -693,6 +707,8 @@ type StateTests() =
                 [ mkVar "branch" VarKind.String (Some (TString "main"))
                   mkVar "clean"  VarKind.Bool   (Some (TBool false)) ]
               Values = Map.ofList [ "branch", "main"; "clean", "true" ]
+              Remember = Set.empty
+              Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
         | Ok overrides ->
@@ -708,7 +724,82 @@ type StateTests() =
               FlowId    = "f"
               Vars   = [ mkVar "n" VarKind.Int None ]
               Values = Map.ofList [ "n", "not-a-number" ]
+              Remember = Set.empty
+              Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
         | Ok _    -> Assert.True(false, "expected a parse error")
         | Error _ -> Assert.True(true)
+
+    // ─── secret vars in the dialog ──────────────────────────────────
+
+    [<Fact>]
+    member _.``buildOverrides skips secret vars`` () =
+        let d =
+            { ProjectId = "p1"
+              FlowId    = "f"
+              Vars   = [ mkVar "token" VarKind.Secret None ]
+              Values = Map.ofList [ "token", "typed-secret" ]
+              Remember = Set.empty
+              Stored   = Set.empty
+              Error  = None }
+        match buildOverrides d with
+        | Ok overrides -> Assert.False(Map.containsKey "token" overrides)
+        | Error e      -> Assert.True(false, e)
+
+    [<Fact>]
+    member _.``applySecretOverrides adds a typed secret and persists when remembered`` () =
+        let d =
+            { ProjectId = "p1"
+              FlowId    = "f"
+              Vars   = [ mkVar "token" VarKind.Secret None ]
+              Values = Map.ofList [ "token", "abc123" ]
+              Remember = Set.ofList [ "token" ]
+              Stored   = Set.empty
+              Error  = None }
+        let merged = applySecretOverrides d Map.empty
+        Assert.Equal<TomlValue>(TString "abc123", Map.find "token" merged)
+        // Remembered → written to the (in-memory) keychain.
+        Assert.Equal<string option>(Some "abc123", Secrets.read "p1" "token")
+
+    [<Fact>]
+    member _.``applySecretOverrides omits a blank secret and does not persist when not remembered`` () =
+        let d =
+            { ProjectId = "p1"
+              FlowId    = "f"
+              Vars   = [ mkVar "a" VarKind.Secret None; mkVar "b" VarKind.Secret None ]
+              Values = Map.ofList [ "a", ""; "b", "kept" ]
+              Remember = Set.empty   // b is used for this run but not saved
+              Stored   = Set.empty
+              Error  = None }
+        let merged = applySecretOverrides d Map.empty
+        Assert.False(Map.containsKey "a" merged)
+        Assert.Equal<TomlValue>(TString "kept", Map.find "b" merged)
+        Assert.Equal<string option>(None, Secrets.read "p1" "b")
+
+    [<Fact>]
+    member _.``RequestRun prefills a stored secret and marks it remembered`` () =
+        Secrets.write "p1" "token" "stored-secret"
+        let m =
+            apply (RequestRun ("p1", "f"))
+                (modelWithFlow "p1" "f" [ mkVar "token" VarKind.Secret None ])
+        match m.RunDialog with
+        | Some d ->
+            Assert.Equal("stored-secret", Map.find "token" d.Values)
+            Assert.True(Set.contains "token" d.Stored)
+            Assert.True(Set.contains "token" d.Remember)
+        | None -> Assert.True(false, "dialog should be open")
+
+    [<Fact>]
+    member _.``RunDialogForget deletes the stored secret and clears the field`` () =
+        Secrets.write "p1" "token" "stored-secret"
+        let opened =
+            apply (RequestRun ("p1", "f"))
+                (modelWithFlow "p1" "f" [ mkVar "token" VarKind.Secret None ])
+        let m = apply (RunDialogForget "token") opened
+        match m.RunDialog with
+        | Some d ->
+            Assert.Equal("", Map.find "token" d.Values)
+            Assert.False(Set.contains "token" d.Stored)
+        | None -> Assert.True(false, "dialog should still be open")
+        Assert.Equal<string option>(None, Secrets.read "p1" "token")

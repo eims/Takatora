@@ -121,9 +121,15 @@ type AddProjectForm = {
 type RunDialogState = {
     ProjectId: ProjectId
     FlowId: string
-    /// Scalar vars only (string/int/float/bool/enum), declaration order.
+    /// Dialog-renderable vars (see State.isDialogVarKind), declaration order.
     Vars: FlowVar list
     Values: Map<string, string>
+    /// Secret var names the user has flagged to persist to the keychain on
+    /// Run. Initialised on: already-stored secrets default to remembered.
+    Remember: Set<string>
+    /// Secret var names that currently have a keychain entry (drives the
+    /// "saved ✓" / Forget affordance). Updated when Forget fires.
+    Stored: Set<string>
     /// Validation error from the last confirm attempt, cleared on edit.
     Error: string option
 }
@@ -196,6 +202,8 @@ type Msg =
     | RunFlow of ProjectId * flowId:string
     // Run-with-parameters dialog
     | RunDialogSetValue of name:string * value:string
+    | RunDialogToggleRemember of name:string
+    | RunDialogForget of name:string
     | RunDialogReset
     | RunDialogConfirm
     | RunDialogCancel
@@ -368,17 +376,17 @@ let private loadFlowsFor
 
 // ─── Run-with-parameters helpers ────────────────────────────────────
 
-/// Var kinds the run dialog can render today: scalars (text/pills) plus
-/// path/file/dir (text + native picker) and multiline (textarea). Still
-/// deferred: list (array editor — also blocked on flows.toml parse
-/// support) and secret (masked input + OS keychain + keep-out-of-history).
+/// Var kinds the run dialog can render today: scalars (text/pills),
+/// path/file/dir (text + native picker), multiline (textarea), and secret
+/// (masked input + keychain). Still deferred: list (array editor — also
+/// blocked on flows.toml parse support).
 let isDialogVarKind (kind: VarKind) : bool =
     match kind with
     | VarKind.String | VarKind.Int | VarKind.Float
     | VarKind.Bool | VarKind.Enum _
     | VarKind.Path | VarKind.File | VarKind.Dir
-    | VarKind.Multiline -> true
-    | VarKind.List _ | VarKind.Secret -> false
+    | VarKind.Multiline | VarKind.Secret -> true
+    | VarKind.List _ -> false
 
 /// Initial editing text for a var's input: its declared default, or a
 /// sensible empty/first value when no default is given.
@@ -427,13 +435,16 @@ let private parseOverrideValue (v: FlowVar) (text: string) : Result<TomlValue, s
         | true, f -> Ok (TFloat f)
         | _ -> Error (sprintf "%s: '%s' is not a number" v.Name text)
 
-/// Parse all edited fields, keeping only the ones that differ from the
-/// declared default (so RunHistory's OverriddenKeys stays honest). Stops
-/// at the first parse error.
+/// Parse the non-secret edited fields, keeping only the ones that differ
+/// from the declared default (so RunHistory's OverriddenKeys stays honest).
+/// Secret vars are excluded here — they have no meaningful "default" diff
+/// and their values come from the keychain/dialog, merged at confirm time.
+/// Stops at the first parse error.
 let buildOverrides (d: RunDialogState) : Result<Map<string, TomlValue>, string> =
     let rec go acc vars =
         match vars with
         | [] -> Ok acc
+        | (v: FlowVar) :: rest when v.Kind = VarKind.Secret -> go acc rest
         | (v: FlowVar) :: rest ->
             let text = Map.tryFind v.Name d.Values |> Option.defaultValue (varDefaultText v)
             match parseOverrideValue v text with
@@ -445,6 +456,24 @@ let buildOverrides (d: RunDialogState) : Result<Map<string, TomlValue>, string> 
                     | None     -> true
                 go (if isOverride then Map.add v.Name value acc else acc) rest
     go Map.empty d.Vars
+
+/// Merge secret values into a base override map for a confirmed dialog,
+/// and persist any "remembered" secrets to the keychain. A non-empty
+/// secret field becomes an override (kept off disk by the runner's
+/// redaction); a blank one is omitted.
+let applySecretOverrides
+        (d: RunDialogState)
+        (overrides: Map<string, TomlValue>)
+        : Map<string, TomlValue> =
+    d.Vars
+    |> List.filter (fun v -> v.Kind = VarKind.Secret)
+    |> List.fold (fun acc v ->
+        match Map.tryFind v.Name d.Values with
+        | Some value when value <> "" ->
+            if Set.contains v.Name d.Remember then
+                try Secrets.write d.ProjectId v.Name value with _ -> ()
+            Map.add v.Name (TString value) acc
+        | _ -> acc) overrides
 
 /// Resolve the Tasks SDK assembly + builtin tasks dir from the host
 /// process layout. Same defaults the CLI uses; works here because the
@@ -862,9 +891,19 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         match flowDialogVars model pid flowId with
         | [] -> startRun pid flowId Map.empty model
         | vars ->
+            // Secret fields pre-fill from the keychain (shown masked); a
+            // stored secret defaults to "remembered" so a re-run keeps it.
+            let stored =
+                vars
+                |> List.filter (fun v -> v.Kind = VarKind.Secret && Secrets.exists pid v.Name)
+                |> List.map (fun v -> v.Name)
+                |> Set.ofList
             let values =
                 vars
-                |> List.map (fun v -> v.Name, varDefaultText v)
+                |> List.map (fun v ->
+                    match v.Kind with
+                    | VarKind.Secret -> v.Name, (Secrets.read pid v.Name |> Option.defaultValue "")
+                    | _              -> v.Name, varDefaultText v)
                 |> Map.ofList
             { model with
                 RunDialog =
@@ -872,6 +911,8 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                            FlowId    = flowId
                            Vars      = vars
                            Values    = values
+                           Remember  = stored
+                           Stored    = stored
                            Error     = None } },
             Cmd.none
     | RunDialogSetValue (name, value) ->
@@ -884,13 +925,40 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                             Values = Map.add name value d.Values
                             Error  = None } },
             Cmd.none
+    | RunDialogToggleRemember name ->
+        match model.RunDialog with
+        | None -> model, Cmd.none
+        | Some d ->
+            let remember =
+                if Set.contains name d.Remember then Set.remove name d.Remember
+                else Set.add name d.Remember
+            { model with RunDialog = Some { d with Remember = remember } }, Cmd.none
+    | RunDialogForget name ->
+        // Drop the stored keychain entry and clear the field.
+        match model.RunDialog with
+        | None -> model, Cmd.none
+        | Some d ->
+            Secrets.delete d.ProjectId name |> ignore
+            { model with
+                RunDialog =
+                    Some { d with
+                            Values   = Map.add name "" d.Values
+                            Stored   = Set.remove name d.Stored
+                            Remember = Set.remove name d.Remember } },
+            Cmd.none
     | RunDialogReset ->
-        // Restore every field to its declared default.
+        // Restore every field to its declared default (secrets re-read the
+        // keychain so a stored value reappears).
         match model.RunDialog with
         | None -> model, Cmd.none
         | Some d ->
             let values =
-                d.Vars |> List.map (fun v -> v.Name, varDefaultText v) |> Map.ofList
+                d.Vars
+                |> List.map (fun v ->
+                    match v.Kind with
+                    | VarKind.Secret -> v.Name, (Secrets.read d.ProjectId v.Name |> Option.defaultValue "")
+                    | _              -> v.Name, varDefaultText v)
+                |> Map.ofList
             { model with RunDialog = Some { d with Values = values; Error = None } },
             Cmd.none
     | RunDialogCancel ->
@@ -903,8 +971,10 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             | Error msg ->
                 { model with RunDialog = Some { d with Error = Some msg } }, Cmd.none
             | Ok overrides ->
-                // Clear the dialog first so startRun's model carries the
-                // closed state regardless of whether the run kicks off.
+                // Merge in secret values (and persist any "remembered" ones
+                // to the keychain). Clear the dialog first so startRun's
+                // model carries the closed state regardless of the run.
+                let overrides = applySecretOverrides d overrides
                 startRun d.ProjectId d.FlowId overrides { model with RunDialog = None }
     | RunFlow (pid, flowId) ->
         // Direct run with no overrides (used internally / by RequestRun
