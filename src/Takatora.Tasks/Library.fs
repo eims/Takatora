@@ -531,6 +531,10 @@ module Cmd =
         let psi = ProcessStartInfo(exe)
         for a in args do psi.ArgumentList.Add(a)
         psi.UseShellExecute <- false
+        // Don't let console child tools pop their own window when the host
+        // is a GUI app (they'd grab the foreground). Output is captured /
+        // inherited by the runner regardless.
+        psi.CreateNoWindow <- true
         opts.WorkingDir |> Option.iter (fun wd -> psi.WorkingDirectory <- wd)
         for KeyValue (k, v) in opts.Env do
             psi.Environment.[k] <- v
@@ -554,9 +558,20 @@ module Cmd =
         // during describe.
         if Io.isDescribeMode () then 0 else
         let psi = buildPsi exe args opts
-        // No redirection — child inherits fsi's stdout/stderr, which
-        // the runner is already capturing into log.txt.
-        use proc = Process.Start(psi)
+        // Redirect and forward to this process's stdout/stderr (which the
+        // runner captures into log.txt). We can't rely on bare handle
+        // inheritance any more: buildPsi sets CreateNoWindow (so console
+        // child tools don't pop a window under a GUI host), and an
+        // un-redirected console child loses its output in that mode.
+        psi.RedirectStandardOutput <- true
+        psi.RedirectStandardError <- true
+        use proc = new Process()
+        proc.StartInfo <- psi
+        proc.OutputDataReceived.Add(fun e -> if not (isNull e.Data) then Console.Out.WriteLine(e.Data))
+        proc.ErrorDataReceived.Add(fun e -> if not (isNull e.Data) then Console.Error.WriteLine(e.Data))
+        proc.Start() |> ignore
+        proc.BeginOutputReadLine()
+        proc.BeginErrorReadLine()
         if not (waitWithTimeout proc opts.Timeout) then
             taskFail (sprintf "Cmd '%s' timed out after %.1fs" exe opts.Timeout.Value.TotalSeconds)
         let exitCode = proc.ExitCode

@@ -35,6 +35,7 @@ let private spawnAndCapture
         psi.ArgumentList.Add("fsi")
         psi.ArgumentList.Add(wrapperPath)
         psi.UseShellExecute <- false
+        psi.CreateNoWindow <- true   // no console pop when spawned from a GUI host
         psi.RedirectStandardOutput <- true
         psi.RedirectStandardError <- true
         psi.Environment.["TAKATORA_MODE"]            <- "describe"

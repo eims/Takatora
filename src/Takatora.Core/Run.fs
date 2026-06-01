@@ -478,6 +478,11 @@ module Run =
         psi.ArgumentList.Add("fsi")
         psi.ArgumentList.Add(wrapperPath)
         psi.UseShellExecute <- false
+        // Suppress the console window: when a GUI (windowed) host spawns a
+        // console child, Windows otherwise allocates a fresh console that
+        // pops to the foreground and steals focus. Output is redirected
+        // below, so we never need the window.
+        psi.CreateNoWindow <- true
         psi.RedirectStandardOutput <- true
         psi.RedirectStandardError <- true
         psi.WorkingDirectory <- effectiveWorkingDir
