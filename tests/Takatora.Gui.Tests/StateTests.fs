@@ -560,14 +560,18 @@ type StateTests() =
     // ─── run-with-parameters dialog ─────────────────────────────────
 
     [<Fact>]
-    member _.``isScalarVarKind accepts scalars and rejects compound kinds`` () =
-        Assert.True(isScalarVarKind VarKind.String)
-        Assert.True(isScalarVarKind VarKind.Int)
-        Assert.True(isScalarVarKind VarKind.Bool)
-        Assert.True(isScalarVarKind (VarKind.Enum [ "a"; "b" ]))
-        Assert.False(isScalarVarKind (VarKind.List VarKind.String))
-        Assert.False(isScalarVarKind VarKind.Path)
-        Assert.False(isScalarVarKind VarKind.Secret)
+    member _.``isDialogVarKind accepts rendered kinds and rejects list/secret`` () =
+        Assert.True(isDialogVarKind VarKind.String)
+        Assert.True(isDialogVarKind VarKind.Int)
+        Assert.True(isDialogVarKind VarKind.Bool)
+        Assert.True(isDialogVarKind (VarKind.Enum [ "a"; "b" ]))
+        Assert.True(isDialogVarKind VarKind.Path)
+        Assert.True(isDialogVarKind VarKind.File)
+        Assert.True(isDialogVarKind VarKind.Dir)
+        Assert.True(isDialogVarKind VarKind.Multiline)
+        // Still deferred.
+        Assert.False(isDialogVarKind (VarKind.List VarKind.String))
+        Assert.False(isDialogVarKind VarKind.Secret)
 
     [<Fact>]
     member _.``varDefaultText renders defaults and falls back sensibly`` () =
@@ -580,11 +584,27 @@ type StateTests() =
         Assert.Equal("",      varDefaultText (mkVar "s" VarKind.String None))
 
     [<Fact>]
-    member _.``RequestRun with no scalar vars does not open the dialog`` () =
-        // Flow has only a (non-scalar) list var → nothing to fill in.
-        let model = modelWithFlow "p1" "build" [ mkVar "maps" (VarKind.List VarKind.String) None ]
+    member _.``RequestRun with no renderable vars does not open the dialog`` () =
+        // Flow has only deferred kinds (list + secret) → nothing to fill in.
+        let model =
+            modelWithFlow "p1" "build"
+                [ mkVar "maps" (VarKind.List VarKind.String) None
+                  mkVar "token" VarKind.Secret None ]
         let m = apply (RequestRun ("p1", "build")) model
         Assert.Equal<RunDialogState option>(None, m.RunDialog)
+
+    [<Fact>]
+    member _.``RequestRun opens the dialog for path and multiline vars`` () =
+        let vars =
+            [ mkVar "out"  VarKind.Path (Some (TString "Build"))
+              mkVar "body" VarKind.Multiline None ]
+        let m = apply (RequestRun ("p1", "deploy")) (modelWithFlow "p1" "deploy" vars)
+        match m.RunDialog with
+        | Some d ->
+            Assert.Equal<string list>([ "out"; "body" ], d.Vars |> List.map (fun v -> v.Name))
+            Assert.Equal("Build", Map.find "out" d.Values)
+            Assert.Equal("", Map.find "body" d.Values)
+        | None -> Assert.True(false, "dialog should be open")
 
     [<Fact>]
     member _.``RequestRun with scalar vars opens the dialog pre-filled with defaults`` () =
@@ -602,10 +622,11 @@ type StateTests() =
             Assert.Equal("false", Map.find "clean" d.Values)
 
     [<Fact>]
-    member _.``RequestRun keeps only scalar vars in the dialog`` () =
+    member _.``RequestRun drops deferred kinds (list/secret) from the dialog`` () =
         let vars =
             [ mkVar "branch" VarKind.String None
-              mkVar "maps"   (VarKind.List VarKind.String) None ]
+              mkVar "maps"   (VarKind.List VarKind.String) None
+              mkVar "token"  VarKind.Secret None ]
         let m = apply (RequestRun ("p1", "release")) (modelWithFlow "p1" "release" vars)
         match m.RunDialog with
         | Some d -> Assert.Equal<string list>([ "branch" ], d.Vars |> List.map (fun v -> v.Name))

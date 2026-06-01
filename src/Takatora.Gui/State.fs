@@ -368,14 +368,17 @@ let private loadFlowsFor
 
 // ─── Run-with-parameters helpers ────────────────────────────────────
 
-/// Scalar var kinds get a simple inline widget in the run dialog;
-/// list/path/file/dir/secret/multiline need pickers/keychain/array
-/// editors and are deferred to a later slice.
-let isScalarVarKind (kind: VarKind) : bool =
+/// Var kinds the run dialog can render today: scalars (text/pills) plus
+/// path/file/dir (text + native picker) and multiline (textarea). Still
+/// deferred: list (array editor — also blocked on flows.toml parse
+/// support) and secret (masked input + OS keychain + keep-out-of-history).
+let isDialogVarKind (kind: VarKind) : bool =
     match kind with
     | VarKind.String | VarKind.Int | VarKind.Float
-    | VarKind.Bool | VarKind.Enum _ -> true
-    | _ -> false
+    | VarKind.Bool | VarKind.Enum _
+    | VarKind.Path | VarKind.File | VarKind.Dir
+    | VarKind.Multiline -> true
+    | VarKind.List _ | VarKind.Secret -> false
 
 /// Initial editing text for a var's input: its declared default, or a
 /// sensible empty/first value when no default is given.
@@ -392,13 +395,13 @@ let varDefaultText (v: FlowVar) : string =
         | VarKind.Enum (h :: _) -> h
         | _                  -> ""
 
-/// The scalar vars of a flow (declaration order), or [] if the flow /
-/// its flows.toml isn't loaded or has no scalar vars.
-let flowScalarVars (model: Model) (pid: ProjectId) (flowId: string) : FlowVar list =
+/// The dialog-renderable vars of a flow (declaration order), or [] if the
+/// flow / its flows.toml isn't loaded or has no such vars.
+let flowDialogVars (model: Model) (pid: ProjectId) (flowId: string) : FlowVar list =
     match Map.tryFind pid model.ProjectFlows with
     | Some (FlowsOk flows) ->
         match flows |> List.tryFind (fun f -> f.Id = flowId) with
-        | Some f -> f.Vars |> List.filter (fun v -> isScalarVarKind v.Kind)
+        | Some f -> f.Vars |> List.filter (fun v -> isDialogVarKind v.Kind)
         | None   -> []
     | _ -> []
 
@@ -856,7 +859,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         // Run button entry point. If the flow declares scalar vars, open
         // the param dialog (pre-filled with declared defaults); otherwise
         // there's nothing to fill in, so run straight away.
-        match flowScalarVars model pid flowId with
+        match flowDialogVars model pid flowId with
         | [] -> startRun pid flowId Map.empty model
         | vars ->
             let values =

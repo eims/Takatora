@@ -391,6 +391,47 @@ let private browseForFolder (dispatch: Msg -> unit) (e: RoutedEventArgs) : unit 
             |> Async.StartImmediate
     | _ -> ()
 
+/// Open a native folder/file picker and feed the chosen path into the run
+/// dialog field `name`. `pickFile=false` picks a directory (path/dir
+/// kinds), `true` picks a file (file kind). Same TopLevel-reaching trick
+/// as browseForFolder.
+let private browseForRunValue
+        (name: string)
+        (pickFile: bool)
+        (dispatch: Msg -> unit)
+        (e: RoutedEventArgs)
+        : unit =
+    match e.Source with
+    | :? Visual as v ->
+        match TopLevel.GetTopLevel v with
+        | null -> ()
+        | top ->
+            async {
+                let! picked =
+                    if pickFile then
+                        async {
+                            let opts = FilePickerOpenOptions(Title = "Select file", AllowMultiple = false)
+                            let! files = top.StorageProvider.OpenFilePickerAsync opts |> Async.AwaitTask
+                            return Seq.tryHead (files |> Seq.cast<IStorageItem>)
+                        }
+                    else
+                        async {
+                            let opts = FolderPickerOpenOptions(Title = "Select folder", AllowMultiple = false)
+                            let! folders = top.StorageProvider.OpenFolderPickerAsync opts |> Async.AwaitTask
+                            return Seq.tryHead (folders |> Seq.cast<IStorageItem>)
+                        }
+                match picked with
+                | Some item ->
+                    match item.TryGetLocalPath() with
+                    | null -> ()
+                    | path ->
+                        Dispatcher.UIThread.Post(fun () ->
+                            dispatch (RunDialogSetValue (name, path)))
+                | None -> ()
+            }
+            |> Async.StartImmediate
+    | _ -> ()
+
 let private addProjectForm (form: AddProjectForm) (dispatch: Msg -> unit) : IView =
     let fieldLabel (text: string) : IView =
         TextBlock.create [
@@ -1595,6 +1636,32 @@ let private runDialogField
                 StackPanel.children [
                     for vv in values ->
                         engineChoiceButton vv (current = vv) (fun () -> dispatch (RunDialogSetValue (v.Name, vv)))
+                ]
+            ] :> _
+        | VarKind.Multiline ->
+            TextBox.create [
+                TextBox.text current
+                TextBox.acceptsReturn true
+                TextBox.textWrapping TextWrapping.Wrap
+                TextBox.minHeight 64.0
+                TextBox.onTextChanged (fun s -> dispatch (RunDialogSetValue (v.Name, s)))
+            ] :> _
+        | VarKind.Path | VarKind.Dir | VarKind.File ->
+            // Text field + native picker (folder for path/dir, file for file).
+            let pickFile = (v.Kind = VarKind.File)
+            DockPanel.create [
+                DockPanel.children [
+                    Button.create [
+                        DockPanel.dock Dock.Right
+                        Button.content "Browse…"
+                        Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                        Button.onClick ((fun e -> browseForRunValue v.Name pickFile dispatch e), SubPatchOptions.Always)
+                    ]
+                    TextBox.create [
+                        TextBox.text current
+                        TextBox.verticalAlignment VerticalAlignment.Center
+                        TextBox.onTextChanged (fun s -> dispatch (RunDialogSetValue (v.Name, s)))
+                    ]
                 ]
             ] :> _
         | _ ->
