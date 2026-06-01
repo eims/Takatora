@@ -28,6 +28,12 @@ let private stripBorder = brush "#0e0e0e"
 let private activeBg    = brush "#2a2a2a"
 let private accent      = brush "#3d8bfd"
 let private cardBg      = brush "#252525"
+let private rowHoverBg  = brush "#262626"
+// Vertical divider between the global Home chip and the project-scoped
+// chips — a structural cue reads more reliably across monitors than a
+// subtle hue tint (which looked like hover/active or vanished entirely).
+let private dividerBrush = brush "#4d4d4d"
+let private transparentBrush = Brushes.Transparent :> IBrush
 
 let private handCursor = new Cursor(StandardCursorType.Hand)
 
@@ -256,6 +262,14 @@ let private rootTabStrip (model: Model) (dispatch: Msg -> unit) : IView =
                             yield projectSelector model dispatch
                             for tab in pinned do
                                 yield tabChip model tab (tab = model.ActiveTab) dispatch
+                                // Separate the global Home chip from the
+                                // project-scoped chips with a thin rule.
+                                if tab = Home then
+                                    yield Border.create [
+                                        Border.width 1.0
+                                        Border.margin (Thickness(4.0, 0.0))
+                                        Border.background dividerBrush
+                                    ] :> IView
                         ]
                     ]
                     // Per-run chips scroll horizontally when they overflow.
@@ -876,8 +890,16 @@ let private historyDataRow
             Grid.row row
             Grid.column 0
             Grid.columnSpan 7
-            Border.background (Brushes.Transparent :> IBrush)
+            Border.background transparentBrush
             Border.cursor handCursor
+            // Light hover highlight. Mutated directly on the backdrop Border
+            // (hover doesn't trigger an Elmish re-render, so there's no model
+            // state to thread); text cells are hit-test-invisible so moving
+            // across them keeps the row "entered".
+            Border.onPointerEntered (fun e ->
+                match e.Source with :? Border as b -> b.Background <- rowHoverBg | _ -> ())
+            Border.onPointerExited (fun e ->
+                match e.Source with :? Border as b -> b.Background <- transparentBrush | _ -> ())
             Border.onPointerPressed (fun _ -> dispatch (OpenRunDetail (pid, e.RunId)))
         ] :> IView
         // Serial number — matches the "#N" shown on the RunDetail tab chip.
