@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="Domain.fs" />
     <Compile Include="TomlConfig.fs" />
+    <Compile Include="FlowsEdit.fs" />
     <Compile Include="Vars.fs" />
     <Compile Include="Engines.fs" />
     <Compile Include="ProjectRegistry.fs" />

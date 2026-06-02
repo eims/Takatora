@@ -130,6 +130,9 @@ type RunDialogState = {
     /// Bool var names referenced by a step's `when` — rendered in a top
     /// "Toggles" section (the rest go under "Parameters").
     Toggles: Set<string>
+    /// "Save as new default" — write the changed values back to flows.toml
+    /// on Run. Off by default.
+    SaveDefaults: bool
     /// Secret var names the user has flagged to persist to the keychain on
     /// Run. Initialised on: already-stored secrets default to remembered.
     Remember: Set<string>
@@ -220,6 +223,7 @@ type Msg =
     | RunDialogListAdd of name:string
     | RunDialogListRemove of name:string * index:int
     | RunDialogListSetItem of name:string * index:int * value:string
+    | RunDialogToggleSaveDefaults
     | RunDialogReset
     | RunDialogConfirm
     | RunDialogCancel
@@ -987,6 +991,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                            Values    = values
                            Lists     = lists
                            Toggles   = toggles
+                           SaveDefaults = false
                            Remember  = stored
                            Stored    = stored
                            Error     = None } },
@@ -1045,6 +1050,10 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             let next = cur |> List.mapi (fun i x -> if i = index then value else x)
             { model with RunDialog = Some { d with Lists = Map.add name next d.Lists; Error = None } },
             Cmd.none
+    | RunDialogToggleSaveDefaults ->
+        match model.RunDialog with
+        | None -> model, Cmd.none
+        | Some d -> { model with RunDialog = Some { d with SaveDefaults = not d.SaveDefaults } }, Cmd.none
     | RunDialogReset ->
         // Restore every field to its declared default (secrets re-read the
         // keychain so a stored value reappears; lists reset to their array).
@@ -1078,10 +1087,44 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 { model with RunDialog = Some { d with Error = Some msg } }, Cmd.none
             | Ok overrides ->
                 // Merge in secret values (and persist any "remembered" ones
-                // to the keychain). Clear the dialog first so startRun's
-                // model carries the closed state regardless of the run.
+                // to the keychain).
                 let overrides = applySecretOverrides d overrides
-                startRun d.ProjectId d.FlowId overrides { model with RunDialog = None }
+                let run model = startRun d.ProjectId d.FlowId overrides { model with RunDialog = None }
+                if not d.SaveDefaults then run model
+                else
+                    // Write the changed (non-secret) values back to flows.toml
+                    // as the new defaults, then run. Secrets are excluded —
+                    // overrides already omits them. If any var can't be saved,
+                    // keep the dialog open and report it (nothing is written).
+                    let changed =
+                        overrides
+                        |> Map.toList
+                        |> List.choose (fun (n, v) ->
+                            d.Vars
+                            |> List.tryFind (fun fv -> fv.Name = n && fv.Kind <> VarKind.Secret)
+                            |> Option.map (fun fv -> fv, v))
+                    match projectRoot d.ProjectId model.Projects with
+                    | None -> run model   // unregistered/transient — just run
+                    | Some root ->
+                        let flowsPath = Path.Combine(root, ".ci", "flows.toml")
+                        try
+                            let text = File.ReadAllText flowsPath
+                            let newText, skipped = FlowsEdit.setVarDefaults text d.FlowId changed
+                            if not (List.isEmpty skipped) then
+                                { model with
+                                    RunDialog =
+                                        Some { d with
+                                                Error = Some (sprintf "Couldn't save defaults for: %s — edit flows.toml by hand, or uncheck Save."
+                                                                (String.concat ", " skipped)) } },
+                                Cmd.none
+                            else
+                                File.WriteAllText(flowsPath, newText)
+                                // Reload the flows cache so the new defaults show next time.
+                                let flows = Map.add d.ProjectId (loadFlowsFor d.ProjectId model.Projects) model.ProjectFlows
+                                run { model with ProjectFlows = flows }
+                        with ex ->
+                            { model with RunDialog = Some { d with Error = Some (sprintf "Save failed: %s" ex.Message) } },
+                            Cmd.none
     | RunFlow (pid, flowId) ->
         // Direct run with no overrides (used internally / by RequestRun
         // for flows that declare no scalar vars).

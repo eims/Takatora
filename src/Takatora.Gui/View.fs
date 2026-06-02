@@ -1906,6 +1906,19 @@ let private runParamsDialog (d: RunDialogState) (dispatch: Msg -> unit) : IView 
                                     ]
                                 ]
                             ] :> IView
+                            // Save-as-new-default toggle — fixed above the
+                            // actions (writes changed values back to flows.toml
+                            // on Run).
+                            yield CheckBox.create [
+                                DockPanel.dock Dock.Bottom
+                                CheckBox.margin (Thickness(0.0, 12.0, 16.0, 0.0))
+                                // A checkbox (not a pill) so it reads as an
+                                // option applied on Run — not an action that
+                                // saves the instant you click it.
+                                CheckBox.content "Save as new default"
+                                CheckBox.isChecked d.SaveDefaults
+                                CheckBox.onClick ((fun _ -> dispatch RunDialogToggleSaveDefaults), SubPatchOptions.Always)
+                            ] :> IView
                             // Validation error — fixed just above the actions.
                             match d.Error with
                             | Some msg ->

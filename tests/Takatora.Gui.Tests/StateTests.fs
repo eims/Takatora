@@ -708,6 +708,7 @@ type StateTests() =
               Remember = Set.empty
               Lists    = Map.empty
               Toggles  = Set.empty
+              SaveDefaults = false
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -727,6 +728,7 @@ type StateTests() =
               Remember = Set.empty
               Lists    = Map.empty
               Toggles  = Set.empty
+              SaveDefaults = false
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -745,6 +747,7 @@ type StateTests() =
               Remember = Set.empty
               Lists    = Map.empty
               Toggles  = Set.empty
+              SaveDefaults = false
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -761,6 +764,7 @@ type StateTests() =
               Remember = Set.ofList [ "token" ]
               Lists    = Map.empty
               Toggles  = Set.empty
+              SaveDefaults = false
               Stored   = Set.empty
               Error  = None }
         let merged = applySecretOverrides d Map.empty
@@ -778,6 +782,7 @@ type StateTests() =
               Remember = Set.empty   // b is used for this run but not saved
               Lists    = Map.empty
               Toggles  = Set.empty
+              SaveDefaults = false
               Stored   = Set.empty
               Error  = None }
         let merged = applySecretOverrides d Map.empty
@@ -813,6 +818,7 @@ type StateTests() =
               Lists  = Map.empty
               Toggles  = Set.empty
               Remember = Set.empty
+              SaveDefaults = false
               Stored   = Set.empty
               Error  = None }
         // branch unchanged → omitted; clean flipped → shown; secret never shown.
@@ -829,10 +835,36 @@ type StateTests() =
               Lists  = Map.ofList [ "maps", [ "Main"; "Boot" ] ]
               Toggles  = Set.empty
               Remember = Set.empty
+              SaveDefaults = false
               Stored   = Set.empty
               Error  = None }
         Assert.Equal<(string * string * string) list>(
             [ ("maps", "[Main]", "[Main, Boot]") ], dialogDiffs d)
+
+    [<Fact>]
+    member _.``RunDialogConfirm with SaveDefaults writes the new default back to flows.toml`` () =
+        let dir = Path.Combine(tmpRoot, "savedef")
+        let ci = Path.Combine(dir, ".ci")
+        Directory.CreateDirectory ci |> ignore
+        File.WriteAllText(
+            Path.Combine(ci, "flows.toml"),
+            "[[flow]]\nid = \"f\"\n[flow.vars]\nbranch = { type = \"string\", default = \"main\" }\n")
+        let flow = { Id = "f"; Name = None; Vars = [ mkVar "branch" VarKind.String (Some (TString "main")) ]; Steps = [] }
+        let model =
+            { baseModel with
+                Projects = [ { Name = "p1"; Path = dir; AddedAt = DateTimeOffset.UtcNow } ]
+                ProjectFlows = Map.ofList [ "p1", FlowsOk [ flow ] ] }
+        let opened = apply (RequestRun ("p1", "f")) model
+        // Change branch and tick "Save as new default".
+        let edited =
+            { opened with
+                RunDialog =
+                    opened.RunDialog
+                    |> Option.map (fun d -> { d with Values = Map.add "branch" "dev" d.Values; SaveDefaults = true }) }
+        let m = apply RunDialogConfirm edited
+        // Saved cleanly → dialog closed; the file's default is now "dev".
+        Assert.Equal<RunDialogState option>(None, m.RunDialog)
+        Assert.Contains("default = \"dev\"", File.ReadAllText(Path.Combine(ci, "flows.toml")))
 
     // ─── Toggles / Parameters split ─────────────────────────────────
 
@@ -896,6 +928,7 @@ type StateTests() =
               Lists  = Map.ofList [ "ports", [ "8080"; "  "; "9090" ] ]
               Remember = Set.empty
               Toggles  = Set.empty
+              SaveDefaults = false
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -912,6 +945,7 @@ type StateTests() =
               Lists  = Map.ofList [ "ports", [ "8080"; "nope" ] ]
               Remember = Set.empty
               Toggles  = Set.empty
+              SaveDefaults = false
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -928,6 +962,7 @@ type StateTests() =
               Lists  = Map.ofList [ "maps", [ ""; "  " ] ]
               Remember = Set.empty
               Toggles  = Set.empty
+              SaveDefaults = false
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
