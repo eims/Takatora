@@ -798,6 +798,42 @@ type StateTests() =
             Assert.True(Set.contains "token" d.Remember)
         | None -> Assert.True(false, "dialog should be open")
 
+    // ─── diff from defaults ─────────────────────────────────────────
+
+    [<Fact>]
+    member _.``dialogDiffs lists only changed non-secret fields`` () =
+        let d =
+            { ProjectId = "p1"
+              FlowId    = "f"
+              Vars =
+                [ mkVar "branch" VarKind.String (Some (TString "main"))
+                  mkVar "clean"  VarKind.Bool   (Some (TBool false))
+                  mkVar "token"  VarKind.Secret None ]
+              Values = Map.ofList [ "branch", "main"; "clean", "true"; "token", "sekret" ]
+              Lists  = Map.empty
+              Toggles  = Set.empty
+              Remember = Set.empty
+              Stored   = Set.empty
+              Error  = None }
+        // branch unchanged → omitted; clean flipped → shown; secret never shown.
+        Assert.Equal<(string * string * string) list>(
+            [ ("clean", "false", "true") ], dialogDiffs d)
+
+    [<Fact>]
+    member _.``dialogDiffs renders a changed list as bracketed text`` () =
+        let d =
+            { ProjectId = "p1"
+              FlowId    = "f"
+              Vars   = [ mkVar "maps" (VarKind.List VarKind.String) (Some (TArray [ TString "Main" ])) ]
+              Values = Map.empty
+              Lists  = Map.ofList [ "maps", [ "Main"; "Boot" ] ]
+              Toggles  = Set.empty
+              Remember = Set.empty
+              Stored   = Set.empty
+              Error  = None }
+        Assert.Equal<(string * string * string) list>(
+            [ ("maps", "[Main]", "[Main, Boot]") ], dialogDiffs d)
+
     // ─── Toggles / Parameters split ─────────────────────────────────
 
     [<Fact>]

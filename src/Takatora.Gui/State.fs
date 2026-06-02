@@ -549,6 +549,30 @@ let applySecretOverrides
             Map.add v.Name (TString value) acc
         | _ -> acc) overrides
 
+/// Fields the user has changed from their declared default, as
+/// (name, defaultText, currentText) for display in the dialog's "Diff
+/// from defaults" section. Textual (forgiving — never errors); secret
+/// vars are omitted so their value never appears. List values render as
+/// "[a, b]" (blank rows dropped, matching confirm).
+let dialogDiffs (d: RunDialogState) : (string * string * string) list =
+    let shown (s: string) = if s = "" then "(empty)" else s
+    let listText (items: string list) =
+        sprintf "[%s]" (items |> List.filter (fun s -> s.Trim() <> "") |> String.concat ", ")
+    d.Vars
+    |> List.filter (fun v -> v.Kind <> VarKind.Secret)
+    |> List.choose (fun v ->
+        match v.Kind with
+        | VarKind.List _ ->
+            let def = listDefaultTexts v
+            let cur = Map.tryFind v.Name d.Lists |> Option.defaultValue []
+            let defClean = def |> List.filter (fun s -> s.Trim() <> "")
+            let curClean = cur |> List.filter (fun s -> s.Trim() <> "")
+            if defClean <> curClean then Some (v.Name, listText def, listText cur) else None
+        | _ ->
+            let def = varDefaultText v
+            let cur = Map.tryFind v.Name d.Values |> Option.defaultValue def
+            if cur <> def then Some (v.Name, shown def, shown cur) else None)
+
 /// Resolve the Tasks SDK assembly + builtin tasks dir from the host
 /// process layout. Same defaults the CLI uses; works here because the
 /// GUI project-references Takatora.Tasks + Takatora.Tasks.Builtin, so

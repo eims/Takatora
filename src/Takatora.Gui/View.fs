@@ -1838,18 +1838,25 @@ let private runParamsDialog (d: RunDialogState) (dispatch: Msg -> unit) : IView 
             Border.create [
                 Border.horizontalAlignment HorizontalAlignment.Center
                 Border.verticalAlignment VerticalAlignment.Center
-                Border.width 460.0
-                Border.padding (Thickness 20.0)
+                Border.width 600.0
+                // Keep the card off the window edges; its content scrolls
+                // (below) when it would otherwise grow past the window.
+                Border.margin (Thickness(0.0, 24.0))
+                // Small right padding so the scroll bar hugs the card edge;
+                // title/fields/actions keep a symmetric 20px inset via their
+                // own 16px right margins (20 - 4 card padding ≈ matches left).
+                Border.padding (Thickness(20.0, 20.0, 4.0, 20.0))
                 Border.cornerRadius 6.0
                 Border.background cardBg
                 Border.borderBrush stripBorder
                 Border.borderThickness (Thickness 1.0)
                 Border.child (
-                    StackPanel.create [
-                        StackPanel.spacing 0.0
-                        StackPanel.children [
+                    DockPanel.create [
+                        DockPanel.children [
+                            // Title row — fixed at the top.
                             yield DockPanel.create [
-                                DockPanel.margin (Thickness(0.0, 0.0, 0.0, 16.0))
+                                DockPanel.dock Dock.Top
+                                DockPanel.margin (Thickness(0.0, 0.0, 16.0, 16.0))
                                 DockPanel.children [
                                     Button.create [
                                         DockPanel.dock Dock.Right
@@ -1879,40 +1886,13 @@ let private runParamsDialog (d: RunDialogState) (dispatch: Msg -> unit) : IView 
                                     ]
                                 ]
                             ] :> IView
-                            // bool vars gated by a step's `when` go in a top
-                            // "Toggles" section; the rest under "Parameters".
-                            // Headers only appear when there are toggles (a
-                            // plain flow stays a single flat list).
-                            let renderField (v: FlowVar) : IView =
-                                let current =
-                                    Map.tryFind v.Name d.Values
-                                    |> Option.defaultValue (varDefaultText v)
-                                let items = Map.tryFind v.Name d.Lists |> Option.defaultValue []
-                                runDialogField v current items
-                                    (Set.contains v.Name d.Remember)
-                                    (Set.contains v.Name d.Stored)
-                                    dispatch
-                            let toggleVars, paramVars =
-                                d.Vars |> List.partition (fun v -> Set.contains v.Name d.Toggles)
-                            if not (List.isEmpty toggleVars) then
-                                yield sectionHeader "Toggles"
-                                yield! toggleVars |> List.map renderField
-                                yield sectionHeader "Parameters"
-                            yield! paramVars |> List.map renderField
-                            match d.Error with
-                            | Some msg ->
-                                yield TextBlock.create [
-                                    TextBlock.text msg
-                                    TextBlock.foreground errorBrush
-                                    TextBlock.textWrapping TextWrapping.Wrap
-                                    TextBlock.margin (Thickness(0.0, 10.0, 0.0, 0.0))
-                                ] :> IView
-                            | None -> ()
+                            // Actions — fixed at the bottom, always visible.
                             yield StackPanel.create [
+                                DockPanel.dock Dock.Bottom
                                 StackPanel.orientation Orientation.Horizontal
                                 StackPanel.horizontalAlignment HorizontalAlignment.Right
                                 StackPanel.spacing 8.0
-                                StackPanel.margin (Thickness(0.0, 16.0, 0.0, 0.0))
+                                StackPanel.margin (Thickness(0.0, 16.0, 16.0, 0.0))
                                 StackPanel.children [
                                     Button.create [
                                         Button.content "Cancel"
@@ -1925,6 +1905,69 @@ let private runParamsDialog (d: RunDialogState) (dispatch: Msg -> unit) : IView 
                                         Button.onClick ((fun _ -> dispatch RunDialogConfirm), SubPatchOptions.Always)
                                     ]
                                 ]
+                            ] :> IView
+                            // Validation error — fixed just above the actions.
+                            match d.Error with
+                            | Some msg ->
+                                yield TextBlock.create [
+                                    DockPanel.dock Dock.Bottom
+                                    TextBlock.text msg
+                                    TextBlock.foreground errorBrush
+                                    TextBlock.textWrapping TextWrapping.Wrap
+                                    TextBlock.margin (Thickness(0.0, 10.0, 16.0, 0.0))
+                                ] :> IView
+                            | None -> ()
+                            // Fields fill the middle and scroll when the dialog
+                            // would exceed the window height. bool vars gated by
+                            // a step's `when` go under "Toggles", rest under
+                            // "Parameters" (flat if there are no toggles).
+                            yield ScrollViewer.create [
+                                ScrollViewer.horizontalScrollBarVisibility ScrollBarVisibility.Disabled
+                                // Bar hidden so it doesn't compete with the
+                                // right-edge Browse… / − buttons; the content
+                                // still scrolls on the mouse wheel (vertical
+                                // wheel maps to vertical scroll natively).
+                                ScrollViewer.verticalScrollBarVisibility ScrollBarVisibility.Hidden
+                                ScrollViewer.content (
+                                    StackPanel.create [
+                                        StackPanel.spacing 0.0
+                                        // 16px right margin: fields keep the
+                                        // symmetric 20px inset and clear the
+                                        // overlay scroll bar (which hugs the
+                                        // card's right edge via the small card
+                                        // right padding).
+                                        StackPanel.margin (Thickness(0.0, 0.0, 16.0, 0.0))
+                                        StackPanel.children [
+                                            let renderField (v: FlowVar) : IView =
+                                                let current =
+                                                    Map.tryFind v.Name d.Values
+                                                    |> Option.defaultValue (varDefaultText v)
+                                                let items = Map.tryFind v.Name d.Lists |> Option.defaultValue []
+                                                runDialogField v current items
+                                                    (Set.contains v.Name d.Remember)
+                                                    (Set.contains v.Name d.Stored)
+                                                    dispatch
+                                            let toggleVars, paramVars =
+                                                d.Vars |> List.partition (fun v -> Set.contains v.Name d.Toggles)
+                                            if not (List.isEmpty toggleVars) then
+                                                yield sectionHeader "Toggles"
+                                                yield! toggleVars |> List.map renderField
+                                                yield sectionHeader "Parameters"
+                                            yield! paramVars |> List.map renderField
+                                            match State.dialogDiffs d with
+                                            | [] -> ()
+                                            | diffs ->
+                                                yield sectionHeader "Diff from defaults"
+                                                for (name, def, cur) in diffs do
+                                                    yield TextBlock.create [
+                                                        TextBlock.text (sprintf "%s: %s → %s" name def cur)
+                                                        TextBlock.foreground dimBrush
+                                                        TextBlock.fontSize 12.0
+                                                        TextBlock.textWrapping TextWrapping.Wrap
+                                                    ] :> IView
+                                        ]
+                                    ]
+                                )
                             ] :> IView
                         ]
                     ]
