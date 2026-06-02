@@ -602,8 +602,18 @@ module Run =
         // Tomlyn write-back via DocumentSyntax is overkill here; emit a
         // hand-written TOML string. Fields match runner-cli.md's example.
         let sb = StringBuilder()
+        // Escape for a TOML basic string. Backslash MUST go first, then the
+        // other specials — otherwise a Windows path like C:\Build produces
+        // invalid escapes (\B) and the whole manifest fails to parse, which
+        // drops the run from history and breaks show-run / RunDetail.
+        let tomlEsc (s: string) =
+            s.Replace("\\", "\\\\")
+             .Replace("\"", "\\\"")
+             .Replace("\n", "\\n")
+             .Replace("\r", "\\r")
+             .Replace("\t", "\\t")
         let writeStr key (v: string) =
-            sb.AppendFormat("{0} = \"{1}\"\n", key, v.Replace("\"", "\\\"")) |> ignore
+            sb.AppendFormat("{0} = \"{1}\"\n", key, tomlEsc v) |> ignore
         let writeRaw key (v: string) =
             sb.AppendFormat("{0} = {1}\n", key, v) |> ignore
         writeStr "flow_id" flow.Id
@@ -630,11 +640,11 @@ module Run =
                     if Set.contains k secretNames then sprintf "\"%s\"" secretMask
                     else
                         match v with
-                        | TString s -> sprintf "\"%s\"" (s.Replace("\"", "\\\""))
+                        | TString s -> sprintf "\"%s\"" (tomlEsc s)
                         | TBool b -> if b then "true" else "false"
                         | TInt i -> string i
                         | TFloat f -> f.ToString("R", CultureInfo.InvariantCulture)
-                        | _ -> sprintf "\"%s\"" (sprintf "%A" v)
+                        | _ -> sprintf "\"%s\"" (tomlEsc (sprintf "%A" v))
                 sb.AppendFormat("{0} = {1}\n", k, lit) |> ignore
             sb.AppendLine() |> ignore
 

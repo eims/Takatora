@@ -454,6 +454,36 @@ type = "echo.secret"
         let log = File.ReadAllText(Path.Combine(outcome.RunDir, "log.txt"))
         Assert.Contains("ENV=envsecret999", log)
 
+    [<Fact>]
+    member _.``manifest with a Windows-path param round-trips through findRun`` () =
+        // Regression: backslashes in a param value must be escaped, or the
+        // manifest is invalid TOML — the run vanishes from history and
+        // RunDetail / show-run report "not found".
+        writeFile ".ci/project.toml" projectToml
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "p"
+[flow.vars]
+out_dir = { type = "dir" }
+[[flow.steps]]
+id = "say"
+type = "notify.console"
+message = "done"
+"""
+        let builtinDir = Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+        let opts =
+            { buildOptions "p" (Map.ofList [ "out_dir", TString @"C:\Build\out" ])
+                with BuiltinTasksDir = builtinDir }
+        let outcome =
+            match Run.execute opts with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        // findRun re-parses the manifest — None means it was invalid TOML.
+        match RunHistory.findRun dir outcome.RunId with
+        | Some (e, _) -> Assert.Equal<TomlValue>(TString @"C:\Build\out", Map.find "out_dir" e.Params)
+        | None        -> Assert.Fail("findRun returned None — manifest failed to parse")
+
     // ─── engine mutex ─────────────────────────────────────────────
 
     [<Fact>]
