@@ -707,6 +707,7 @@ type StateTests() =
               Values = Map.ofList [ "branch", "main"; "clean", "true" ]
               Remember = Set.empty
               Lists    = Map.empty
+              Toggles  = Set.empty
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -725,6 +726,7 @@ type StateTests() =
               Values = Map.ofList [ "n", "not-a-number" ]
               Remember = Set.empty
               Lists    = Map.empty
+              Toggles  = Set.empty
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -742,6 +744,7 @@ type StateTests() =
               Values = Map.ofList [ "token", "typed-secret" ]
               Remember = Set.empty
               Lists    = Map.empty
+              Toggles  = Set.empty
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -757,6 +760,7 @@ type StateTests() =
               Values = Map.ofList [ "token", "abc123" ]
               Remember = Set.ofList [ "token" ]
               Lists    = Map.empty
+              Toggles  = Set.empty
               Stored   = Set.empty
               Error  = None }
         let merged = applySecretOverrides d Map.empty
@@ -773,6 +777,7 @@ type StateTests() =
               Values = Map.ofList [ "a", ""; "b", "kept" ]
               Remember = Set.empty   // b is used for this run but not saved
               Lists    = Map.empty
+              Toggles  = Set.empty
               Stored   = Set.empty
               Error  = None }
         let merged = applySecretOverrides d Map.empty
@@ -792,6 +797,35 @@ type StateTests() =
             Assert.True(Set.contains "token" d.Stored)
             Assert.True(Set.contains "token" d.Remember)
         | None -> Assert.True(false, "dialog should be open")
+
+    // ─── Toggles / Parameters split ─────────────────────────────────
+
+    [<Fact>]
+    member _.``whenReferencedToggles picks only bool vars gated by a step when`` () =
+        let flow =
+            { Id = "f"; Name = None
+              Vars =
+                [ { Name = "clean";  Kind = VarKind.Bool;   Default = None }
+                  { Name = "upload"; Kind = VarKind.Bool;   Default = None }   // not referenced
+                  { Name = "branch"; Kind = VarKind.String; Default = None } ] // referenced but not bool
+              Steps =
+                [ { Id = Some "c"; Type = "ue.clean"; When = Some "${vars.clean}"; Params = Map.empty }
+                  { Id = Some "b"; Type = "git.pull"; When = Some "${vars.branch}"; Params = Map.empty } ] }
+        Assert.Equal<Set<string>>(Set.ofList [ "clean" ], whenReferencedToggles flow)
+
+    [<Fact>]
+    member _.``RequestRun records when-referenced toggles on the dialog`` () =
+        let flow =
+            { Id = "rel"; Name = None
+              Vars =
+                [ { Name = "clean"; Kind = VarKind.Bool; Default = Some (TBool false) }
+                  { Name = "cfg";   Kind = VarKind.String; Default = None } ]
+              Steps = [ { Id = Some "c"; Type = "ue.clean"; When = Some "${vars.clean}"; Params = Map.empty } ] }
+        let model = { baseModel with ProjectFlows = Map.ofList [ "p1", FlowsOk [ flow ] ] }
+        let m = apply (RequestRun ("p1", "rel")) model
+        match m.RunDialog with
+        | Some d -> Assert.Equal<Set<string>>(Set.ofList [ "clean" ], d.Toggles)
+        | None   -> Assert.True(false, "dialog should be open")
 
     // ─── list vars in the dialog ────────────────────────────────────
 
@@ -825,6 +859,7 @@ type StateTests() =
               Values = Map.empty
               Lists  = Map.ofList [ "ports", [ "8080"; "  "; "9090" ] ]
               Remember = Set.empty
+              Toggles  = Set.empty
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -840,6 +875,7 @@ type StateTests() =
               Values = Map.empty
               Lists  = Map.ofList [ "ports", [ "8080"; "nope" ] ]
               Remember = Set.empty
+              Toggles  = Set.empty
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -855,6 +891,7 @@ type StateTests() =
               Values = Map.empty
               Lists  = Map.ofList [ "maps", [ ""; "  " ] ]
               Remember = Set.empty
+              Toggles  = Set.empty
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with

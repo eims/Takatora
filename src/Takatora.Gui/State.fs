@@ -127,6 +127,9 @@ type RunDialogState = {
     /// Per-list-var item texts (raw, one per array element). Parsed into a
     /// TArray per the list's item kind at confirm.
     Lists: Map<string, string list>
+    /// Bool var names referenced by a step's `when` — rendered in a top
+    /// "Toggles" section (the rest go under "Parameters").
+    Toggles: Set<string>
     /// Secret var names the user has flagged to persist to the keychain on
     /// Run. Initialised on: already-stored secrets default to remembered.
     Remember: Set<string>
@@ -418,15 +421,33 @@ let varDefaultText (v: FlowVar) : string =
         | VarKind.Enum (h :: _) -> h
         | _                  -> ""
 
+/// The loaded Flow for a project's flow id, if its flows.toml is cached.
+let flowById (model: Model) (pid: ProjectId) (flowId: string) : Flow option =
+    match Map.tryFind pid model.ProjectFlows with
+    | Some (FlowsOk flows) -> flows |> List.tryFind (fun f -> f.Id = flowId)
+    | _ -> None
+
 /// The dialog-renderable vars of a flow (declaration order), or [] if the
 /// flow / its flows.toml isn't loaded or has no such vars.
 let flowDialogVars (model: Model) (pid: ProjectId) (flowId: string) : FlowVar list =
-    match Map.tryFind pid model.ProjectFlows with
-    | Some (FlowsOk flows) ->
-        match flows |> List.tryFind (fun f -> f.Id = flowId) with
-        | Some f -> f.Vars |> List.filter (fun v -> isDialogVarKind v.Kind)
-        | None   -> []
-    | _ -> []
+    match flowById model pid flowId with
+    | Some f -> f.Vars |> List.filter (fun v -> isDialogVarKind v.Kind)
+    | None   -> []
+
+/// Bool vars that some step's `when` references — surfaced as a top
+/// "Toggles" section in the run dialog (they gate whole steps). The MVP
+/// `when` grammar is `${vars.X}` / `!${vars.X}`, so a substring match on
+/// the `${vars.X}` token is sufficient.
+let whenReferencedToggles (flow: Flow) : Set<string> =
+    flow.Vars
+    |> List.choose (fun v -> if v.Kind = VarKind.Bool then Some v.Name else None)
+    |> List.filter (fun name ->
+        let token = sprintf "${vars.%s}" name
+        flow.Steps |> List.exists (fun s ->
+            match s.When with
+            | Some w -> w.Contains(token)
+            | None   -> false))
+    |> Set.ofList
 
 /// Parse a single scalar text into a typed value per `kind`. `label` is
 /// used in error messages (the var name, or "<var>[<i>]" for a list item).
@@ -930,6 +951,10 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     | VarKind.List _ -> Some (v.Name, listDefaultTexts v)
                     | _              -> None)
                 |> Map.ofList
+            let toggles =
+                match flowById model pid flowId with
+                | Some f -> whenReferencedToggles f
+                | None   -> Set.empty
             { model with
                 RunDialog =
                     Some { ProjectId = pid
@@ -937,6 +962,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                            Vars      = vars
                            Values    = values
                            Lists     = lists
+                           Toggles   = toggles
                            Remember  = stored
                            Stored    = stored
                            Error     = None } },

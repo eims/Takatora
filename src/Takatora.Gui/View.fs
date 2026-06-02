@@ -51,12 +51,14 @@ let private formatDuration (sec: float) : string =
 let private statusIcon = function
     | "success"   -> "✓"
     | "failure"   -> "✗"
-    | "cancelled" -> "⊘"
+    | "skipped"   -> "⊘"
+    | "cancelled" -> "⊗"
     | _           -> "?"
 
 let private statusBrush = function
     | "success"   -> brush "#4ec97a"
     | "failure"   -> brush "#f15a5a"
+    | "skipped"   -> mutedBrush
     | "cancelled" -> mutedBrush
     | _           -> dimBrush
 
@@ -1235,8 +1237,11 @@ let private stepLine (s: StepSummary) : IView =
                 TextBlock.width 24.0
             ]
             TextBlock.create [
-                TextBlock.text (sprintf "%s  (%s)" s.Id s.Type)
-                TextBlock.width 260.0
+                yield TextBlock.text (sprintf "%s  (%s)" s.Id s.Type)
+                yield TextBlock.width 260.0
+                // Skipped: dim the name so the row recedes (thin ⊘ alone is
+                // easy to miss).
+                if s.Status = "skipped" then yield TextBlock.foreground mutedBrush
             ]
             TextBlock.create [
                 TextBlock.text (formatDuration s.DurationSec)
@@ -1482,8 +1487,8 @@ let private liveStepIcon = function
     | StepRunning   -> "▶"
     | StepOk        -> "✓"
     | StepFailed    -> "✗"
-    | StepSkipped   -> "·"
-    | StepCancelled -> "⊘"
+    | StepSkipped   -> "⊘"
+    | StepCancelled -> "⊗"
 
 let private liveStepBrush = function
     | StepRunning   -> accent
@@ -1504,8 +1509,11 @@ let private liveStepLine (step: LiveStep) : IView =
                 TextBlock.width 20.0
             ]
             TextBlock.create [
-                TextBlock.text step.Id
-                TextBlock.width 180.0
+                yield TextBlock.text step.Id
+                yield TextBlock.width 180.0
+                // Skipped: dim the name so the whole row visibly recedes —
+                // the thin ⊘ glyph alone reads as a smudge.
+                if step.Status = StepSkipped then yield TextBlock.foreground mutedBrush
             ]
             TextBlock.create [
                 TextBlock.text step.Type
@@ -1871,15 +1879,26 @@ let private runParamsDialog (d: RunDialogState) (dispatch: Msg -> unit) : IView 
                                     ]
                                 ]
                             ] :> IView
-                            for v in d.Vars do
+                            // bool vars gated by a step's `when` go in a top
+                            // "Toggles" section; the rest under "Parameters".
+                            // Headers only appear when there are toggles (a
+                            // plain flow stays a single flat list).
+                            let renderField (v: FlowVar) : IView =
                                 let current =
                                     Map.tryFind v.Name d.Values
                                     |> Option.defaultValue (varDefaultText v)
                                 let items = Map.tryFind v.Name d.Lists |> Option.defaultValue []
-                                yield runDialogField v current items
-                                        (Set.contains v.Name d.Remember)
-                                        (Set.contains v.Name d.Stored)
-                                        dispatch
+                                runDialogField v current items
+                                    (Set.contains v.Name d.Remember)
+                                    (Set.contains v.Name d.Stored)
+                                    dispatch
+                            let toggleVars, paramVars =
+                                d.Vars |> List.partition (fun v -> Set.contains v.Name d.Toggles)
+                            if not (List.isEmpty toggleVars) then
+                                yield sectionHeader "Toggles"
+                                yield! toggleVars |> List.map renderField
+                                yield sectionHeader "Parameters"
+                            yield! paramVars |> List.map renderField
                             match d.Error with
                             | Some msg ->
                                 yield TextBlock.create [
