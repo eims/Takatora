@@ -68,7 +68,10 @@ let invoke (taskType: string) : int =
             sprintf "describe: no task .fsx found for type '%s' under %s" taskType builtinDir)
         3
     | Some resolved ->
-        match spawnAndCapture sdkPath resolved.Path with
+        // Absolute path: the describe wrapper is written to (and #loads from)
+        // a temp dir, so a project-local task resolved as ".\.ci\tasks\…"
+        // wouldn't be found relative to that temp dir.
+        match spawnAndCapture sdkPath (Path.GetFullPath resolved.Path) with
         | Error msg ->
             Console.Error.WriteLine(sprintf "describe: %s" msg)
             5
