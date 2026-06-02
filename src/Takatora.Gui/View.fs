@@ -1244,6 +1244,7 @@ let private runDetailBody
         (pid: ProjectId)
         (entry: RunHistoryEntry)
         (steps: StepSummary list)
+        (dispatch: Msg -> unit)
         : IView =
     let started  = entry.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
     let finished =
@@ -1301,11 +1302,24 @@ let private runDetailBody
                         TextBlock.text (sprintf "Trigger:  %s" entry.Trigger)
                         TextBlock.foreground dimBrush
                     ]
-                    TextBlock.create [
-                        TextBlock.text (sprintf "Dir:      %s" entry.RunDir)
-                        TextBlock.foreground dimBrush
-                        TextBlock.fontSize 11.0
-                        TextBlock.textWrapping TextWrapping.Wrap
+                    DockPanel.create [
+                        DockPanel.margin (Thickness(0.0, 2.0, 0.0, 0.0))
+                        DockPanel.children [
+                            Button.create [
+                                DockPanel.dock Dock.Right
+                                Button.content "Open folder"
+                                Button.verticalAlignment VerticalAlignment.Top
+                                Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                                Button.onClick ((fun _ -> dispatch (OpenRunDir entry.RunDir)), SubPatchOptions.Always)
+                            ]
+                            TextBlock.create [
+                                TextBlock.text (sprintf "Dir:      %s" entry.RunDir)
+                                TextBlock.foreground dimBrush
+                                TextBlock.fontSize 11.0
+                                TextBlock.textWrapping TextWrapping.Wrap
+                                TextBlock.verticalAlignment VerticalAlignment.Center
+                            ]
+                        ]
                     ]
                     sectionHeader "Parameters"
                     if Map.isEmpty entry.Params then
@@ -1395,7 +1409,7 @@ let private runDetailView
         DockPanel.create [
             DockPanel.children [
                 runDetailNav pid runId model dispatch
-                runDetailBody pid entry steps
+                runDetailBody pid entry steps dispatch
             ]
         ] :> _
     | None ->

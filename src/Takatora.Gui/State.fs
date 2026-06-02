@@ -200,6 +200,8 @@ type Msg =
     | RefreshFlows of ProjectId
     | RefreshProjectInfo of ProjectId
     | OpenRunDetail of ProjectId * RunId
+    /// Open a run's directory in the OS file explorer.
+    | OpenRunDir of path:string
     /// Run button entry point: opens the param dialog if the flow has
     /// scalar vars, otherwise runs immediately with no overrides.
     | RequestRun of ProjectId * flowId:string
@@ -1001,6 +1003,16 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         // Direct run with no overrides (used internally / by RequestRun
         // for flows that declare no scalar vars).
         startRun pid flowId Map.empty model
+    | OpenRunDir path ->
+        // Open the run dir in the OS file explorer. Best-effort; a missing
+        // dir or a headless host just no-ops.
+        (try
+            if Directory.Exists path then
+                let psi = System.Diagnostics.ProcessStartInfo("explorer.exe")
+                psi.ArgumentList.Add(path)
+                System.Diagnostics.Process.Start(psi) |> ignore
+         with _ -> ())
+        model, Cmd.none
     | DeleteSecret (pid, varName) ->
         // Delete from the keychain, then refresh the cached list so the
         // model changes and the Settings view re-renders without it.
