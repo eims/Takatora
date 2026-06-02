@@ -179,6 +179,42 @@ foo = { type = "enum", default = "a" }
     Assert.Contains("values", msg)
 
 [<Fact>]
+let ``parseFlows handles list var with item type and default array`` () =
+    let toml = """
+[[flow]]
+id = "build"
+
+[flow.vars]
+maps = { type = "list", item = "string", default = ["Main", "Boot"] }
+"""
+    let v = (TomlConfig.parseFlows toml).[0].Vars.[0]
+    Assert.Equal("maps", v.Name)
+    Assert.Equal(VarKind.List VarKind.String, v.Kind)
+    Assert.Equal(Some (TArray [ TString "Main"; TString "Boot" ]), v.Default)
+
+[<Fact>]
+let ``parseFlows defaults list item type to string`` () =
+    let toml = """
+[[flow]]
+id = "build"
+[flow.vars]
+tags = { type = "list" }
+"""
+    let v = (TomlConfig.parseFlows toml).[0].Vars.[0]
+    Assert.Equal(VarKind.List VarKind.String, v.Kind)
+
+[<Fact>]
+let ``parseFlows rejects unsupported list item type`` () =
+    let toml = """
+[[flow]]
+id = "x"
+[flow.vars]
+bad = { type = "list", item = "table" }
+"""
+    let msg = catchTomlError (fun () -> TomlConfig.parseFlows toml |> ignore)
+    Assert.Contains("list item type", msg)
+
+[<Fact>]
 let ``parseFlows on empty document yields empty list`` () =
     Assert.Equal<Flow list>([], TomlConfig.parseFlows "")
 

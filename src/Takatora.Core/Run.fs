@@ -634,18 +634,20 @@ module Run =
             // Secret vars are masked so the manifest (the history-facing
             // artifact) never records their plaintext value.
             let secretNames = secretVarNames flow
+            let rec lit (v: TomlValue) =
+                match v with
+                | TString s -> sprintf "\"%s\"" (tomlEsc s)
+                | TBool b   -> if b then "true" else "false"
+                | TInt i    -> string i
+                | TFloat f  -> f.ToString("R", CultureInfo.InvariantCulture)
+                | TArray xs -> "[" + (xs |> List.map lit |> String.concat ", ") + "]"
+                | TTable _  -> sprintf "\"%s\"" (tomlEsc (sprintf "%A" v))
             sb.AppendLine("[params]") |> ignore
             for KeyValue (k, v) in vars do
-                let lit =
+                let rendered =
                     if Set.contains k secretNames then sprintf "\"%s\"" secretMask
-                    else
-                        match v with
-                        | TString s -> sprintf "\"%s\"" (tomlEsc s)
-                        | TBool b -> if b then "true" else "false"
-                        | TInt i -> string i
-                        | TFloat f -> f.ToString("R", CultureInfo.InvariantCulture)
-                        | _ -> sprintf "\"%s\"" (tomlEsc (sprintf "%A" v))
-                sb.AppendFormat("{0} = {1}\n", k, lit) |> ignore
+                    else lit v
+                sb.AppendFormat("{0} = {1}\n", k, rendered) |> ignore
             sb.AppendLine() |> ignore
 
         for s in outcome.Steps do

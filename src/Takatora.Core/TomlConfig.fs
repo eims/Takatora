@@ -153,8 +153,16 @@ module TomlConfig =
                 VarKind.Enum values
             | None -> fail $"var '{varName}': enum requires a 'values' array"
         | "list" ->
-            // list<T> support deferred — no Phase 1 flow needs it yet.
-            fail $"var '{varName}': 'list' kind is not yet supported"
+            // `item` names the element type (scalar only); default "string".
+            // e.g. maps = { type = "list", item = "string", default = ["Main"] }
+            let itemKind =
+                match tryString tbl "item" |> Option.defaultValue "string" with
+                | "string" -> VarKind.String
+                | "int"    -> VarKind.Int
+                | "float"  -> VarKind.Float
+                | "bool"   -> VarKind.Bool
+                | other    -> fail $"var '{varName}': unsupported list item type '{other}' (string/int/float/bool)"
+            VarKind.List itemKind
         | other -> fail $"var '{varName}': unknown type '{other}'"
 
     let private parseFlowVar (name: string) (tbl: TomlTable) : FlowVar =
