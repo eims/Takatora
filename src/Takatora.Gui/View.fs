@@ -1151,10 +1151,21 @@ let private projectView
                             TextBlock.fontSize 22.0
                             TextBlock.fontWeight FontWeight.SemiBold
                         ]
-                        TextBlock.create [
-                            TextBlock.text p.Path
-                            TextBlock.foreground mutedBrush
-                            TextBlock.fontSize 12.0
+                        // The path itself is the click target to open the
+                        // project folder. A Button styled to look like the
+                        // plain path text — onClick is managed correctly by
+                        // FuncUI (unlike onPointerPressed + Always, which
+                        // re-subscribes every render → multi-fire).
+                        Button.create [
+                            Button.content p.Path
+                            Button.foreground mutedBrush
+                            Button.fontSize 12.0
+                            Button.background transparentBrush
+                            Button.borderThickness (Thickness 0.0)
+                            Button.padding (Thickness 0.0)
+                            Button.cursor handCursor
+                            Button.horizontalAlignment HorizontalAlignment.Left
+                            Button.onClick ((fun _ -> dispatch (OpenInExplorer p.Path)), SubPatchOptions.Always)
                         ]
                     ]
                 ]
@@ -1310,7 +1321,7 @@ let private runDetailBody
                                 Button.content "Open folder"
                                 Button.verticalAlignment VerticalAlignment.Top
                                 Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
-                                Button.onClick ((fun _ -> dispatch (OpenRunDir entry.RunDir)), SubPatchOptions.Always)
+                                Button.onClick ((fun _ -> dispatch (OpenInExplorer entry.RunDir)), SubPatchOptions.Always)
                             ]
                             TextBlock.create [
                                 TextBlock.text (sprintf "Dir:      %s" entry.RunDir)
