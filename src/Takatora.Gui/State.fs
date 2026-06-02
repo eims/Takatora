@@ -209,6 +209,10 @@ type Msg =
     | RefreshFlows of ProjectId
     | RefreshProjectInfo of ProjectId
     | OpenRunDetail of ProjectId * RunId
+    /// Re-run the flow of a past run using that run's recorded params
+    /// (secrets excluded — they were never stored). "Current defaults" just
+    /// uses the existing RunFlow (empty overrides).
+    | RerunSameParams of ProjectId * RunId
     /// Open a directory in the OS file explorer (run dir, project dir, …).
     | OpenInExplorer of path:string
     /// Run button entry point: opens the param dialog if the flow has
@@ -1129,6 +1133,27 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         // Direct run with no overrides (used internally / by RequestRun
         // for flows that declare no scalar vars).
         startRun pid flowId Map.empty model
+    | RerunSameParams (pid, runId) ->
+        // Re-run the flow with the past run's recorded params. The manifest
+        // only ever stored "***" for secrets, so we must NOT replay those
+        // masked values — instead re-source each secret from the keychain
+        // (omitted if not stored). Non-secret params come straight from the
+        // recorded run.
+        match Map.tryFind (pid, runId) model.RunDetails with
+        | None -> model, Cmd.none
+        | Some (entry, _) ->
+            let secretNames =
+                match flowById model pid entry.FlowId with
+                | Some f -> f.Vars |> List.choose (fun v -> if v.Kind = VarKind.Secret then Some v.Name else None) |> Set.ofList
+                | None   -> Set.empty
+            let baseOverrides = entry.Params |> Map.filter (fun k _ -> not (Set.contains k secretNames))
+            let overrides =
+                secretNames
+                |> Set.fold (fun acc name ->
+                    match Secrets.read pid name with
+                    | Some v -> Map.add name (TString v) acc
+                    | None   -> acc) baseOverrides
+            startRun pid entry.FlowId overrides model
     | OpenInExplorer path ->
         // Open the directory in the OS file explorer. Best-effort; a missing
         // dir or a headless host just no-ops.

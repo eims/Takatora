@@ -866,6 +866,26 @@ type StateTests() =
         Assert.Equal<RunDialogState option>(None, m.RunDialog)
         Assert.Contains("default = \"dev\"", File.ReadAllText(Path.Combine(ci, "flows.toml")))
 
+    // ─── re-run from RunDetail ──────────────────────────────────────
+
+    [<Fact>]
+    member _.``RerunSameParams opens a LiveRun for the past run's flow`` () =
+        let entry = { fakeEntry "r1" with FlowId = "f"; Params = Map.ofList [ "branch", TString "dev" ] }
+        let model =
+            { baseModel with
+                Projects   = [ { Name = "p1"; Path = Path.Combine(tmpRoot, "rerun"); AddedAt = DateTimeOffset.UtcNow } ]
+                RunDetails = Map.ofList [ ("p1", "r1"), (entry, []) ] }
+        let m = apply (RerunSameParams ("p1", "r1")) model
+        Assert.True(m.OpenTabs |> List.exists (function LiveRun _ -> true | _ -> false))
+        match m.ActiveTab with
+        | LiveRun _ -> ()
+        | other     -> Assert.True(false, sprintf "expected a LiveRun tab active, got %A" other)
+
+    [<Fact>]
+    member _.``RerunSameParams on an uncached run is a no-op`` () =
+        let m = apply (RerunSameParams ("p1", "ghost")) baseModel
+        Assert.Equal<RootTab list>(baseModel.OpenTabs, m.OpenTabs)
+
     // ─── Toggles / Parameters split ─────────────────────────────────
 
     [<Fact>]

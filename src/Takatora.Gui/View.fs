@@ -1337,6 +1337,23 @@ let private runDetailBody
                             ]
                         ]
                     ]
+                    // Re-run this flow — with this run's recorded params, or
+                    // with the flow's current flows.toml defaults.
+                    StackPanel.create [
+                        StackPanel.orientation Orientation.Horizontal
+                        StackPanel.spacing 8.0
+                        StackPanel.margin (Thickness(0.0, 12.0, 0.0, 4.0))
+                        StackPanel.children [
+                            Button.create [
+                                Button.content "Re-run with same params"
+                                Button.onClick ((fun _ -> dispatch (RerunSameParams (pid, entry.RunId))), SubPatchOptions.Always)
+                            ]
+                            Button.create [
+                                Button.content "Re-run with current defaults"
+                                Button.onClick ((fun _ -> dispatch (RunFlow (pid, entry.FlowId))), SubPatchOptions.Always)
+                            ]
+                        ]
+                    ]
                     sectionHeader "Parameters"
                     if Map.isEmpty entry.Params then
                         TextBlock.create [
