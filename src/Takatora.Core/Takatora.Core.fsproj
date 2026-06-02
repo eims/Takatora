@@ -12,6 +12,7 @@
     <Compile Include="Engines.fs" />
     <Compile Include="ProjectRegistry.fs" />
     <Compile Include="Secrets.fs" />
+    <Compile Include="Scaffold.fs" />
     <Compile Include="History.fs" />
     <Compile Include="Run.fs" />
     <Compile Include="Library.fs" />

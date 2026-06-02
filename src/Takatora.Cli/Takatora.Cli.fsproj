@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="Init.fs" />
     <Compile Include="Validate.fs" />
     <Compile Include="Run.fs" />
     <Compile Include="Cancel.fs" />

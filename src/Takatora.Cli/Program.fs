@@ -13,6 +13,34 @@ let main argv =
     versionCmd.SetAction(fun _ -> printfn $"{Version.Product} {Version.Version}")
     root.Subcommands.Add(versionCmd)
 
+    // ─── init ─────────────────────────────────────────────────────
+    let initPathArg = Argument<string>("path")
+    initPathArg.Description <- "Directory to scaffold a .ci/ in (created if missing; default: current dir)"
+    initPathArg.DefaultValueFactory <- (fun _ -> ".")
+
+    let initNameOpt = Option<string>("--name")
+    initNameOpt.Description <- "Project name (default: the directory name)"
+
+    let initEngineOpt = Option<string>("--engine")
+    initEngineOpt.Description <- "Engine: unreal (default) | unity | godot"
+    initEngineOpt.DefaultValueFactory <- (fun _ -> "unreal")
+
+    let initCmd =
+        Command("init", "Scaffold a new project's .ci/ (project.toml + a starter flow) and register it")
+    initCmd.Arguments.Add(initPathArg)
+    initCmd.Options.Add(initNameOpt)
+    initCmd.Options.Add(initEngineOpt)
+    initCmd.SetAction(fun (pr: ParseResult) ->
+        let path = pr.GetValue(initPathArg)
+        let nameRaw = pr.GetValue(initNameOpt)
+        let nameHint = if String.IsNullOrWhiteSpace nameRaw then None else Some nameRaw
+        match Init.parseEngine (pr.GetValue(initEngineOpt)) with
+        | Error msg ->
+            Console.Error.WriteLine($"init: {msg}")
+            2
+        | Ok engine -> Init.invoke path nameHint engine)
+    root.Subcommands.Add(initCmd)
+
     // ─── validate ─────────────────────────────────────────────────
     let validatePathArg = Argument<string>("path")
     validatePathArg.Description <- "Project working directory containing .ci/ (default: current dir)"
