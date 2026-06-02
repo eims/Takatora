@@ -576,7 +576,7 @@ type StateTests() =
     // ─── run-with-parameters dialog ─────────────────────────────────
 
     [<Fact>]
-    member _.``isDialogVarKind accepts rendered kinds and rejects list`` () =
+    member _.``isDialogVarKind accepts every kind`` () =
         Assert.True(isDialogVarKind VarKind.String)
         Assert.True(isDialogVarKind VarKind.Int)
         Assert.True(isDialogVarKind VarKind.Bool)
@@ -586,8 +586,7 @@ type StateTests() =
         Assert.True(isDialogVarKind VarKind.Dir)
         Assert.True(isDialogVarKind VarKind.Multiline)
         Assert.True(isDialogVarKind VarKind.Secret)
-        // Still deferred — needs the array editor (and Core parse support).
-        Assert.False(isDialogVarKind (VarKind.List VarKind.String))
+        Assert.True(isDialogVarKind (VarKind.List VarKind.String))
 
     [<Fact>]
     member _.``varDefaultText renders defaults and falls back sensibly`` () =
@@ -600,11 +599,9 @@ type StateTests() =
         Assert.Equal("",      varDefaultText (mkVar "s" VarKind.String None))
 
     [<Fact>]
-    member _.``RequestRun with no renderable vars does not open the dialog`` () =
-        // Flow has only the deferred list kind → nothing to fill in.
-        let model =
-            modelWithFlow "p1" "build"
-                [ mkVar "maps" (VarKind.List VarKind.String) None ]
+    member _.``RequestRun with no vars at all does not open the dialog`` () =
+        // A flow that declares no vars → nothing to fill in → runs directly.
+        let model = modelWithFlow "p1" "build" []
         let m = apply (RequestRun ("p1", "build")) model
         Assert.Equal<RunDialogState option>(None, m.RunDialog)
 
@@ -637,14 +634,14 @@ type StateTests() =
             Assert.Equal("false", Map.find "clean" d.Values)
 
     [<Fact>]
-    member _.``RequestRun drops the deferred list kind but keeps secret`` () =
+    member _.``RequestRun keeps every var kind including list`` () =
         let vars =
             [ mkVar "branch" VarKind.String None
               mkVar "maps"   (VarKind.List VarKind.String) None
               mkVar "token"  VarKind.Secret None ]
         let m = apply (RequestRun ("p1", "release")) (modelWithFlow "p1" "release" vars)
         match m.RunDialog with
-        | Some d -> Assert.Equal<string list>([ "branch"; "token" ], d.Vars |> List.map (fun v -> v.Name))
+        | Some d -> Assert.Equal<string list>([ "branch"; "maps"; "token" ], d.Vars |> List.map (fun v -> v.Name))
         | None   -> Assert.True(false, "dialog should be open")
 
     [<Fact>]
@@ -709,6 +706,7 @@ type StateTests() =
                   mkVar "clean"  VarKind.Bool   (Some (TBool false)) ]
               Values = Map.ofList [ "branch", "main"; "clean", "true" ]
               Remember = Set.empty
+              Lists    = Map.empty
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -726,6 +724,7 @@ type StateTests() =
               Vars   = [ mkVar "n" VarKind.Int None ]
               Values = Map.ofList [ "n", "not-a-number" ]
               Remember = Set.empty
+              Lists    = Map.empty
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -742,6 +741,7 @@ type StateTests() =
               Vars   = [ mkVar "token" VarKind.Secret None ]
               Values = Map.ofList [ "token", "typed-secret" ]
               Remember = Set.empty
+              Lists    = Map.empty
               Stored   = Set.empty
               Error  = None }
         match buildOverrides d with
@@ -756,6 +756,7 @@ type StateTests() =
               Vars   = [ mkVar "token" VarKind.Secret None ]
               Values = Map.ofList [ "token", "abc123" ]
               Remember = Set.ofList [ "token" ]
+              Lists    = Map.empty
               Stored   = Set.empty
               Error  = None }
         let merged = applySecretOverrides d Map.empty
@@ -771,6 +772,7 @@ type StateTests() =
               Vars   = [ mkVar "a" VarKind.Secret None; mkVar "b" VarKind.Secret None ]
               Values = Map.ofList [ "a", ""; "b", "kept" ]
               Remember = Set.empty   // b is used for this run but not saved
+              Lists    = Map.empty
               Stored   = Set.empty
               Error  = None }
         let merged = applySecretOverrides d Map.empty
@@ -790,6 +792,74 @@ type StateTests() =
             Assert.True(Set.contains "token" d.Stored)
             Assert.True(Set.contains "token" d.Remember)
         | None -> Assert.True(false, "dialog should be open")
+
+    // ─── list vars in the dialog ────────────────────────────────────
+
+    [<Fact>]
+    member _.``RequestRun pre-fills a list var's editor from its default array`` () =
+        let vars = [ mkVar "maps" (VarKind.List VarKind.String) (Some (TArray [ TString "Main"; TString "Boot" ])) ]
+        let m = apply (RequestRun ("p1", "f")) (modelWithFlow "p1" "f" vars)
+        match m.RunDialog with
+        | Some d -> Assert.Equal<string list>([ "Main"; "Boot" ], Map.find "maps" d.Lists)
+        | None   -> Assert.True(false, "dialog should be open")
+
+    [<Fact>]
+    member _.``RunDialogList add, set, and remove edit the item list`` () =
+        let vars = [ mkVar "maps" (VarKind.List VarKind.String) None ]
+        let m0 = apply (RequestRun ("p1", "f")) (modelWithFlow "p1" "f" vars)
+        let m1 = apply (RunDialogListAdd "maps") m0
+        let m2 = apply (RunDialogListSetItem ("maps", 0, "Main")) m1
+        let m3 = apply (RunDialogListAdd "maps") m2
+        let m4 = apply (RunDialogListSetItem ("maps", 1, "Boot")) m3
+        let m5 = apply (RunDialogListRemove ("maps", 0)) m4
+        match m5.RunDialog with
+        | Some d -> Assert.Equal<string list>([ "Boot" ], Map.find "maps" d.Lists)
+        | None   -> Assert.True(false, "dialog should be open")
+
+    [<Fact>]
+    member _.``buildOverrides parses a list var into a TArray and drops blank rows`` () =
+        let d =
+            { ProjectId = "p1"
+              FlowId    = "f"
+              Vars   = [ mkVar "ports" (VarKind.List VarKind.Int) None ]
+              Values = Map.empty
+              Lists  = Map.ofList [ "ports", [ "8080"; "  "; "9090" ] ]
+              Remember = Set.empty
+              Stored   = Set.empty
+              Error  = None }
+        match buildOverrides d with
+        | Ok overrides -> Assert.Equal<TomlValue>(TArray [ TInt 8080L; TInt 9090L ], Map.find "ports" overrides)
+        | Error e      -> Assert.True(false, e)
+
+    [<Fact>]
+    member _.``buildOverrides reports a bad list item`` () =
+        let d =
+            { ProjectId = "p1"
+              FlowId    = "f"
+              Vars   = [ mkVar "ports" (VarKind.List VarKind.Int) None ]
+              Values = Map.empty
+              Lists  = Map.ofList [ "ports", [ "8080"; "nope" ] ]
+              Remember = Set.empty
+              Stored   = Set.empty
+              Error  = None }
+        match buildOverrides d with
+        | Ok _    -> Assert.True(false, "expected a parse error")
+        | Error _ -> Assert.True(true)
+
+    [<Fact>]
+    member _.``buildOverrides omits an empty list with no default`` () =
+        let d =
+            { ProjectId = "p1"
+              FlowId    = "f"
+              Vars   = [ mkVar "maps" (VarKind.List VarKind.String) None ]
+              Values = Map.empty
+              Lists  = Map.ofList [ "maps", [ ""; "  " ] ]
+              Remember = Set.empty
+              Stored   = Set.empty
+              Error  = None }
+        match buildOverrides d with
+        | Ok overrides -> Assert.False(Map.containsKey "maps" overrides)
+        | Error e      -> Assert.True(false, e)
 
     [<Fact>]
     member _.``DeleteSecret removes the keychain entry and refreshes the cache`` () =

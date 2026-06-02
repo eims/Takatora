@@ -124,6 +124,9 @@ type RunDialogState = {
     /// Dialog-renderable vars (see State.isDialogVarKind), declaration order.
     Vars: FlowVar list
     Values: Map<string, string>
+    /// Per-list-var item texts (raw, one per array element). Parsed into a
+    /// TArray per the list's item kind at confirm.
+    Lists: Map<string, string list>
     /// Secret var names the user has flagged to persist to the keychain on
     /// Run. Initialised on: already-stored secrets default to remembered.
     Remember: Set<string>
@@ -210,6 +213,10 @@ type Msg =
     | RunDialogSetValue of name:string * value:string
     | RunDialogToggleRemember of name:string
     | RunDialogForget of name:string
+    // list var editor
+    | RunDialogListAdd of name:string
+    | RunDialogListRemove of name:string * index:int
+    | RunDialogListSetItem of name:string * index:int * value:string
     | RunDialogReset
     | RunDialogConfirm
     | RunDialogCancel
@@ -385,17 +392,16 @@ let private loadFlowsFor
 
 // ─── Run-with-parameters helpers ────────────────────────────────────
 
-/// Var kinds the run dialog can render today: scalars (text/pills),
-/// path/file/dir (text + native picker), multiline (textarea), and secret
-/// (masked input + keychain). Still deferred: list (array editor — also
-/// blocked on flows.toml parse support).
+/// Var kinds the run dialog can render: scalars (text/pills), path/file/dir
+/// (text + native picker), multiline (textarea), secret (masked + keychain),
+/// and list (per-item row editor). All VarKinds are now renderable.
 let isDialogVarKind (kind: VarKind) : bool =
     match kind with
     | VarKind.String | VarKind.Int | VarKind.Float
     | VarKind.Bool | VarKind.Enum _
     | VarKind.Path | VarKind.File | VarKind.Dir
-    | VarKind.Multiline | VarKind.Secret -> true
-    | VarKind.List _ -> false
+    | VarKind.Multiline | VarKind.Secret
+    | VarKind.List _ -> true
 
 /// Initial editing text for a var's input: its declared default, or a
 /// sensible empty/first value when no default is given.
@@ -422,27 +428,57 @@ let flowDialogVars (model: Model) (pid: ProjectId) (flowId: string) : FlowVar li
         | None   -> []
     | _ -> []
 
-/// Parse one edited field into a typed value per its declared kind.
-let private parseOverrideValue (v: FlowVar) (text: string) : Result<TomlValue, string> =
-    match v.Kind with
+/// Parse a single scalar text into a typed value per `kind`. `label` is
+/// used in error messages (the var name, or "<var>[<i>]" for a list item).
+let private parseScalarKind (kind: VarKind) (label: string) (text: string) : Result<TomlValue, string> =
+    match kind with
     | VarKind.String | VarKind.Multiline | VarKind.Path
     | VarKind.File | VarKind.Dir | VarKind.Secret | VarKind.List _ -> Ok (TString text)
     | VarKind.Bool -> Ok (TBool (text = "true"))
     | VarKind.Enum values ->
         if List.contains text values then Ok (TString text)
-        else Error (sprintf "%s: '%s' is not one of %s" v.Name text (String.concat ", " values))
+        else Error (sprintf "%s: '%s' is not one of %s" label text (String.concat ", " values))
     | VarKind.Int ->
         match Int64.TryParse(text.Trim(),
                              System.Globalization.NumberStyles.Integer,
                              System.Globalization.CultureInfo.InvariantCulture) with
         | true, i -> Ok (TInt i)
-        | _ -> Error (sprintf "%s: '%s' is not an integer" v.Name text)
+        | _ -> Error (sprintf "%s: '%s' is not an integer" label text)
     | VarKind.Float ->
         match Double.TryParse(text.Trim(),
                               System.Globalization.NumberStyles.Float,
                               System.Globalization.CultureInfo.InvariantCulture) with
         | true, f -> Ok (TFloat f)
-        | _ -> Error (sprintf "%s: '%s' is not a number" v.Name text)
+        | _ -> Error (sprintf "%s: '%s' is not a number" label text)
+
+let private parseOverrideValue (v: FlowVar) (text: string) : Result<TomlValue, string> =
+    parseScalarKind v.Kind v.Name text
+
+/// Item texts to pre-fill a list var's editor with: its declared default
+/// array rendered element-by-element, or [] if no array default.
+let listDefaultTexts (v: FlowVar) : string list =
+    match v.Default with
+    | Some (TArray xs) ->
+        xs |> List.map (function
+            | TString s -> s
+            | TInt i    -> string i
+            | TFloat f  -> Convert.ToString(f, System.Globalization.CultureInfo.InvariantCulture)
+            | TBool b   -> if b then "true" else "false"
+            | _         -> "")
+    | _ -> []
+
+/// Parse a list var's item texts into a TArray. Blank/whitespace rows are
+/// dropped (forgiving trailing empties); the rest parse per `itemKind`.
+let private parseListItems (label: string) (itemKind: VarKind) (items: string list) : Result<TomlValue, string> =
+    let rec go acc = function
+        | [] -> Ok (TArray (List.rev acc))
+        | (item: string) :: rest ->
+            if item.Trim() = "" then go acc rest
+            else
+                match parseScalarKind itemKind label item with
+                | Error e -> Error e
+                | Ok v    -> go (v :: acc) rest
+    go [] items
 
 /// Parse the non-secret edited fields, keeping only the ones that differ
 /// from the declared default (so RunHistory's OverriddenKeys stays honest).
@@ -450,20 +486,28 @@ let private parseOverrideValue (v: FlowVar) (text: string) : Result<TomlValue, s
 /// and their values come from the keychain/dialog, merged at confirm time.
 /// Stops at the first parse error.
 let buildOverrides (d: RunDialogState) : Result<Map<string, TomlValue>, string> =
+    let addIfOverride acc (v: FlowVar) (value: TomlValue) rest go =
+        let isOverride =
+            match v.Default with
+            | Some def -> def <> value
+            | None     -> value <> TArray []   // empty list with no default → no override
+        go (if isOverride then Map.add v.Name value acc else acc) rest
     let rec go acc vars =
         match vars with
         | [] -> Ok acc
         | (v: FlowVar) :: rest when v.Kind = VarKind.Secret -> go acc rest
         | (v: FlowVar) :: rest ->
-            let text = Map.tryFind v.Name d.Values |> Option.defaultValue (varDefaultText v)
-            match parseOverrideValue v text with
-            | Error e -> Error e
-            | Ok value ->
-                let isOverride =
-                    match v.Default with
-                    | Some def -> def <> value
-                    | None     -> true
-                go (if isOverride then Map.add v.Name value acc else acc) rest
+            match v.Kind with
+            | VarKind.List itemKind ->
+                let items = Map.tryFind v.Name d.Lists |> Option.defaultValue []
+                match parseListItems v.Name itemKind items with
+                | Error e  -> Error e
+                | Ok value -> addIfOverride acc v value rest go
+            | _ ->
+                let text = Map.tryFind v.Name d.Values |> Option.defaultValue (varDefaultText v)
+                match parseOverrideValue v text with
+                | Error e  -> Error e
+                | Ok value -> addIfOverride acc v value rest go
     go Map.empty d.Vars
 
 /// Merge secret values into a base override map for a confirmed dialog,
@@ -928,12 +972,20 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     | VarKind.Secret -> v.Name, (Secrets.read pid v.Name |> Option.defaultValue "")
                     | _              -> v.Name, varDefaultText v)
                 |> Map.ofList
+            let lists =
+                vars
+                |> List.choose (fun v ->
+                    match v.Kind with
+                    | VarKind.List _ -> Some (v.Name, listDefaultTexts v)
+                    | _              -> None)
+                |> Map.ofList
             { model with
                 RunDialog =
                     Some { ProjectId = pid
                            FlowId    = flowId
                            Vars      = vars
                            Values    = values
+                           Lists     = lists
                            Remember  = stored
                            Stored    = stored
                            Error     = None } },
@@ -969,9 +1021,32 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                             Stored   = Set.remove name d.Stored
                             Remember = Set.remove name d.Remember } },
             Cmd.none
+    | RunDialogListAdd name ->
+        match model.RunDialog with
+        | None -> model, Cmd.none
+        | Some d ->
+            let cur = Map.tryFind name d.Lists |> Option.defaultValue []
+            { model with RunDialog = Some { d with Lists = Map.add name (cur @ [ "" ]) d.Lists; Error = None } },
+            Cmd.none
+    | RunDialogListRemove (name, index) ->
+        match model.RunDialog with
+        | None -> model, Cmd.none
+        | Some d ->
+            let cur = Map.tryFind name d.Lists |> Option.defaultValue []
+            let next = cur |> List.indexed |> List.choose (fun (i, x) -> if i = index then None else Some x)
+            { model with RunDialog = Some { d with Lists = Map.add name next d.Lists; Error = None } },
+            Cmd.none
+    | RunDialogListSetItem (name, index, value) ->
+        match model.RunDialog with
+        | None -> model, Cmd.none
+        | Some d ->
+            let cur = Map.tryFind name d.Lists |> Option.defaultValue []
+            let next = cur |> List.mapi (fun i x -> if i = index then value else x)
+            { model with RunDialog = Some { d with Lists = Map.add name next d.Lists; Error = None } },
+            Cmd.none
     | RunDialogReset ->
         // Restore every field to its declared default (secrets re-read the
-        // keychain so a stored value reappears).
+        // keychain so a stored value reappears; lists reset to their array).
         match model.RunDialog with
         | None -> model, Cmd.none
         | Some d ->
@@ -982,7 +1057,14 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     | VarKind.Secret -> v.Name, (Secrets.read d.ProjectId v.Name |> Option.defaultValue "")
                     | _              -> v.Name, varDefaultText v)
                 |> Map.ofList
-            { model with RunDialog = Some { d with Values = values; Error = None } },
+            let lists =
+                d.Vars
+                |> List.choose (fun v ->
+                    match v.Kind with
+                    | VarKind.List _ -> Some (v.Name, listDefaultTexts v)
+                    | _              -> None)
+                |> Map.ofList
+            { model with RunDialog = Some { d with Values = values; Lists = lists; Error = None } },
             Cmd.none
     | RunDialogCancel ->
         { model with RunDialog = None }, Cmd.none

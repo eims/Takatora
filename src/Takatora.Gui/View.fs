@@ -1670,6 +1670,7 @@ let private liveRunView
 let private runDialogField
         (v: FlowVar)
         (current: string)
+        (items: string list)
         (isRemembered: bool)
         (isStored: bool)
         (dispatch: Msg -> unit)
@@ -1732,6 +1733,37 @@ let private runDialogField
                         TextBox.verticalAlignment VerticalAlignment.Center
                         TextBox.onTextChanged (fun s -> dispatch (RunDialogSetValue (v.Name, s)))
                     ]
+                ]
+            ] :> _
+        | VarKind.List _ ->
+            // One TextBox per array element with a "−" remove, plus "+ Add".
+            // Blank rows are dropped at confirm, so an empty trailing row is
+            // harmless.
+            StackPanel.create [
+                StackPanel.spacing 4.0
+                StackPanel.children [
+                    yield! items |> List.mapi (fun i item ->
+                        DockPanel.create [
+                            DockPanel.children [
+                                Button.create [
+                                    DockPanel.dock Dock.Right
+                                    Button.content "−"
+                                    Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                                    Button.onClick ((fun _ -> dispatch (RunDialogListRemove (v.Name, i))), SubPatchOptions.Always)
+                                ]
+                                TextBox.create [
+                                    TextBox.text item
+                                    TextBox.verticalAlignment VerticalAlignment.Center
+                                    TextBox.onTextChanged
+                                        ((fun s -> dispatch (RunDialogListSetItem (v.Name, i, s))), SubPatchOptions.Always)
+                                ]
+                            ]
+                        ] :> IView)
+                    yield Button.create [
+                        Button.content "+ Add"
+                        Button.horizontalAlignment HorizontalAlignment.Left
+                        Button.onClick ((fun _ -> dispatch (RunDialogListAdd v.Name)), SubPatchOptions.Always)
+                    ] :> IView
                 ]
             ] :> _
         | VarKind.Secret ->
@@ -1832,7 +1864,8 @@ let private runParamsDialog (d: RunDialogState) (dispatch: Msg -> unit) : IView 
                                 let current =
                                     Map.tryFind v.Name d.Values
                                     |> Option.defaultValue (varDefaultText v)
-                                yield runDialogField v current
+                                let items = Map.tryFind v.Name d.Lists |> Option.defaultValue []
+                                yield runDialogField v current items
                                         (Set.contains v.Name d.Remember)
                                         (Set.contains v.Name d.Stored)
                                         dispatch
