@@ -1557,19 +1557,30 @@ let private liveStepsSection (steps: LiveStep list) : IView =
         ]
     ] :> _
 
+/// Log tail panel. A DockPanel so the dark box (last child) FILLS the
+/// height it's given — when liveRunBody docks this as the fill region it
+/// grows to the window bottom instead of being capped, and only scrolls
+/// when the output truly overflows the available space.
 let private liveLogSection (logTail: string list) : IView =
-    StackPanel.create [
-        StackPanel.children [
-            sectionHeader "Output (tail)"
+    DockPanel.create [
+        DockPanel.margin (Thickness(16.0, 4.0, 16.0, 16.0))
+        DockPanel.children [
+            TextBlock.create [
+                DockPanel.dock Dock.Top
+                TextBlock.text "Output (tail)"
+                TextBlock.fontSize 14.0
+                TextBlock.fontWeight FontWeight.SemiBold
+                TextBlock.margin (Thickness(0.0, 0.0, 0.0, 4.0))
+            ]
             Border.create [
                 Border.background (brush "#161616")
                 Border.borderBrush stripBorder
                 Border.borderThickness (Thickness 1.0)
                 Border.cornerRadius 4.0
                 Border.padding (Thickness 8.0)
-                Border.maxHeight 280.0
                 Border.child (
                     ScrollViewer.create [
+                        ScrollViewer.horizontalScrollBarVisibility ScrollBarVisibility.Auto
                         ScrollViewer.content (
                             TextBlock.create [
                                 TextBlock.text (String.concat "\n" logTail)
@@ -1632,55 +1643,62 @@ let private liveRunBody
                     ]
                 ]
             ] :> IView
-    ScrollViewer.create [
-        ScrollViewer.content (
-            StackPanel.create [
-                StackPanel.margin (Thickness 16.0)
-                StackPanel.spacing 6.0
-                StackPanel.children [
-                    TextBlock.create [
-                        TextBlock.text s.ProjectId
-                        TextBlock.foreground dimBrush
-                        TextBlock.fontSize 12.0
-                    ]
-                    StackPanel.create [
-                        StackPanel.orientation Orientation.Horizontal
-                        StackPanel.spacing 12.0
-                        StackPanel.children [
-                            TextBlock.create [
-                                TextBlock.text (liveRunIcon s.Phase)
-                                TextBlock.fontSize 24.0
-                                TextBlock.foreground
-                                    (match s.Phase with
-                                     | LivePending -> accent
-                                     | LiveCompleted (Ok o) ->
-                                         (match o.Result with
-                                          | RunResult.Success   -> brush "#4ec97a"
-                                          | RunResult.Failure   -> brush "#f15a5a"
-                                          | RunResult.Cancelled -> mutedBrush)
-                                     | LiveCompleted (Error _) -> brush "#f15a5a")
-                            ]
-                            TextBlock.create [
-                                TextBlock.text s.FlowId
-                                TextBlock.fontSize 22.0
-                                TextBlock.fontWeight FontWeight.SemiBold
-                                TextBlock.verticalAlignment VerticalAlignment.Center
-                            ]
+    // Header / phase / steps sit at the top; the log tail fills the rest of
+    // the window (so it isn't capped to a short box with empty space below).
+    let info =
+        StackPanel.create [
+            DockPanel.dock Dock.Top
+            StackPanel.margin (Thickness(16.0, 16.0, 16.0, 4.0))
+            StackPanel.spacing 6.0
+            StackPanel.children [
+                TextBlock.create [
+                    TextBlock.text s.ProjectId
+                    TextBlock.foreground dimBrush
+                    TextBlock.fontSize 12.0
+                ]
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing 12.0
+                    StackPanel.children [
+                        TextBlock.create [
+                            TextBlock.text (liveRunIcon s.Phase)
+                            TextBlock.fontSize 24.0
+                            TextBlock.foreground
+                                (match s.Phase with
+                                 | LivePending -> accent
+                                 | LiveCompleted (Ok o) ->
+                                     (match o.Result with
+                                      | RunResult.Success   -> brush "#4ec97a"
+                                      | RunResult.Failure   -> brush "#f15a5a"
+                                      | RunResult.Cancelled -> mutedBrush)
+                                 | LiveCompleted (Error _) -> brush "#f15a5a")
+                        ]
+                        TextBlock.create [
+                            TextBlock.text s.FlowId
+                            TextBlock.fontSize 22.0
+                            TextBlock.fontWeight FontWeight.SemiBold
+                            TextBlock.verticalAlignment VerticalAlignment.Center
                         ]
                     ]
-                    TextBlock.create [
-                        TextBlock.text (sprintf "Started: %s" started)
-                        TextBlock.foreground dimBrush
-                    ]
-                    phaseBlock
-                    if not (List.isEmpty s.Progress.Steps) then
-                        liveStepsSection s.Progress.Steps
-                    if not (List.isEmpty s.Progress.LogTail) then
-                        liveLogSection s.Progress.LogTail
                 ]
+                TextBlock.create [
+                    TextBlock.text (sprintf "Started: %s" started)
+                    TextBlock.foreground dimBrush
+                ]
+                phaseBlock
+                if not (List.isEmpty s.Progress.Steps) then
+                    liveStepsSection s.Progress.Steps
             ]
-        )
-    ] :> _
+        ] :> IView
+    if List.isEmpty s.Progress.LogTail then
+        ScrollViewer.create [ ScrollViewer.content info ] :> IView
+    else
+        DockPanel.create [
+            DockPanel.children [
+                info
+                liveLogSection s.Progress.LogTail
+            ]
+        ] :> IView
 
 let private liveRunView
         (key: LiveRunKey)
