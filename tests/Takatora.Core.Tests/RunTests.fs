@@ -484,6 +484,35 @@ message = "done"
         | Some (e, _) -> Assert.Equal<TomlValue>(TString @"C:\Build\out", Map.find "out_dir" e.Params)
         | None        -> Assert.Fail("findRun returned None — manifest failed to parse")
 
+    // ─── builtin task shipping ────────────────────────────────────
+
+    [<Fact>]
+    member _.``ue.build_nonunity builtin ships and resolves in a plan`` () =
+        // Regression guard: the new non-unity-build task file is packaged
+        // into builtin-tasks/ and the resolver finds it. (A real build needs
+        // an engine, so we stop at plan — no UBT invocation.)
+        writeFile ".ci/project.toml" """
+[project]
+name = "g"
+working_dir = "."
+[engine]
+type = "unreal"
+project_file = "g.uproject"
+"""
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "ci"
+[[flow.steps]]
+type = "ue.build_nonunity"
+"""
+        let builtinDir = Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+        let opts = { buildOptions "ci" Map.empty with BuiltinTasksDir = builtinDir }
+        match Run.plan opts with
+        | Ok plan ->
+            let step = plan.Steps |> List.find (fun s -> s.Type = "ue.build_nonunity")
+            Assert.True(step.TaskPath.IsSome, "ue.build_nonunity should resolve to a builtin .fsx")
+        | Error e -> Assert.Fail(sprintf "expected a plan, got %A" e)
+
     // ─── engine mutex ─────────────────────────────────────────────
 
     [<Fact>]
