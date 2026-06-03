@@ -25,6 +25,14 @@ exception TaskFailure of reason: string
 [<RequireQualifiedAccess>]
 module internal Io =
 
+    // Pin this fsi process's stdout to UTF-8. The runner reads our stdout
+    // as UTF-8; without this, a GUI (windowed) host's spawned fsi can
+    // default Console.OutputEncoding to the system code page (e.g. CP932),
+    // so forwarded tool output — already decoded correctly — gets
+    // re-encoded wrong and lands in log.txt as mojibake. (A console host
+    // happened to default to UTF-8, which masked this.)
+    do try System.Console.OutputEncoding <- System.Text.Encoding.UTF8 with _ -> ()
+
     type private Channel = {
         InputRoot: JsonObject
         OutputPath: string option
