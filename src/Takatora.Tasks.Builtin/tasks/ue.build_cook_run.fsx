@@ -51,7 +51,11 @@ let uatArgs = [
     yield! mapArgs
     yield "-build"; yield "-cook"; yield "-stage"; yield "-archive"
     yield sprintf "-archivedirectory=%s" archiveAbs
-    yield "-utf8output"
+    // NOTE: deliberately NOT -utf8output. It makes UAT/UBT emit UTF-8 for
+    // their own lines while sub-tools (e.g. MSVC link.exe) still emit the
+    // OS code page (CP932 on JP Windows) — a mixed-encoding stream the
+    // runner can't decode cleanly, producing mojibake. Without it the whole
+    // stream is the native code page, which the SDK decodes correctly.
     yield! Array.toList extraUatArgs
 ]
 

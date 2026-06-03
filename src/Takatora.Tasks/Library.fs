@@ -25,13 +25,22 @@ exception TaskFailure of reason: string
 [<RequireQualifiedAccess>]
 module internal Io =
 
-    // Pin this fsi process's stdout to UTF-8. The runner reads our stdout
-    // as UTF-8; without this, a GUI (windowed) host's spawned fsi can
-    // default Console.OutputEncoding to the system code page (e.g. CP932),
-    // so forwarded tool output — already decoded correctly — gets
-    // re-encoded wrong and lands in log.txt as mojibake. (A console host
-    // happened to default to UTF-8, which masked this.)
-    do try System.Console.OutputEncoding <- System.Text.Encoding.UTF8 with _ -> ()
+    // Pin this fsi process's stdout/stderr to UTF-8. The runner reads them
+    // as UTF-8; without this, a GUI (windowed) host's spawned fsi (no
+    // console attached) leaves Console.Out at the system code page (CP932),
+    // so forwarded tool output — already decoded correctly — is re-encoded
+    // wrong and lands in log.txt as mojibake. We swap the writers directly
+    // over the raw streams instead of setting Console.OutputEncoding, which
+    // silently throws in a console-less process.
+    do
+        try
+            let utf8Writer (stream: System.IO.Stream) =
+                let w = new System.IO.StreamWriter(stream, System.Text.UTF8Encoding(false))
+                w.AutoFlush <- true
+                w :> System.IO.TextWriter
+            System.Console.SetOut(utf8Writer (System.Console.OpenStandardOutput()))
+            System.Console.SetError(utf8Writer (System.Console.OpenStandardError()))
+        with _ -> ()
 
     type private Channel = {
         InputRoot: JsonObject
