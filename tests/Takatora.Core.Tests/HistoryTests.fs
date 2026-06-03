@@ -103,3 +103,24 @@ let ``findRun returns entry and step summaries for matching id`` () =
 let ``findRun returns None for unknown id`` () =
     withProjectTree (fun root ->
         Assert.Equal(None, RunHistory.findRun root "r-nope"))
+
+// ─── runOutputs ────────────────────────────────────────────────────
+
+[<Fact>]
+let ``runOutputs reads step outputs from the run dir`` () =
+    withProjectTree (fun dir ->
+        let runId = "r-out"
+        let outDir = Path.Combine(dir, ".ci", "runs", runId, "outputs")
+        Directory.CreateDirectory(outDir) |> ignore
+        File.WriteAllText(
+            Path.Combine(outDir, "ue.build_cook_run-1.ndjson"),
+            "{\"name\":\"archive_path\",\"value\":\"C:/Pkg/Win\"}\n{\"name\":\"count\",\"value\":3}\n")
+        let outs = RunHistory.runOutputs dir runId
+        let step = Map.find "ue.build_cook_run-1" outs
+        Assert.Equal("C:/Pkg/Win", Map.find "archive_path" step)
+        Assert.Equal("3", Map.find "count" step))
+
+[<Fact>]
+let ``runOutputs is empty when there are no output files`` () =
+    withProjectTree (fun dir ->
+        Assert.True(Map.isEmpty (RunHistory.runOutputs dir "nope")))

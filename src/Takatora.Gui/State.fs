@@ -173,8 +173,9 @@ type Model = {
     ProjectSecrets: Map<ProjectId, string list>
     /// Cached `RunHistory.findRun` results for open RunDetail tabs,
     /// keyed by (project, run id). Loaded on OpenRunDetail, dropped
-    /// when the corresponding tab closes.
-    RunDetails: Map<ProjectId * RunId, RunHistoryEntry * StepSummary list>
+    /// when the corresponding tab closes. The third element is the run's
+    /// step outputs (step id → name → value) for the Outputs display.
+    RunDetails: Map<ProjectId * RunId, RunHistoryEntry * StepSummary list * Map<string, Map<string, string>>>
     /// Live state of every LiveRun tab the user has kicked off. Entries
     /// are added by RunFlow and removed by LiveRunCompleted (which also
     /// drops the entry if its tab has been closed).
@@ -947,8 +948,10 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 | None -> model.RunDetails
                 | Some root ->
                     match RunHistory.findRun root runId with
-                    | Some data -> Map.add key data model.RunDetails
-                    | None      -> model.RunDetails
+                    | Some (entry, steps) ->
+                        let outputs = RunHistory.runOutputs root runId
+                        Map.add key (entry, steps, outputs) model.RunDetails
+                    | None -> model.RunDetails
         { model with
             OpenTabs       = moveOrAppend tab model.OpenTabs
             ActiveTab      = tab
@@ -1141,7 +1144,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         // recorded run.
         match Map.tryFind (pid, runId) model.RunDetails with
         | None -> model, Cmd.none
-        | Some (entry, _) ->
+        | Some (entry, _, _) ->
             let secretNames =
                 match flowById model pid entry.FlowId with
                 | Some f -> f.Vars |> List.choose (fun v -> if v.Kind = VarKind.Secret then Some v.Name else None) |> Set.ofList

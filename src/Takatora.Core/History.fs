@@ -3,6 +3,8 @@ namespace Takatora.Core
 open System
 open System.Globalization
 open System.IO
+open System.Text.Json
+open System.Text.Json.Nodes
 open Tomlyn.Model
 
 /// One line of run history, derived from `<wd>/.ci/runs/<id>/manifest.toml`.
@@ -147,3 +149,37 @@ module RunHistory =
             match parseManifest runDir text with
             | None -> None
             | Some entry -> Some (entry, parseStepSummaries text)
+
+    /// Step outputs a run recorded under `<runDir>/outputs/<stepId>.ndjson`
+    /// (each line `{"name":…,"value":…}`), keyed by step id → (name → value
+    /// rendered as a string). Used by the GUI to surface e.g. a UE package's
+    /// `archive_path` so it can be opened. Missing/empty → empty map.
+    let runOutputs (projectRoot: string) (runId: string) : Map<string, Map<string, string>> =
+        let outDir = Path.Combine(projectRoot, ".ci", "runs", runId, "outputs")
+        if not (Directory.Exists outDir) then Map.empty
+        else
+            Directory.GetFiles(outDir, "*.ndjson")
+            |> Array.choose (fun f ->
+                let stepId = Path.GetFileNameWithoutExtension f
+                let outs =
+                    File.ReadAllLines f
+                    |> Array.choose (fun line ->
+                        if String.IsNullOrWhiteSpace line then None
+                        else
+                            try
+                                match JsonNode.Parse(line) with
+                                | null -> None
+                                | node ->
+                                    let name = node.["name"].GetValue<string>()
+                                    let value =
+                                        match node.["value"] with
+                                        | null -> ""
+                                        | v ->
+                                            match v.GetValueKind() with
+                                            | JsonValueKind.String -> v.GetValue<string>()
+                                            | _ -> v.ToJsonString()
+                                    Some (name, value)
+                            with _ -> None)
+                    |> Map.ofArray
+                if Map.isEmpty outs then None else Some (stepId, outs))
+            |> Map.ofArray

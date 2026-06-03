@@ -1256,10 +1256,49 @@ let private stepLine (s: StepSummary) : IView =
         ]
     ] :> _
 
+/// Run step outputs (e.g. a UE package's archive_path). Path-valued outputs
+/// get an "Open" button so the user can jump to the produced folder/file.
+let private outputsSection (outputs: Map<string, Map<string, string>>) (dispatch: Msg -> unit) : IView =
+    if Map.isEmpty outputs then TextBlock.create [ TextBlock.text "" ] :> IView
+    else
+        let row (name: string) (value: string) : IView =
+            let isDir  = try System.IO.Directory.Exists value with _ -> false
+            let isFile = try System.IO.File.Exists value with _ -> false
+            DockPanel.create [
+                DockPanel.margin (Thickness(0.0, 2.0))
+                DockPanel.children [
+                    if isDir || isFile then
+                        yield Button.create [
+                            DockPanel.dock Dock.Right
+                            Button.content "Open"
+                            Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                            Button.onClick
+                                ((fun _ ->
+                                    let target = if isDir then value else System.IO.Path.GetDirectoryName value
+                                    dispatch (OpenInExplorer target)), SubPatchOptions.Always)
+                        ] :> IView
+                    yield TextBlock.create [
+                        TextBlock.text (sprintf "%s = %s" name value)
+                        TextBlock.foreground dimBrush
+                        TextBlock.textWrapping TextWrapping.Wrap
+                        TextBlock.verticalAlignment VerticalAlignment.Center
+                    ] :> IView
+                ]
+            ] :> IView
+        StackPanel.create [
+            StackPanel.children [
+                yield sectionHeader "Outputs"
+                for KeyValue (_, outs) in outputs do
+                    for KeyValue (name, value) in outs do
+                        yield row name value
+            ]
+        ] :> IView
+
 let private runDetailBody
         (pid: ProjectId)
         (entry: RunHistoryEntry)
         (steps: StepSummary list)
+        (outputs: Map<string, Map<string, string>>)
         (dispatch: Msg -> unit)
         : IView =
     let started  = entry.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
@@ -1378,6 +1417,7 @@ let private runDetailBody
                                 for s in steps -> stepLine s
                             ]
                         ] :> IView
+                    outputsSection outputs dispatch
                 ]
             ]
         )
@@ -1438,11 +1478,11 @@ let private runDetailView
         (dispatch: Msg -> unit)
         : IView =
     match Map.tryFind (pid, runId) model.RunDetails with
-    | Some (entry, steps) ->
+    | Some (entry, steps, outputs) ->
         DockPanel.create [
             DockPanel.children [
                 runDetailNav pid runId model dispatch
-                runDetailBody pid entry steps dispatch
+                runDetailBody pid entry steps outputs dispatch
             ]
         ] :> _
     | None ->
@@ -1557,6 +1597,12 @@ let private liveStepsSection (steps: LiveStep list) : IView =
         ]
     ] :> _
 
+// Whether the live-log view is "following" the tail. Flipped by the user
+// scrolling: at the bottom → follow; scrolled up → stop (so reading back
+// isn't yanked down). Module-level (one log viewed at a time); read/written
+// only on the UI thread inside the ScrollChanged handler.
+let mutable private logFollow = true
+
 /// Log tail panel. A DockPanel so the dark box (last child) FILLS the
 /// height it's given — when liveRunBody docks this as the fill region it
 /// grows to the window bottom instead of being capped, and only scrolls
@@ -1581,6 +1627,19 @@ let private liveLogSection (logTail: string list) : IView =
                 Border.child (
                     ScrollViewer.create [
                         ScrollViewer.horizontalScrollBarVisibility ScrollBarVisibility.Auto
+                        // Tail-follow: when new log grows the extent, scroll to
+                        // the end only if the user was already at the bottom; a
+                        // user scroll updates that intent. (OffsetDelta = user/
+                        // programmatic move; ExtentDelta with no offset move =
+                        // content grew.)
+                        ScrollViewer.onScrollChanged (fun e ->
+                            match e.Source with
+                            | :? ScrollViewer as sv ->
+                                if e.OffsetDelta.Y <> 0.0 then
+                                    logFollow <- sv.Offset.Y + sv.Viewport.Height >= sv.Extent.Height - 4.0
+                                elif e.ExtentDelta.Y <> 0.0 && logFollow then
+                                    sv.ScrollToEnd()
+                            | _ -> ())
                         ScrollViewer.content (
                             TextBlock.create [
                                 TextBlock.text (String.concat "\n" logTail)

@@ -311,7 +311,7 @@ type StateTests() =
                 ProjectHistory = Map.ofList [ "p1", []; "p2", [] ]
                 ProjectFlows   = Map.ofList [ "p1", FlowsMissing; "p2", FlowsMissing ]
                 ProjectInfo    = Map.ofList [ "p1", ProjectInfoMissing; "p2", ProjectInfoMissing ]
-                RunDetails     = Map.ofList [ ("p1", "r1"), (fakeEntry "r1", []) ] }
+                RunDetails     = Map.ofList [ ("p1", "r1"), (fakeEntry "r1", [], Map.empty) ] }
         let m = apply (CloseTab (Project "p1")) m0
         // p1's per-project caches gone
         Assert.False(Map.containsKey "p1" m.ProjectSubTabs)
@@ -339,8 +339,8 @@ type StateTests() =
                 ProjectFlows   = Map.ofList [ "p1", FlowsMissing ]
                 RunDetails =
                     Map.ofList [
-                        ("p1", "r1"), (fakeEntry "r1", [])
-                        ("p1", "r2"), (fakeEntry "r2", [])
+                        ("p1", "r1"), (fakeEntry "r1", [], Map.empty)
+                        ("p1", "r2"), (fakeEntry "r2", [], Map.empty)
                     ] }
         let m = apply (CloseTab (RunDetail ("p1", "r1"))) m0
         Assert.False(Map.containsKey ("p1", "r1") m.RunDetails)
@@ -874,7 +874,7 @@ type StateTests() =
         let model =
             { baseModel with
                 Projects   = [ { Name = "p1"; Path = Path.Combine(tmpRoot, "rerun"); AddedAt = DateTimeOffset.UtcNow } ]
-                RunDetails = Map.ofList [ ("p1", "r1"), (entry, []) ] }
+                RunDetails = Map.ofList [ ("p1", "r1"), (entry, [], Map.empty) ] }
         let m = apply (RerunSameParams ("p1", "r1")) model
         Assert.True(m.OpenTabs |> List.exists (function LiveRun _ -> true | _ -> false))
         match m.ActiveTab with
