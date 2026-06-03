@@ -13,7 +13,6 @@
 // Outputs:
 //   archive_path   string  — same as archive_dir but absolute
 //   exe_path       string  — guessed primary exe under archive_dir
-//   log_path       string  — UAT_Log.txt under the archive dir
 open Takatora.Tasks
 open System.IO
 
@@ -65,4 +64,7 @@ Step.run "BuildCookRun" (fun () ->
 
 Output.set "archive_path" archiveAbs
 Output.set "exe_path"     (Path.Combine(archiveAbs, sprintf "%s.exe" Project.name))
-Output.set "log_path"     (Path.Combine(archiveAbs, "UAT_Log.txt"))
+// NOTE: no "log_path" — UAT writes its master log under
+// %APPDATA%\Unreal Engine\AutomationTool\Logs\… (not the archive dir), and
+// the full UAT output is already captured in the run's own log.txt. A
+// guessed archive/UAT_Log.txt path was misleading (the file isn't there).

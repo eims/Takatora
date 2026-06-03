@@ -1159,11 +1159,15 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             startRun pid entry.FlowId overrides model
     | OpenInExplorer path ->
         // Open the directory in the OS file explorer. Best-effort; a missing
-        // dir or a headless host just no-ops.
+        // dir or a headless host just no-ops. Normalize separators first —
+        // explorer.exe opens the default folder (Documents) for a path with
+        // mixed `/` and `\` (e.g. an archive_dir like "Package/Windows"
+        // joined onto a Windows prefix).
         (try
-            if Directory.Exists path then
+            let normalized = try Path.GetFullPath path with _ -> path
+            if Directory.Exists normalized then
                 let psi = System.Diagnostics.ProcessStartInfo("explorer.exe")
-                psi.ArgumentList.Add(path)
+                psi.ArgumentList.Add(normalized)
                 System.Diagnostics.Process.Start(psi) |> ignore
          with _ -> ())
         model, Cmd.none

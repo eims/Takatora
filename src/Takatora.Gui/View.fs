@@ -1357,24 +1357,19 @@ let private runDetailBody
                         TextBlock.text (sprintf "Trigger:  %s" entry.Trigger)
                         TextBlock.foreground dimBrush
                     ]
-                    DockPanel.create [
-                        DockPanel.margin (Thickness(0.0, 2.0, 0.0, 0.0))
-                        DockPanel.children [
-                            Button.create [
-                                DockPanel.dock Dock.Right
-                                Button.content "Open folder"
-                                Button.verticalAlignment VerticalAlignment.Top
-                                Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
-                                Button.onClick ((fun _ -> dispatch (OpenInExplorer entry.RunDir)), SubPatchOptions.Always)
-                            ]
-                            TextBlock.create [
-                                TextBlock.text (sprintf "Dir:      %s" entry.RunDir)
-                                TextBlock.foreground dimBrush
-                                TextBlock.fontSize 11.0
-                                TextBlock.textWrapping TextWrapping.Wrap
-                                TextBlock.verticalAlignment VerticalAlignment.Center
-                            ]
-                        ]
+                    // The run dir path is the click target (opens it in the
+                    // explorer) — a text-styled Button, same as the project
+                    // header path.
+                    Button.create [
+                        Button.content (sprintf "Dir:      %s" entry.RunDir)
+                        Button.foreground dimBrush
+                        Button.fontSize 11.0
+                        Button.background transparentBrush
+                        Button.borderThickness (Thickness 0.0)
+                        Button.padding (Thickness 0.0)
+                        Button.cursor handCursor
+                        Button.horizontalAlignment HorizontalAlignment.Left
+                        Button.onClick ((fun _ -> dispatch (OpenInExplorer entry.RunDir)), SubPatchOptions.Always)
                     ]
                     // Re-run this flow — with this run's recorded params, or
                     // with the flow's current flows.toml defaults.
