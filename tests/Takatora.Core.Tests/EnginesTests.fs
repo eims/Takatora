@@ -1,5 +1,7 @@
 module Takatora.Core.Tests.EnginesTests
 
+open System
+open System.IO
 open Xunit
 open Takatora.Core
 
@@ -53,3 +55,24 @@ let ``pick returns None when nothing is detected`` () =
     match result with
     | None -> ()
     | Some e -> Assert.Equal(EngineKind.Unreal, e.Kind)
+
+// ─── .uproject EngineAssociation ───────────────────────────────────
+
+[<Fact>]
+let ``engineAssociation reads the EngineAssociation field`` () =
+    let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".uproject")
+    File.WriteAllText(tmp, """{ "FileVersion": 3, "EngineAssociation": "5.7", "Modules": [] }""")
+    try Assert.Equal<string option>(Some "5.7", Engines.engineAssociation tmp)
+    finally File.Delete tmp
+
+[<Fact>]
+let ``engineAssociation is None for a missing file`` () =
+    let ghost = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".uproject")
+    Assert.Equal<string option>(None, Engines.engineAssociation ghost)
+
+[<Fact>]
+let ``engineAssociation is None when the field is absent`` () =
+    let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".uproject")
+    File.WriteAllText(tmp, """{ "FileVersion": 3, "Modules": [] }""")
+    try Assert.Equal<string option>(None, Engines.engineAssociation tmp)
+    finally File.Delete tmp

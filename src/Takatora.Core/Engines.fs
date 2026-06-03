@@ -214,14 +214,34 @@ module Engines =
         |> List.map (fun k -> k, detect k)
         |> Map.ofList
 
-    /// Pick the best match for a `[engine]` block in project.toml.
-    /// If `engine_version` is set, prefer an exact match; otherwise
+    /// Read a `.uproject`'s `EngineAssociation` (e.g. "5.7"). Used as the
+    /// version hint so the matching installed engine is auto-selected —
+    /// no need to hardcode engine_path/engine_version in project.toml.
+    /// (A source-build GUID association won't match launcher installs;
+    /// such setups still need an explicit engine_path.)
+    let engineAssociation (uprojectPath: string) : string option =
+        try
+            if not (File.Exists uprojectPath) then None
+            else
+                match JsonNode.Parse(File.ReadAllText uprojectPath) with
+                | null -> None
+                | node ->
+                    match node.["EngineAssociation"] with
+                    | null -> None
+                    | v ->
+                        let s = v.GetValue<string>()
+                        if String.IsNullOrWhiteSpace s then None else Some s
+        with _ -> None
+
+    /// Pick the best match for a `[engine]` block in project.toml. With a
+    /// version hint, match exactly OR by `<hint>.` prefix (so a `.uproject`
+    /// EngineAssociation "5.7" resolves to a detected "5.7.4-…"); otherwise
     /// pick the first detected install.
     let pick (kind: EngineKind) (versionHint: string option) : DetectedEngine option =
         let candidates = detect kind
         match versionHint with
         | Some v ->
             candidates
-            |> List.tryFind (fun e -> e.Version = v)
+            |> List.tryFind (fun e -> e.Version = v || e.Version.StartsWith(v + "."))
             |> Option.orElseWith (fun () -> List.tryHead candidates)
         | None -> List.tryHead candidates

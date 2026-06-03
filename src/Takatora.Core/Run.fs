@@ -669,6 +669,20 @@ module Run =
 
         File.WriteAllText(path, sb.ToString())
 
+    /// Version hint for engine resolution: an explicit `engine_version`
+    /// wins; otherwise, for a UE project with a `.uproject`, fall back to
+    /// its EngineAssociation — so the right install is auto-selected
+    /// without hardcoding engine_path/engine_version in project.toml.
+    let private engineVersionHint (project: Project) (projectRoot: string) : string option =
+        match project.Engine.EngineVersion with
+        | Some _ as v -> v
+        | None ->
+            match project.Engine.Kind, project.Engine.ProjectFile with
+            | EngineKind.Unreal, Some pf ->
+                let path = if Path.IsPathRooted pf then pf else Path.Combine(projectRoot, pf)
+                Engines.engineAssociation path
+            | _ -> None
+
     /// Resolve a flow into the same view `execute` would see at start
     /// of step execution, but stop short of actually spawning anything.
     /// Used by `takatora run --dry-run` to preview what would happen.
@@ -696,7 +710,7 @@ module Run =
                     match project.Engine.EnginePath with
                     | Some _ -> project
                     | None ->
-                        match Engines.pick project.Engine.Kind project.Engine.EngineVersion with
+                        match Engines.pick project.Engine.Kind (engineVersionHint project projectRoot) with
                         | Some d ->
                             { project with
                                 Engine =
@@ -802,7 +816,7 @@ module Run =
                 match project.Engine.EnginePath with
                 | Some _ -> project
                 | None ->
-                    match Engines.pick project.Engine.Kind project.Engine.EngineVersion with
+                    match Engines.pick project.Engine.Kind (engineVersionHint project projectRoot) with
                     | Some detected ->
                         { project with
                             Engine =
