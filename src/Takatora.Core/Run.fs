@@ -529,6 +529,11 @@ module Run =
         psi.CreateNoWindow <- true
         psi.RedirectStandardOutput <- true
         psi.RedirectStandardError <- true
+        // fsi writes UTF-8 to its redirected stdout (and the SDK forwards
+        // child-tool output already decoded from the native code page), so
+        // read it as UTF-8 — independent of the host's console encoding.
+        psi.StandardOutputEncoding <- System.Text.Encoding.UTF8
+        psi.StandardErrorEncoding <- System.Text.Encoding.UTF8
         psi.WorkingDirectory <- effectiveWorkingDir
         psi.Environment.["TAKATORA_TASK_INPUT"]  <- inputPath
         psi.Environment.["TAKATORA_OUTPUT_FILE"] <- outputPath

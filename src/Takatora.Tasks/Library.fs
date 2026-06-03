@@ -524,8 +524,20 @@ module ExecOptions =
 module Cmd =
 
     open System.Diagnostics
+    open System.Text
 
     let private taskFail msg : 'T = raise (TaskFailure msg)
+
+    /// Console tools (UBT, cl.exe, git, …) emit bytes in the OS's native
+    /// (ANSI/console) code page, not UTF-8 — e.g. CP932 on Japanese
+    /// Windows. Decode captured/streamed output with that code page so
+    /// localized messages don't turn into mojibake in log.txt. Registering
+    /// the code-pages provider is required for GetEncoding(932) on .NET.
+    let private nativeEncoding : Encoding =
+        try
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance)
+            Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.ANSICodePage)
+        with _ -> Encoding.UTF8
 
     let private buildPsi (exe: string) (args: string list) (opts: ExecOptions) : ProcessStartInfo =
         let psi = ProcessStartInfo(exe)
@@ -565,6 +577,10 @@ module Cmd =
         // un-redirected console child loses its output in that mode.
         psi.RedirectStandardOutput <- true
         psi.RedirectStandardError <- true
+        // Decode the tool's native-codepage bytes correctly (then re-emit as
+        // UTF-8 via Console.Out, which the runner reads as UTF-8).
+        psi.StandardOutputEncoding <- nativeEncoding
+        psi.StandardErrorEncoding <- nativeEncoding
         use proc = new Process()
         proc.StartInfo <- psi
         proc.OutputDataReceived.Add(fun e -> if not (isNull e.Data) then Console.Out.WriteLine(e.Data))
@@ -604,6 +620,8 @@ module Cmd =
         let psi = buildPsi exe args opts
         psi.RedirectStandardOutput <- true
         psi.RedirectStandardError <- true
+        psi.StandardOutputEncoding <- nativeEncoding
+        psi.StandardErrorEncoding <- nativeEncoding
         use proc = Process.Start(psi)
         // Read both streams concurrently; reading sequentially can
         // deadlock if the child fills the unread pipe.
