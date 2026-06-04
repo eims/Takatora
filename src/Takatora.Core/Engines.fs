@@ -409,3 +409,52 @@ module Engines =
                      Describe = "Godot editor" }
             | None ->
                 Error "Godot executable not found — set engine.engine_path, or put godot on PATH"
+
+    /// Resolve the actual engine install a project will run on — the
+    /// detected version + path behind the (often auto-detected, hence
+    /// invisible) `[engine]` config. Unlike `pick`, never falls back to an
+    /// arbitrary install: a hint that matches nothing is an Error, so the
+    /// GUI can show "declared X, but no matching install" honestly.
+    let resolveProjectEngine (engine: Engine) (projectRoot: string) : Result<DetectedEngine, string> =
+        let abs (p: string) =
+            if Path.IsPathRooted p then p else Path.Combine(projectRoot, p)
+        let matchHint (candidates: DetectedEngine list) (hint: string) =
+            candidates
+            |> List.tryFind (fun e ->
+                e.Association = Some hint || e.Version = hint || e.Version.StartsWith(hint + "."))
+        match engine.Kind with
+        | EngineKind.Unreal ->
+            let hint =
+                match engine.EngineVersion with
+                | Some v when not (String.IsNullOrWhiteSpace v) -> Some v
+                | _ ->
+                    match engine.ProjectFile with
+                    | Some pf -> engineAssociation (abs pf)
+                    | None -> None
+            match hint with
+            | None -> Error "no engine_version and no .uproject EngineAssociation to resolve from"
+            | Some h ->
+                match matchHint (detect EngineKind.Unreal) h with
+                | Some d -> Ok d
+                | None -> Error (sprintf "no installed Unreal Engine matches '%s'" h)
+        | EngineKind.Unity ->
+            match unityProjectVersion projectRoot with
+            | None -> Error "couldn't read the Unity version (ProjectSettings/ProjectVersion.txt)"
+            | Some ver ->
+                match detect EngineKind.Unity |> List.tryFind (fun e -> e.Version = ver) with
+                | Some d -> Ok d
+                | None -> Error (sprintf "Unity %s is not installed" ver)
+        | EngineKind.Godot ->
+            let fromConfig =
+                engine.EnginePath
+                |> Option.filter (fun p -> not (String.IsNullOrWhiteSpace p))
+                |> Option.map abs
+                |> Option.filter File.Exists
+            match fromConfig with
+            | Some exe ->
+                Ok { Kind = EngineKind.Godot; Version = "(configured)"
+                     Path = Path.GetDirectoryName exe; Executable = Some exe; Association = None }
+            | None ->
+                match detect EngineKind.Godot with
+                | d :: _ -> Ok d
+                | []     -> Error "no Godot executable found — set engine.engine_path, or put godot on PATH"

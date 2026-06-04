@@ -29,6 +29,13 @@ let private activeBg    = brush "#2a2a2a"
 let private accent      = brush "#3d8bfd"
 let private cardBg      = brush "#252525"
 let private rowHoverBg  = brush "#262626"
+/// Per-engine accent so the engine name reads at a glance — logos can't be
+/// embedded (and UE/Unity are mono anyway). Distinct, non-clashing hues.
+let private engineColor (kind: EngineKind) : IBrush =
+    match kind with
+    | EngineKind.Unreal -> brush "#5B9BD5"   // blue
+    | EngineKind.Unity  -> brush "#E0902F"   // orange
+    | EngineKind.Godot  -> brush "#6FB86F"   // green
 // Vertical divider between the global Home chip and the project-scoped
 // chips — a structural cue reads more reliably across monitors than a
 // subtle hue tint (which looked like hover/active or vanished entirely).
@@ -310,6 +317,7 @@ let private rootTabStrip (model: Model) (dispatch: Msg -> unit) : IView =
 
 let private projectRow
         (p: ProjectRegistration)
+        (engineKind: EngineKind option)
         (dispatch: Msg -> unit)
         : IView =
     Border.create [
@@ -331,6 +339,11 @@ let private projectRow
                                 TextBlock.text p.Name
                                 TextBlock.fontSize 16.0
                                 TextBlock.fontWeight FontWeight.SemiBold
+                                // Tint the name by engine (matches the Settings
+                                // engine color); plain when the kind is unknown.
+                                match engineKind with
+                                | Some k -> TextBlock.foreground (engineColor k)
+                                | None -> ()
                             ]
                             TextBlock.create [
                                 TextBlock.text p.Path
@@ -545,7 +558,8 @@ let private homeBody (model: Model) (dispatch: Msg -> unit) : IView =
             StackPanel.create [
                 StackPanel.spacing 6.0
                 StackPanel.children [
-                    for p in model.Projects -> projectRow p dispatch
+                    for p in model.Projects ->
+                        projectRow p (Map.tryFind p.Name model.ProjectEngines) dispatch
                 ]
             ] :> _
     ScrollViewer.create [
@@ -793,16 +807,61 @@ let private settingsField (label: string) (value: string) : IView =
 let private optStr (label: string) (v: string option) : IView =
     settingsField label (Option.defaultValue "(autodetect)" v)
 
-let private projectInfoBlock (proj: Project) : IView =
+/// A settings row whose value is tinted + emphasised — used to color the
+/// engine name by engine type.
+let private settingsFieldColored (label: string) (value: string) (fg: IBrush) : IView =
+    DockPanel.create [
+        DockPanel.margin (Thickness(0.0, 2.0))
+        DockPanel.children [
+            TextBlock.create [
+                DockPanel.dock Dock.Left
+                TextBlock.text label
+                TextBlock.width 160.0
+                TextBlock.foreground dimBrush
+            ]
+            TextBlock.create [
+                TextBlock.text value
+                TextBlock.foreground fg
+                TextBlock.fontWeight FontWeight.SemiBold
+                TextBlock.textWrapping TextWrapping.Wrap
+            ]
+        ]
+    ] :> _
+
+let private projectInfoBlock (proj: Project) (projectRoot: string) : IView =
+    // The *resolved* engine — what this project will actually run on,
+    // behind the (often auto-detected, hence blank above) config. Surfaces
+    // the detection result so "which version am I on" is answerable.
+    let resolvedEngine : IView =
+        match Engines.resolveProjectEngine proj.Engine projectRoot with
+        | Ok d ->
+            StackPanel.create [
+                StackPanel.spacing 2.0
+                StackPanel.children [
+                    yield settingsFieldColored "version" (sprintf "%s %s" (engineKindLabel d.Kind) d.Version) (engineColor d.Kind)
+                    yield settingsField "install path" d.Path
+                    match d.Executable with
+                    | Some exe -> yield settingsField "executable" exe
+                    | None -> ()
+                    match d.Association with
+                    | Some assoc -> yield settingsField "association" assoc
+                    | None -> ()
+                ]
+            ] :> IView
+        | Error msg ->
+            settingsField "resolved" (sprintf "⚠ not resolved — %s" msg)
     StackPanel.create [
         StackPanel.spacing 2.0
         StackPanel.children [
             sectionHeader "Engine"
-            settingsField "type"           (engineKindLabel proj.Engine.Kind)
+            settingsFieldColored "type"    (engineKindLabel proj.Engine.Kind) (engineColor proj.Engine.Kind)
             optStr        "project_file"   proj.Engine.ProjectFile
             optStr        "engine_path"    proj.Engine.EnginePath
             optStr        "engine_version" proj.Engine.EngineVersion
             optStr        "executable"     proj.Engine.Executable
+
+            sectionHeader "Resolved engine"
+            resolvedEngine
 
             sectionHeader "VCS"
             (match proj.Vcs with
@@ -875,6 +934,7 @@ let private secretsBlock (pid: ProjectId) (names: string list) (dispatch: Msg ->
 
 let private settingsBody
         (pid: ProjectId)
+        (projectRoot: string)
         (load: ProjectInfoLoad)
         (secrets: string list)
         (dispatch: Msg -> unit)
@@ -933,7 +993,7 @@ let private settingsBody
                         StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
                         StackPanel.spacing 8.0
                         StackPanel.children [
-                            projectInfoBlock proj
+                            projectInfoBlock proj projectRoot
                             secretsBlock pid secrets dispatch
                         ]
                     ]
@@ -1242,7 +1302,7 @@ let private projectView
                      let secrets =
                          Map.tryFind pid model.ProjectSecrets
                          |> Option.defaultValue []
-                     settingsBody pid load secrets dispatch)
+                     settingsBody pid p.Path load secrets dispatch)
             ]
         ] :> _
 

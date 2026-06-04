@@ -139,6 +139,38 @@ let ``resolveEditorLaunch Godot uses configured engine_path with editor args`` (
         | Error e -> Assert.Fail($"expected Ok, got {e}")
     finally Directory.Delete(dir, true)
 
+// ─── resolveProjectEngine ──────────────────────────────────────────
+
+[<Fact>]
+let ``resolveProjectEngine Godot resolves the configured engine_path`` () =
+    let d = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory d |> ignore
+    let godot = Path.Combine(d, "godot.exe")
+    File.WriteAllText(godot, "")
+    try
+        match Engines.resolveProjectEngine (engineOf EngineKind.Godot None (Some godot)) d with
+        | Ok e ->
+            Assert.Equal(godot, e.Executable |> Option.defaultValue "")
+            Assert.Equal(EngineKind.Godot, e.Kind)
+        | Error msg -> Assert.Fail($"expected Ok, got {msg}")
+    finally Directory.Delete(d, true)
+
+[<Fact>]
+let ``resolveProjectEngine UE errors with nothing to resolve from`` () =
+    match Engines.resolveProjectEngine (engineOf EngineKind.Unreal None None) (Path.GetTempPath()) with
+    | Error _ -> ()
+    | Ok _ -> Assert.Fail("expected Error when there is no engine_version and no .uproject")
+
+[<Fact>]
+let ``resolveProjectEngine Unity errors without ProjectVersion`` () =
+    let d = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory d |> ignore
+    try
+        match Engines.resolveProjectEngine (engineOf EngineKind.Unity None None) d with
+        | Error _ -> ()
+        | Ok _ -> Assert.Fail("expected Error when ProjectVersion.txt is absent")
+    finally Directory.Delete(d, true)
+
 // ─── .uproject EngineAssociation ───────────────────────────────────
 
 [<Fact>]

@@ -55,6 +55,7 @@ type StateTests() =
           ProjectInfo    = Map.empty
           ProjectSecrets = Map.empty
           RunDetails     = Map.empty
+          ProjectEngines = Map.empty
           RunLogFilter   = Map.empty
           RunLogMatchIdx = Map.empty
           OpeningEditors = Set.empty

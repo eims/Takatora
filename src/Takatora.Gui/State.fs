@@ -167,6 +167,11 @@ type Model = {
     /// Cached `TomlConfig.loadProject` results, keyed by project id.
     /// Loaded on OpenProject alongside flows.
     ProjectInfo: Map<ProjectId, ProjectInfoLoad>
+    /// Engine kind per registered project (from project.toml's [engine].type),
+    /// loaded eagerly whenever the project list changes so the Home list can
+    /// tint each project name by engine — cheap (a small TOML parse, no runs
+    /// scan). Missing/unparseable projects are simply absent (no tint).
+    ProjectEngines: Map<ProjectId, EngineKind>
     /// Cached keychain secret var names per project (for the Settings
     /// manager). Refreshed when Settings is opened/refreshed and on
     /// delete, so the list stays a pure function of model state.
@@ -269,14 +274,28 @@ type Msg =
     | AddProjectSetEngine of EngineKind
     | SubmitAddProject
 
+/// Engine kind per project (project.toml [engine].type), for tinting the
+/// Home project list. Best-effort: projects whose toml is missing/broken
+/// are omitted. Recomputed whenever the project list changes. Self-contained
+/// (reads p.Path directly) so it can run from `init`.
+let private engineKindsFor (projects: ProjectRegistration list) : Map<ProjectId, EngineKind> =
+    projects
+    |> List.choose (fun (p: ProjectRegistration) ->
+        let path = Path.Combine(p.Path, ".ci", "project.toml")
+        if not (File.Exists path) then None
+        else try Some (p.Name, (TomlConfig.loadProject path).Engine.Kind) with _ -> None)
+    |> Map.ofList
+
 let init () : Model * Cmd<Msg> =
+    let projects = ProjectRegistry.load ()
     { OpenTabs       = [ Home ]
       ActiveTab      = Home
-      Projects       = ProjectRegistry.load ()
+      Projects       = projects
       ProjectSubTabs = Map.empty
       ProjectHistory = Map.empty
       ProjectFlows   = Map.empty
       ProjectInfo    = Map.empty
+      ProjectEngines = engineKindsFor projects
       ProjectSecrets = Map.empty
       RunDetails     = Map.empty
       RunLogFilter   = Map.empty
@@ -879,7 +898,8 @@ let private startRun
 let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | RefreshProjects ->
-        { model with Projects = ProjectRegistry.load () }, Cmd.none
+        let projects = ProjectRegistry.load ()
+        { model with Projects = projects; ProjectEngines = engineKindsFor projects }, Cmd.none
     | OpenProject pid ->
         let tab = Project pid
         let history =
@@ -1376,9 +1396,11 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     | ProjectRegistry.Added entry ->
                         // Refresh the registry-backed list and open the new
                         // project tab so the user lands somewhere useful.
+                        let projects = ProjectRegistry.load ()
                         { model with
-                            AddProject = None
-                            Projects   = ProjectRegistry.load () },
+                            AddProject     = None
+                            Projects       = projects
+                            ProjectEngines = engineKindsFor projects },
                         Cmd.ofMsg (OpenProject entry.Name)
                     | ProjectRegistry.DuplicateName existing ->
                         withError
