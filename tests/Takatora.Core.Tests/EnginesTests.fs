@@ -56,6 +56,41 @@ let ``pick returns None when nothing is detected`` () =
     | None -> ()
     | Some e -> Assert.Equal(EngineKind.Unreal, e.Kind)
 
+// ─── pickFrom matching (pure — no registry) ────────────────────────
+
+let private ue version assoc =
+    { Kind = EngineKind.Unreal; Version = version; Path = $@"C:\{version}"
+      Executable = None; Association = assoc }
+
+[<Fact>]
+let ``pickFrom matches a launcher version exactly`` () =
+    let cands = [ ue "5.6.1" None; ue "5.7.4" None ]
+    let r = Engines.pickFrom cands (Some "5.7.4")
+    Assert.Equal<string option>(Some "5.7.4", r |> Option.map (fun e -> e.Version))
+
+[<Fact>]
+let ``pickFrom matches a major-minor hint by prefix`` () =
+    let cands = [ ue "5.6.1" None; ue "5.7.4" None ]
+    let r = Engines.pickFrom cands (Some "5.7")
+    Assert.Equal<string option>(Some "5.7.4", r |> Option.map (fun e -> e.Version))
+
+[<Fact>]
+let ``pickFrom resolves a source-build GUID association`` () =
+    let guid = "{B9C8A4D1-1234-5678-9ABC-DEF012345678}"
+    let cands = [ ue "5.7.4" None; ue "5.7.0 (source)" (Some guid) ]
+    let r = Engines.pickFrom cands (Some guid)
+    Assert.Equal<string option>(Some guid, (Option.get r).Association)
+
+[<Fact>]
+let ``pickFrom falls back to the first candidate when no hint matches`` () =
+    let cands = [ ue "5.6.1" None; ue "5.7.4" None ]
+    let r = Engines.pickFrom cands (Some "4.27")
+    Assert.Equal<string option>(Some "5.6.1", r |> Option.map (fun e -> e.Version))
+
+[<Fact>]
+let ``pickFrom returns None for an empty candidate list`` () =
+    Assert.Equal<DetectedEngine option>(None, Engines.pickFrom [] (Some "5.7"))
+
 // ─── .uproject EngineAssociation ───────────────────────────────────
 
 [<Fact>]

@@ -28,6 +28,9 @@ let private toJson (results: Map<EngineKind, DetectedEngine list>) : string =
             match e.Executable with
             | Some exe -> entry.["executable"] <- JsonValue.Create(exe)
             | None -> ()
+            match e.Association with
+            | Some assoc -> entry.["association"] <- JsonValue.Create(assoc)
+            | None -> ()
             arr.Add(entry)
         root.[engineKey kind] <- arr
     root.ToJsonString(JsonSerializerOptions(WriteIndented = true))

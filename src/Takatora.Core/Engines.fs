@@ -15,6 +15,11 @@ type DetectedEngine = {
     Version: string
     Path: string
     Executable: string option
+    /// The engine-association id this install answers to when it differs
+    /// from `Version` — i.e. the GUID of a source build, as referenced by a
+    /// `.uproject`'s EngineAssociation. `None` for launcher/installed engines
+    /// (whose association *is* their version, e.g. "5.7").
+    Association: string option
 }
 
 [<RequireQualifiedAccess>]
@@ -64,6 +69,7 @@ module Engines =
                                         Version = version
                                         Path = loc
                                         Executable = exe
+                                        Association = None
                                     }
                                 | _ -> None
                             | _ -> None)
@@ -95,15 +101,79 @@ module Engines =
                                         Version = version
                                         Path = path
                                         Executable = exe
+                                        Association = None
                                     }
                                 | _ -> None
                         with _ -> None)
                     |> List.ofArray
             with _ -> []
 
+    /// Read a friendly "Major.Minor.Patch" from an engine root's
+    /// Engine/Build/Build.version (a source build's only reliable version
+    /// marker, since its registry key is a GUID, not a version).
+    let private readUnrealBuildVersion (engineRoot: string) : string option =
+        try
+            let p = Path.Combine(engineRoot, "Engine", "Build", "Build.version")
+            if not (File.Exists p) then None
+            else
+                match JsonNode.Parse(File.ReadAllText p) with
+                | :? JsonObject as o ->
+                    let getInt (key: string) =
+                        o.[key] |> Option.ofObj |> Option.map (fun v -> v.GetValue<int>())
+                    match getInt "MajorVersion", getInt "MinorVersion" with
+                    | Some maj, Some min ->
+                        let patch = getInt "PatchVersion" |> Option.defaultValue 0
+                        Some (sprintf "%d.%d.%d" maj min patch)
+                    | _ -> None
+                | _ -> None
+        with _ -> None
+
+    // Source builds register themselves under HKCU, keyed by the GUID that a
+    // `.uproject` puts in EngineAssociation; the value *is* the engine root.
+    // (Note the space in "Epic Games" here vs. "EpicGames" for HKLM installs.)
+    let private detectUnrealFromSourceBuilds () : DetectedEngine list =
+        if not isWindows then []
+        else
+            try
+                use key =
+                    Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                        @"SOFTWARE\Epic Games\Unreal Engine\Builds")
+                if isNull key then []
+                else
+                    key.GetValueNames()
+                    |> Array.choose (fun assoc ->
+                        try
+                            match key.GetValue(assoc) with
+                            | :? string as raw ->
+                                let path = raw.Trim()
+                                if String.IsNullOrWhiteSpace path || not (Directory.Exists path) then None
+                                else
+                                    let exe =
+                                        let p = Path.Combine(path, "Engine", "Binaries", "Win64", "UnrealEditor.exe")
+                                        if File.Exists p then Some p else None
+                                    let version =
+                                        match readUnrealBuildVersion path with
+                                        | Some v -> sprintf "%s (source)" v
+                                        | None -> assoc
+                                    Some {
+                                        Kind = EngineKind.Unreal
+                                        Version = version
+                                        Path = path
+                                        Executable = exe
+                                        Association = Some assoc
+                                    }
+                            | _ -> None
+                        with _ -> None)
+                    |> List.ofArray
+            with _ -> []
+
     let private detectUnreal () : DetectedEngine list =
-        // De-dupe by install path; launcher entries come first.
-        let combined = detectUnrealFromLauncher () @ detectUnrealFromRegistry ()
+        // De-dupe by install path; launcher entries come first, then HKLM
+        // installs, then HKCU source builds.
+        let combined =
+            detectUnrealFromLauncher ()
+            @ detectUnrealFromRegistry ()
+            @ detectUnrealFromSourceBuilds ()
         combined
         |> List.distinctBy (fun e -> e.Path.TrimEnd('\\', '/'))
 
@@ -127,6 +197,7 @@ module Engines =
                         Version = version
                         Path = dir
                         Executable = Some exe
+                        Association = None
                     }
                 else None)
             |> List.ofArray
@@ -192,6 +263,7 @@ module Engines =
                     Version = parseGodotVersion exe
                     Path = Path.GetDirectoryName exe
                     Executable = Some exe
+                    Association = None
                 })
             |> List.ofArray
 
@@ -217,8 +289,8 @@ module Engines =
     /// Read a `.uproject`'s `EngineAssociation` (e.g. "5.7"). Used as the
     /// version hint so the matching installed engine is auto-selected —
     /// no need to hardcode engine_path/engine_version in project.toml.
-    /// (A source-build GUID association won't match launcher installs;
-    /// such setups still need an explicit engine_path.)
+    /// May also be a GUID (a source build); `pick` resolves that against
+    /// source builds registered under HKCU\…\Unreal Engine\Builds.
     let engineAssociation (uprojectPath: string) : string option =
         try
             if not (File.Exists uprojectPath) then None
@@ -234,14 +306,20 @@ module Engines =
         with _ -> None
 
     /// Pick the best match for a `[engine]` block in project.toml. With a
-    /// version hint, match exactly OR by `<hint>.` prefix (so a `.uproject`
+    /// version hint, match the source-build association GUID exactly, OR the
+    /// version exactly, OR by `<hint>.` prefix (so a `.uproject`
     /// EngineAssociation "5.7" resolves to a detected "5.7.4-…"); otherwise
     /// pick the first detected install.
-    let pick (kind: EngineKind) (versionHint: string option) : DetectedEngine option =
-        let candidates = detect kind
+    let pickFrom (candidates: DetectedEngine list) (versionHint: string option) : DetectedEngine option =
         match versionHint with
         | Some v ->
             candidates
-            |> List.tryFind (fun e -> e.Version = v || e.Version.StartsWith(v + "."))
+            |> List.tryFind (fun e ->
+                e.Association = Some v
+                || e.Version = v
+                || e.Version.StartsWith(v + "."))
             |> Option.orElseWith (fun () -> List.tryHead candidates)
         | None -> List.tryHead candidates
+
+    let pick (kind: EngineKind) (versionHint: string option) : DetectedEngine option =
+        pickFrom (detect kind) versionHint
