@@ -354,6 +354,88 @@ preset = "safe"
         // `safe` preset doesn't touch Saved.
         Assert.True(Directory.Exists (Path.Combine(dir, "Saved")),         "Saved should survive `safe`")
 
+    // ─── builtin: artifact.collect ────────────────────────────────
+
+    [<Fact>]
+    member _.``builtin artifact.collect copies sources into a named drop with a manifest`` () =
+        writeFile ".ci/project.toml" projectToml
+        // A build output dir to collect.
+        Directory.CreateDirectory(Path.Combine(dir, "build", "sub")) |> ignore
+        File.WriteAllText(Path.Combine(dir, "build", "Game.exe"), "exe")
+        File.WriteAllText(Path.Combine(dir, "build", "sub", "data.bin"), "data")
+
+        // stamp=none keeps the drop name deterministic (= project name).
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "collect"
+
+[[flow.steps]]
+id = "collect"
+type = "artifact.collect"
+sources = ["build"]
+dest = "Artifacts"
+stamp = "none"
+archive = false
+"""
+        let opts : Run.Options = {
+            WorkingDir = dir
+            FlowId = "collect"
+            VarOverrides = Map.empty
+            SdkAssemblyPath = sdkAssemblyPath
+            BuiltinTasksDir = Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+            UserTasksDir = None
+        }
+        let outcome =
+            match Run.execute opts with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        let drop = Path.Combine(dir, "Artifacts", "rt-fixture")
+        Assert.True(File.Exists(Path.Combine(drop, "build", "Game.exe")),     "collected file should be present")
+        Assert.True(File.Exists(Path.Combine(drop, "build", "sub", "data.bin")), "nested file should be present")
+        Assert.True(File.Exists(Path.Combine(drop, "manifest.json")),         "manifest should be written")
+        let outputs = outcome.Steps.[0].Outputs
+        Assert.Equal(Some (TString ""),   Map.tryFind "stamp" outputs)
+        Assert.Equal(Some (TString drop), Map.tryFind "artifact_path" outputs)
+
+    [<Fact>]
+    member _.``builtin artifact.collect zips the drop when archive is set`` () =
+        writeFile ".ci/project.toml" projectToml
+        Directory.CreateDirectory(Path.Combine(dir, "build")) |> ignore
+        File.WriteAllText(Path.Combine(dir, "build", "Game.exe"), "exe")
+
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "zip"
+
+[[flow.steps]]
+id = "collect"
+type = "artifact.collect"
+sources = ["build"]
+dest = "Artifacts"
+name = "drop"
+stamp = "none"
+archive = true
+"""
+        let opts : Run.Options = {
+            WorkingDir = dir
+            FlowId = "zip"
+            VarOverrides = Map.empty
+            SdkAssemblyPath = sdkAssemblyPath
+            BuiltinTasksDir = Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+            UserTasksDir = None
+        }
+        let outcome =
+            match Run.execute opts with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        let zip = Path.Combine(dir, "Artifacts", "drop.zip")
+        Assert.True(File.Exists zip, "archive should be produced")
+        Assert.False(Directory.Exists(Path.Combine(dir, "Artifacts", "drop")), "folder should be removed after archiving")
+        let outputs = outcome.Steps.[0].Outputs
+        Assert.Equal(Some (TString zip), Map.tryFind "artifact_path" outputs)
+
     // ─── builtin: shell ───────────────────────────────────────────
 
     [<Fact>]
