@@ -1256,6 +1256,16 @@ let private stepLine (s: StepSummary) : IView =
         ]
     ] :> _
 
+/// Monospace, selectable (copyable) log text for the log panels.
+let private logTextBlock (logTail: string list) : IView =
+    SelectableTextBlock.create [
+        SelectableTextBlock.text (String.concat "\n" logTail)
+        SelectableTextBlock.fontFamily (FontFamily "Consolas, Menlo, monospace")
+        SelectableTextBlock.fontSize 12.0
+        SelectableTextBlock.foreground dimBrush
+        SelectableTextBlock.textWrapping TextWrapping.NoWrap
+    ] :> IView
+
 /// Run step outputs (e.g. a UE package's archive_path). Path-valued outputs
 /// get an "Open" button so the user can jump to the produced folder/file.
 let private outputsSection (outputs: Map<string, Map<string, string>>) (dispatch: Msg -> unit) : IView =
@@ -1294,11 +1304,136 @@ let private outputsSection (outputs: Map<string, Map<string, string>>) (dispatch
             ]
         ] :> IView
 
+/// The RunDetail find box, captured on load (via its routed event source) so
+/// a Ctrl+F anywhere in RunDetail can focus it. Only one RunDetail is visible
+/// at a time, so a single ref is enough; it's refreshed on each (re)load.
+let mutable private logFindBox : TextBox option = None
+
+/// All character offsets in `text` where `q` occurs (case-insensitive),
+/// non-overlapping. Empty when `q` is empty.
+let private matchOffsets (text: string) (q: string) : int list =
+    if System.String.IsNullOrEmpty q then []
+    else
+        let rec loop start acc =
+            let i = text.IndexOf(q, start, System.StringComparison.OrdinalIgnoreCase)
+            if i < 0 then List.rev acc
+            else loop (i + q.Length) (i :: acc)
+        loop 0 []
+
+/// The run's full captured log, reviewable in RunDetail: a find box that
+/// JUMPS to (highlights + scrolls to) each match — keeping the whole log
+/// visible, not filtering it away — with ◀ ▶ to step matches and a "k / N"
+/// counter, plus an "Open in editor" button (log.txt in the OS default app).
+/// The log itself is a read-only TextBox (robust selection + copy, unlike a
+/// SelectableTextBlock whose selection drops in inter-glyph gaps).
+let private runDetailLogSection
+        (pid: ProjectId) (runId: RunId) (logPath: string)
+        (logLines: string list) (query: string) (matchIdx: int)
+        (dispatch: Msg -> unit) : IView =
+    if List.isEmpty logLines then TextBlock.create [ TextBlock.text "" ] :> IView
+    else
+        let fullText = String.concat "\n" logLines
+        let offsets  = matchOffsets fullText query
+        let count    = List.length offsets
+        // Wrap the (unbounded) match cursor into range; the current hit's
+        // char span drives the read-only TextBox's selection → highlight+scroll.
+        let curIdx   = if count = 0 then 0 else ((matchIdx % count) + count) % count
+        let curOff   = if count = 0 then None else Some (List.item curIdx offsets)
+        let counterText =
+            if System.String.IsNullOrEmpty query then ""
+            elif count = 0 then "no matches"
+            else sprintf "%d / %d matches" (curIdx + 1) count
+        StackPanel.create [
+            StackPanel.spacing 4.0
+            StackPanel.children [
+                sectionHeader "Output"
+                DockPanel.create [
+                    DockPanel.children [
+                        Button.create [
+                            DockPanel.dock Dock.Right
+                            Button.content "Open in editor"
+                            Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                            Button.onClick ((fun _ -> dispatch (OpenFile logPath)), SubPatchOptions.Always)
+                        ]
+                        Button.create [
+                            DockPanel.dock Dock.Right
+                            Button.content "▶"
+                            Button.isEnabled (count > 0)
+                            Button.onClick ((fun _ -> dispatch (RunLogFindNext (pid, runId))), SubPatchOptions.Always)
+                        ]
+                        Button.create [
+                            DockPanel.dock Dock.Right
+                            Button.content "◀"
+                            Button.isEnabled (count > 0)
+                            Button.onClick ((fun _ -> dispatch (RunLogFindPrev (pid, runId))), SubPatchOptions.Always)
+                        ]
+                        TextBlock.create [
+                            DockPanel.dock Dock.Right
+                            TextBlock.text counterText
+                            TextBlock.foreground mutedBrush
+                            TextBlock.fontSize 11.0
+                            TextBlock.verticalAlignment VerticalAlignment.Center
+                            TextBlock.margin (Thickness(8.0, 0.0, 8.0, 0.0))
+                        ]
+                        TextBox.create [
+                            TextBox.name "logFindBox"
+                            TextBox.watermark "find… (Ctrl+F · Enter / ▶ for next)"
+                            TextBox.text query
+                            TextBox.onLoaded (fun e ->
+                                match e.Source with
+                                | :? TextBox as tb -> logFindBox <- Some tb
+                                | _ -> ())
+                            TextBox.onTextChanged
+                                ((fun s -> dispatch (SetRunLogFilter (pid, runId, s))), SubPatchOptions.Always)
+                            TextBox.onKeyDown
+                                ((fun e ->
+                                    if e.Key = Key.Enter then
+                                        e.Handled <- true
+                                        dispatch (RunLogFindNext (pid, runId))),
+                                 SubPatchOptions.Always)
+                        ]
+                    ]
+                ]
+                TextBox.create [
+                    yield TextBox.text fullText
+                    yield TextBox.isReadOnly true
+                    yield TextBox.acceptsReturn true
+                    yield TextBox.textWrapping TextWrapping.NoWrap
+                    yield TextBox.fontFamily (FontFamily "Consolas, Menlo, monospace")
+                    yield TextBox.fontSize 12.0
+                    yield TextBox.foreground dimBrush
+                    yield TextBox.background (brush "#161616")
+                    yield TextBox.maxHeight 420.0
+                    // A vivid selection so a jumped-to match is obvious even
+                    // when the log box isn't focused (default highlight is too
+                    // dim on the dark background to read as "found it").
+                    yield TextBox.selectionBrush (brush "#CC7A00")
+                    yield TextBox.selectionForegroundBrush (brush "#0A0A0A")
+                    // Drive selection to the current match so it highlights AND
+                    // scrolls into view. Order matters (FuncUI applies attrs in
+                    // list order): set caretIndex FIRST — that scrolls the match
+                    // into view but collapses the selection — then re-apply
+                    // selectionStart/End to restore the highlight at the now-
+                    // visible position. Only when there is a match, so manual
+                    // selection stays free when not searching.
+                    match curOff with
+                    | Some off ->
+                        yield TextBox.caretIndex off
+                        yield TextBox.selectionStart off
+                        yield TextBox.selectionEnd (off + query.Length)
+                    | None -> ()
+                ]
+            ]
+        ] :> IView
+
 let private runDetailBody
         (pid: ProjectId)
         (entry: RunHistoryEntry)
         (steps: StepSummary list)
         (outputs: Map<string, Map<string, string>>)
+        (logLines: string list)
+        (logFilter: string)
+        (logMatchIdx: int)
         (dispatch: Msg -> unit)
         : IView =
     let started  = entry.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
@@ -1413,6 +1548,9 @@ let private runDetailBody
                             ]
                         ] :> IView
                     outputsSection outputs dispatch
+                    runDetailLogSection pid entry.RunId
+                        (System.IO.Path.Combine(entry.RunDir, "log.txt"))
+                        logLines logFilter logMatchIdx dispatch
                 ]
             ]
         )
@@ -1473,11 +1611,23 @@ let private runDetailView
         (dispatch: Msg -> unit)
         : IView =
     match Map.tryFind (pid, runId) model.RunDetails with
-    | Some (entry, steps, outputs) ->
+    | Some (entry, steps, outputs, logLines) ->
+        let logFilter   = Map.tryFind (pid, runId) model.RunLogFilter   |> Option.defaultValue ""
+        let logMatchIdx = Map.tryFind (pid, runId) model.RunLogMatchIdx |> Option.defaultValue 0
         DockPanel.create [
+            // Ctrl+F focuses the log find box (selecting its text) from anywhere
+            // in RunDetail, so search is one keystroke away — like a text editor.
+            DockPanel.onKeyDown ((fun e ->
+                if e.Key = Key.F && e.KeyModifiers.HasFlag(KeyModifiers.Control) then
+                    match logFindBox with
+                    | Some tb ->
+                        e.Handled <- true
+                        tb.Focus() |> ignore
+                        tb.SelectAll()
+                    | None -> ()), SubPatchOptions.Always)
             DockPanel.children [
                 runDetailNav pid runId model dispatch
-                runDetailBody pid entry steps outputs dispatch
+                runDetailBody pid entry steps outputs logLines logFilter logMatchIdx dispatch
             ]
         ] :> _
     | None ->
@@ -1635,15 +1785,7 @@ let private liveLogSection (logTail: string list) : IView =
                                 elif e.ExtentDelta.Y <> 0.0 && logFollow then
                                     sv.ScrollToEnd()
                             | _ -> ())
-                        ScrollViewer.content (
-                            TextBlock.create [
-                                TextBlock.text (String.concat "\n" logTail)
-                                TextBlock.fontFamily (FontFamily "Consolas, Menlo, monospace")
-                                TextBlock.fontSize 12.0
-                                TextBlock.foreground dimBrush
-                                TextBlock.textWrapping TextWrapping.NoWrap
-                            ]
-                        )
+                        ScrollViewer.content (logTextBlock logTail)
                     ]
                 )
             ]

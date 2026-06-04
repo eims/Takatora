@@ -150,6 +150,20 @@ module RunHistory =
             | None -> None
             | Some entry -> Some (entry, parseStepSummaries text)
 
+    /// A run's full `log.txt` (so a past run is reviewable in RunDetail —
+    /// a tail would hide errors that don't land at the very end). Capped at
+    /// `maxLines` only as a memory guard for a runaway log (keeping the
+    /// start, where a failure usually originates). Empty if absent.
+    let readLog (projectRoot: string) (runId: string) (maxLines: int) : string list =
+        let p = Path.Combine(projectRoot, ".ci", "runs", runId, "log.txt")
+        if not (File.Exists p) then []
+        else
+            try
+                let lines = File.ReadAllLines p
+                if lines.Length <= maxLines then List.ofArray lines
+                else lines.[.. maxLines - 1] |> List.ofArray
+            with _ -> []
+
     /// Step outputs a run recorded under `<runDir>/outputs/<stepId>.ndjson`
     /// (each line `{"name":…,"value":…}`), keyed by step id → (name → value
     /// rendered as a string). Used by the GUI to surface e.g. a UE package's

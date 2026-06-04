@@ -173,9 +173,14 @@ type Model = {
     ProjectSecrets: Map<ProjectId, string list>
     /// Cached `RunHistory.findRun` results for open RunDetail tabs,
     /// keyed by (project, run id). Loaded on OpenRunDetail, dropped
-    /// when the corresponding tab closes. The third element is the run's
-    /// step outputs (step id → name → value) for the Outputs display.
-    RunDetails: Map<ProjectId * RunId, RunHistoryEntry * StepSummary list * Map<string, Map<string, string>>>
+    /// when the corresponding tab closes. Tuple: entry, step summaries,
+    /// step outputs (step id → name → value), and the run's full log.txt
+    /// lines (so a past run is reviewable in RunDetail).
+    RunDetails: Map<ProjectId * RunId, RunHistoryEntry * StepSummary list * Map<string, Map<string, string>> * string list>
+    /// Per-RunDetail log search query (a find — jumps to matches, does not
+    /// filter) and the current match index (the view wraps it mod count).
+    RunLogFilter: Map<ProjectId * RunId, string>
+    RunLogMatchIdx: Map<ProjectId * RunId, int>
     /// Live state of every LiveRun tab the user has kicked off. Entries
     /// are added by RunFlow and removed by LiveRunCompleted (which also
     /// drops the entry if its tab has been closed).
@@ -216,6 +221,13 @@ type Msg =
     | RerunSameParams of ProjectId * RunId
     /// Open a directory in the OS file explorer (run dir, project dir, …).
     | OpenInExplorer of path:string
+    /// Open a file in the OS default app (e.g. log.txt in a text editor).
+    | OpenFile of path:string
+    /// RunDetail log search query for a run (a find, not a filter).
+    | SetRunLogFilter of ProjectId * RunId * string
+    /// Move to the next / previous match of the current log search.
+    | RunLogFindNext of ProjectId * RunId
+    | RunLogFindPrev of ProjectId * RunId
     /// Run button entry point: opens the param dialog if the flow has
     /// scalar vars, otherwise runs immediately with no overrides.
     | RequestRun of ProjectId * flowId:string
@@ -256,6 +268,8 @@ let init () : Model * Cmd<Msg> =
       ProjectInfo    = Map.empty
       ProjectSecrets = Map.empty
       RunDetails     = Map.empty
+      RunLogFilter   = Map.empty
+      RunLogMatchIdx = Map.empty
       LiveRuns       = Map.empty
       AddProject     = None
       CurrentProject = None
@@ -950,7 +964,8 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     match RunHistory.findRun root runId with
                     | Some (entry, steps) ->
                         let outputs = RunHistory.runOutputs root runId
-                        Map.add key (entry, steps, outputs) model.RunDetails
+                        let logLines = RunHistory.readLog root runId 50000
+                        Map.add key (entry, steps, outputs, logLines) model.RunDetails
                     | None -> model.RunDetails
         { model with
             OpenTabs       = moveOrAppend tab model.OpenTabs
@@ -1144,7 +1159,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         // recorded run.
         match Map.tryFind (pid, runId) model.RunDetails with
         | None -> model, Cmd.none
-        | Some (entry, _, _) ->
+        | Some (entry, _, _, _) ->
             let secretNames =
                 match flowById model pid entry.FlowId with
                 | Some f -> f.Vars |> List.choose (fun v -> if v.Kind = VarKind.Secret then Some v.Name else None) |> Set.ofList
@@ -1171,6 +1186,28 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 System.Diagnostics.Process.Start(psi) |> ignore
          with _ -> ())
         model, Cmd.none
+    | OpenFile path ->
+        // Open a file in the OS default app (UseShellExecute lets the shell
+        // pick the editor for .txt). Best-effort.
+        (try
+            let normalized = try Path.GetFullPath path with _ -> path
+            if File.Exists normalized then
+                let psi = System.Diagnostics.ProcessStartInfo(normalized)
+                psi.UseShellExecute <- true
+                System.Diagnostics.Process.Start(psi) |> ignore
+         with _ -> ())
+        model, Cmd.none
+    | SetRunLogFilter (pid, runId, text) ->
+        // A new query resets the match cursor to the first hit.
+        { model with
+            RunLogFilter   = Map.add (pid, runId) text model.RunLogFilter
+            RunLogMatchIdx = Map.add (pid, runId) 0 model.RunLogMatchIdx }, Cmd.none
+    | RunLogFindNext (pid, runId) ->
+        let cur = Map.tryFind (pid, runId) model.RunLogMatchIdx |> Option.defaultValue 0
+        { model with RunLogMatchIdx = Map.add (pid, runId) (cur + 1) model.RunLogMatchIdx }, Cmd.none
+    | RunLogFindPrev (pid, runId) ->
+        let cur = Map.tryFind (pid, runId) model.RunLogMatchIdx |> Option.defaultValue 0
+        { model with RunLogMatchIdx = Map.add (pid, runId) (cur - 1) model.RunLogMatchIdx }, Cmd.none
     | DeleteSecret (pid, varName) ->
         // Delete from the keychain, then refresh the cached list so the
         // model changes and the Settings view re-renders without it.
