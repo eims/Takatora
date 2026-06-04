@@ -323,3 +323,89 @@ module Engines =
 
     let pick (kind: EngineKind) (versionHint: string option) : DetectedEngine option =
         pickFrom (detect kind) versionHint
+
+    // ─── Open project in its engine editor ─────────────────────────
+    //
+    // A resolved launch: the executable to start, its arguments, whether to
+    // delegate to the OS shell (UE leans on the .uproject file association),
+    // and a human label of what will open (for the button / tooltip).
+
+    /// A resolved "open in editor" launch.
+    type EditorLaunch = {
+        Exe: string
+        Args: string list
+        UseShell: bool
+        Describe: string
+    }
+
+    /// The Unity version a project targets, from
+    /// `ProjectSettings/ProjectVersion.txt` (`m_EditorVersion: 2022.3.10f1`).
+    let private unityProjectVersion (projectRoot: string) : string option =
+        try
+            let p = Path.Combine(projectRoot, "ProjectSettings", "ProjectVersion.txt")
+            if not (File.Exists p) then None
+            else
+                File.ReadAllLines p
+                |> Array.tryPick (fun line ->
+                    let t = line.Trim()
+                    if t.StartsWith("m_EditorVersion:") then
+                        let v = t.Substring("m_EditorVersion:".Length).Trim()
+                        if String.IsNullOrWhiteSpace v then None else Some v
+                    else None)
+        with _ -> None
+
+    /// Resolve how to open a project in its engine's editor. Per engine:
+    ///   Unreal — open the `.uproject` through the OS shell (the caller routes
+    ///            this via Explorer so it is dispatched exactly like a
+    ///            double-click), honouring whatever the user associated with
+    ///            `.uproject` (UnrealVersionSelector → the engine, or Rider for
+    ///            Unreal, etc.); zero config. `UseShell = true` flags this.
+    ///   Unity  — read the project's target version and launch that detected
+    ///            install with `-projectPath`; a wrong version must not be
+    ///            substituted, so a missing version is an error (install via
+    ///            Hub), not a fallback.
+    ///   Godot  — Godot has no canonical location, so prefer the configured
+    ///            `engine_path` (the godot exe); fall back to PATH detection;
+    ///            launch `--path <dir> --editor`.
+    let resolveEditorLaunch (engine: Engine) (projectRoot: string) : Result<EditorLaunch, string> =
+        let abs (p: string) =
+            if Path.IsPathRooted p then p else Path.Combine(projectRoot, p)
+        match engine.Kind with
+        | EngineKind.Unreal ->
+            match engine.ProjectFile with
+            | None -> Error "engine.project_file is not set (the .uproject path)"
+            | Some pf ->
+                let uproject = abs pf
+                if File.Exists uproject then
+                    Ok { Exe = uproject; Args = []; UseShell = true
+                         Describe = sprintf "Unreal editor — %s" (Path.GetFileName uproject) }
+                else Error (sprintf ".uproject not found: %s" uproject)
+        | EngineKind.Unity ->
+            match unityProjectVersion projectRoot with
+            | None -> Error "couldn't read the Unity version (ProjectSettings/ProjectVersion.txt)"
+            | Some ver ->
+                match detect EngineKind.Unity |> List.tryFind (fun e -> e.Version = ver) with
+                | Some u ->
+                    match u.Executable with
+                    | Some exe ->
+                        Ok { Exe = exe; Args = [ "-projectPath"; projectRoot ]; UseShell = false
+                             Describe = sprintf "Unity %s" ver }
+                    | None -> Error (sprintf "Unity %s has no editor executable" ver)
+                | None ->
+                    Error (sprintf "Unity %s is not installed — add it via Unity Hub" ver)
+        | EngineKind.Godot ->
+            let fromConfig =
+                engine.EnginePath
+                |> Option.filter (fun p -> not (String.IsNullOrWhiteSpace p))
+                |> Option.map abs
+                |> Option.filter File.Exists
+            let exe =
+                match fromConfig with
+                | Some e -> Some e
+                | None -> detect EngineKind.Godot |> List.tryHead |> Option.bind (fun d -> d.Executable)
+            match exe with
+            | Some e ->
+                Ok { Exe = e; Args = [ "--path"; projectRoot; "--editor" ]; UseShell = false
+                     Describe = "Godot editor" }
+            | None ->
+                Error "Godot executable not found — set engine.engine_path, or put godot on PATH"

@@ -91,6 +91,54 @@ let ``pickFrom falls back to the first candidate when no hint matches`` () =
 let ``pickFrom returns None for an empty candidate list`` () =
     Assert.Equal<DetectedEngine option>(None, Engines.pickFrom [] (Some "5.7"))
 
+// ─── resolveEditorLaunch ───────────────────────────────────────────
+
+let private engineOf kind projectFile enginePath =
+    { Kind = kind; ProjectFile = projectFile; EnginePath = enginePath
+      EngineVersion = None; Executable = None }
+
+[<Fact>]
+let ``resolveEditorLaunch UE delegates to the .uproject via the shell`` () =
+    let dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory dir |> ignore
+    let uproject = Path.Combine(dir, "Game.uproject")
+    File.WriteAllText(uproject, "{}")
+    try
+        match Engines.resolveEditorLaunch (engineOf EngineKind.Unreal (Some "Game.uproject") None) dir with
+        | Ok l ->
+            Assert.True(l.UseShell)
+            Assert.Equal(uproject, l.Exe)
+            Assert.Empty(l.Args)
+        | Error e -> Assert.Fail($"expected Ok, got {e}")
+    finally Directory.Delete(dir, true)
+
+[<Fact>]
+let ``resolveEditorLaunch UE errors when project_file is unset`` () =
+    match Engines.resolveEditorLaunch (engineOf EngineKind.Unreal None None) (Path.GetTempPath()) with
+    | Error _ -> ()
+    | Ok _ -> Assert.Fail("expected Error for missing project_file")
+
+[<Fact>]
+let ``resolveEditorLaunch UE errors when the .uproject is missing`` () =
+    match Engines.resolveEditorLaunch (engineOf EngineKind.Unreal (Some "Ghost.uproject") None) (Path.GetTempPath()) with
+    | Error _ -> ()
+    | Ok _ -> Assert.Fail("expected Error for missing .uproject")
+
+[<Fact>]
+let ``resolveEditorLaunch Godot uses configured engine_path with editor args`` () =
+    let dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory dir |> ignore
+    let godot = Path.Combine(dir, "godot.exe")
+    File.WriteAllText(godot, "")
+    try
+        match Engines.resolveEditorLaunch (engineOf EngineKind.Godot None (Some godot)) dir with
+        | Ok l ->
+            Assert.False(l.UseShell)
+            Assert.Equal(godot, l.Exe)
+            Assert.Equal<string list>([ "--path"; dir; "--editor" ], l.Args)
+        | Error e -> Assert.Fail($"expected Ok, got {e}")
+    finally Directory.Delete(dir, true)
+
 // ─── .uproject EngineAssociation ───────────────────────────────────
 
 [<Fact>]

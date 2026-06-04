@@ -181,6 +181,13 @@ type Model = {
     /// filter) and the current match index (the view wraps it mod count).
     RunLogFilter: Map<ProjectId * RunId, string>
     RunLogMatchIdx: Map<ProjectId * RunId, int>
+    /// Projects with an "Open in editor" launch in flight. Opening goes
+    /// through the OS shell and the target app (UE editor / Rider) can take
+    /// tens of seconds to show a window; without feedback the user re-clicks,
+    /// queueing several launches that all open at once. While a project is in
+    /// this set its button is disabled ("Opening…") and repeat clicks are
+    /// ignored; a timed ClearOpeningEditor removes it.
+    OpeningEditors: Set<ProjectId>
     /// Live state of every LiveRun tab the user has kicked off. Entries
     /// are added by RunFlow and removed by LiveRunCompleted (which also
     /// drops the entry if its tab has been closed).
@@ -223,6 +230,10 @@ type Msg =
     | OpenInExplorer of path:string
     /// Open a file in the OS default app (e.g. log.txt in a text editor).
     | OpenFile of path:string
+    /// Open a project in its engine's editor (UE/Unity/Godot).
+    | OpenInEditor of ProjectId
+    /// Clear the in-flight "Open in editor" flag for a project (timed).
+    | ClearOpeningEditor of ProjectId
     /// RunDetail log search query for a run (a find, not a filter).
     | SetRunLogFilter of ProjectId * RunId * string
     /// Move to the next / previous match of the current log search.
@@ -270,6 +281,7 @@ let init () : Model * Cmd<Msg> =
       RunDetails     = Map.empty
       RunLogFilter   = Map.empty
       RunLogMatchIdx = Map.empty
+      OpeningEditors = Set.empty
       LiveRuns       = Map.empty
       AddProject     = None
       CurrentProject = None
@@ -1197,6 +1209,57 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 System.Diagnostics.Process.Start(psi) |> ignore
          with _ -> ())
         model, Cmd.none
+    | OpenInEditor pid when Set.contains pid model.OpeningEditors ->
+        // Already launching — ignore the repeat click (no second window).
+        model, Cmd.none
+    | OpenInEditor pid ->
+        // Launch the project's engine editor. Resolution (which exe + args,
+        // shell-delegate or not) lives in Core; the view only enables this
+        // when resolution succeeds, so a failure here is best-effort silent.
+        let launched =
+            match projectRoot pid model.Projects, Map.tryFind pid model.ProjectInfo with
+            | Some root, Some (ProjectInfoOk project) ->
+                match Engines.resolveEditorLaunch project.Engine root with
+                | Ok launch ->
+                    try
+                        let psi =
+                            if launch.UseShell then
+                                // Dispatch through Explorer so the file opens with
+                                // its registered handler exactly as a double-click
+                                // would. Our own ShellExecute spawns the handler
+                                // (UE's UnrealVersionSelector / Rider) as a child of
+                                // this process, which it handles poorly (.port
+                                // collisions, "already running" even when not).
+                                let p = System.Diagnostics.ProcessStartInfo("explorer.exe")
+                                p.ArgumentList.Add(launch.Exe)
+                                p
+                            else
+                                let p = System.Diagnostics.ProcessStartInfo(launch.Exe)
+                                p.UseShellExecute <- false
+                                for a in launch.Args do p.ArgumentList.Add(a)
+                                p.WorkingDirectory <- root
+                                p
+                        System.Diagnostics.Process.Start(psi) |> ignore
+                        true
+                    with _ -> false
+                | Error _ -> false
+            | _ -> false
+        if not launched then model, Cmd.none
+        else
+            // Mark in-flight and re-enable after a cooldown — long enough to
+            // cover a cold editor/IDE start, so repeat clicks in that window
+            // don't queue extra launches.
+            let reEnable : Cmd<Msg> =
+                [ fun dispatch ->
+                    async {
+                        do! Async.SwitchToThreadPool ()
+                        do! Async.Sleep 12000
+                        Dispatcher.UIThread.Post(fun () -> dispatch (ClearOpeningEditor pid))
+                    }
+                    |> Async.Start ]
+            { model with OpeningEditors = Set.add pid model.OpeningEditors }, reEnable
+    | ClearOpeningEditor pid ->
+        { model with OpeningEditors = Set.remove pid model.OpeningEditors }, Cmd.none
     | SetRunLogFilter (pid, runId, text) ->
         // A new query resets the match cursor to the first hit.
         { model with

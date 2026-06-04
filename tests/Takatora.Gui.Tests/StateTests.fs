@@ -57,6 +57,7 @@ type StateTests() =
           RunDetails     = Map.empty
           RunLogFilter   = Map.empty
           RunLogMatchIdx = Map.empty
+          OpeningEditors = Set.empty
           LiveRuns       = Map.empty
           AddProject     = None
           CurrentProject = None

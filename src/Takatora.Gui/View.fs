@@ -1142,32 +1142,76 @@ let private projectView
         ] :> _
     | Some p ->
         let active = projectSubTab pid model
+        // "Open in editor": resolved by Core (UE delegates to the .uproject
+        // shell association, Unity matches the project's target version,
+        // Godot uses engine_path / PATH). Enabled on success; on failure the
+        // button is disabled and the reason shown, so e.g. a Godot project
+        // with no engine_path explains itself rather than failing silently.
+        let editorLaunch =
+            match Map.tryFind pid model.ProjectInfo with
+            | Some (ProjectInfoOk proj)  -> Engines.resolveEditorLaunch proj.Engine p.Path
+            | Some ProjectInfoMissing    -> Error "project.toml is missing"
+            | Some (ProjectInfoError e)  -> Error e
+            | None                       -> Error "project not loaded"
+        let openEditorControl : IView =
+            StackPanel.create [
+                DockPanel.dock Dock.Right
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 8.0
+                StackPanel.verticalAlignment VerticalAlignment.Center
+                StackPanel.children [
+                    (match editorLaunch with
+                     | Error msg ->
+                         TextBlock.create [
+                             TextBlock.text msg
+                             TextBlock.foreground mutedBrush
+                             TextBlock.fontSize 11.0
+                             TextBlock.maxWidth 320.0
+                             TextBlock.textWrapping TextWrapping.Wrap
+                             TextBlock.verticalAlignment VerticalAlignment.Center
+                         ] :> IView
+                     | Ok _ -> TextBlock.create [ TextBlock.text "" ] :> IView)
+                    (let opening = Set.contains pid model.OpeningEditors
+                     Button.create [
+                        Button.content (if opening then "Opening…" else "Open in editor")
+                        Button.verticalAlignment VerticalAlignment.Center
+                        Button.isEnabled
+                            ((match editorLaunch with Ok _ -> true | Error _ -> false) && not opening)
+                        Button.onClick ((fun _ -> dispatch (OpenInEditor pid)), SubPatchOptions.Always)
+                     ])
+                ]
+            ] :> IView
         DockPanel.create [
             DockPanel.children [
-                StackPanel.create [
+                DockPanel.create [
                     DockPanel.dock Dock.Top
-                    StackPanel.margin (Thickness(16.0, 12.0, 16.0, 8.0))
-                    StackPanel.children [
-                        TextBlock.create [
-                            TextBlock.text p.Name
-                            TextBlock.fontSize 22.0
-                            TextBlock.fontWeight FontWeight.SemiBold
-                        ]
-                        // The path itself is the click target to open the
-                        // project folder. A Button styled to look like the
-                        // plain path text — onClick is managed correctly by
-                        // FuncUI (unlike onPointerPressed + Always, which
-                        // re-subscribes every render → multi-fire).
-                        Button.create [
-                            Button.content p.Path
-                            Button.foreground mutedBrush
-                            Button.fontSize 12.0
-                            Button.background transparentBrush
-                            Button.borderThickness (Thickness 0.0)
-                            Button.padding (Thickness 0.0)
-                            Button.cursor handCursor
-                            Button.horizontalAlignment HorizontalAlignment.Left
-                            Button.onClick ((fun _ -> dispatch (OpenInExplorer p.Path)), SubPatchOptions.Always)
+                    DockPanel.margin (Thickness(16.0, 12.0, 16.0, 8.0))
+                    DockPanel.children [
+                        openEditorControl
+                        StackPanel.create [
+                            StackPanel.children [
+                                TextBlock.create [
+                                    TextBlock.text p.Name
+                                    TextBlock.fontSize 22.0
+                                    TextBlock.fontWeight FontWeight.SemiBold
+                                ]
+                                // The path itself is the click target to open the
+                                // project folder. A Button styled to look like the
+                                // plain path text — onClick is managed correctly by
+                                // FuncUI (unlike onPointerPressed + Always, which
+                                // re-subscribes every render → multi-fire).
+                                Button.create [
+                                    Button.content p.Path
+                                    Button.foreground mutedBrush
+                                    Button.fontSize 12.0
+                                    Button.background transparentBrush
+                                    Button.borderThickness (Thickness 0.0)
+                                    Button.padding (Thickness 0.0)
+                                    Button.cursor handCursor
+                                    Button.horizontalAlignment HorizontalAlignment.Left
+                                    Button.onClick ((fun _ -> dispatch (OpenInExplorer p.Path)), SubPatchOptions.Always)
+                                ]
+                            ]
                         ]
                     ]
                 ]
