@@ -193,6 +193,17 @@ type Model = {
     /// this set its button is disabled ("Opening…") and repeat clicks are
     /// ignored; a timed ClearOpeningEditor removes it.
     OpeningEditors: Set<ProjectId>
+    /// Same single-flight guard for "Open in IDE" launches.
+    OpeningIde: Set<ProjectId>
+    /// Machine-local app settings (the "Open in IDE" command template lives
+    /// here). Loaded at startup, rewritten by the Settings editor.
+    AppSettings: AppSettings
+    /// In-progress text of the global IDE-command editor (Settings). Seeded
+    /// from AppSettings.IdeCommand; persisted on Save.
+    IdeCommandDraft: string
+    /// Detected IDE presets (populated on demand by the Settings "Detect"
+    /// button) the user can one-click into the command template.
+    IdeCandidates: IdeCandidate list
     /// Live state of every LiveRun tab the user has kicked off. Entries
     /// are added by RunFlow and removed by LiveRunCompleted (which also
     /// drops the entry if its tab has been closed).
@@ -239,6 +250,18 @@ type Msg =
     | OpenInEditor of ProjectId
     /// Clear the in-flight "Open in editor" flag for a project (timed).
     | ClearOpeningEditor of ProjectId
+    /// Open a project in the configured IDE / code editor.
+    | OpenInIde of ProjectId
+    /// Clear the in-flight "Open in IDE" flag for a project (timed).
+    | ClearOpeningIde of ProjectId
+    /// Edit / save the global "Open in IDE" command template.
+    | SetIdeCommandDraft of string
+    | SaveIdeCommand
+    /// Detect installed IDEs and offer them as presets.
+    | DetectIdes
+    | IdesDetected of IdeCandidate list
+    /// Fill the command draft from a detected IDE preset.
+    | PickIdeCandidate of command:string
     /// RunDetail log search query for a run (a find, not a filter).
     | SetRunLogFilter of ProjectId * RunId * string
     /// Move to the next / previous match of the current log search.
@@ -288,6 +311,7 @@ let private engineKindsFor (projects: ProjectRegistration list) : Map<ProjectId,
 
 let init () : Model * Cmd<Msg> =
     let projects = ProjectRegistry.load ()
+    let appSettings = AppSettings.load ()
     { OpenTabs       = [ Home ]
       ActiveTab      = Home
       Projects       = projects
@@ -301,6 +325,10 @@ let init () : Model * Cmd<Msg> =
       RunLogFilter   = Map.empty
       RunLogMatchIdx = Map.empty
       OpeningEditors = Set.empty
+      OpeningIde     = Set.empty
+      AppSettings    = appSettings
+      IdeCommandDraft = appSettings.IdeCommand |> Option.defaultValue ""
+      IdeCandidates  = []
       LiveRuns       = Map.empty
       AddProject     = None
       CurrentProject = None
@@ -1280,6 +1308,70 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             { model with OpeningEditors = Set.add pid model.OpeningEditors }, reEnable
     | ClearOpeningEditor pid ->
         { model with OpeningEditors = Set.remove pid model.OpeningEditors }, Cmd.none
+    | OpenInIde pid when Set.contains pid model.OpeningIde ->
+        model, Cmd.none
+    | OpenInIde pid ->
+        // Run the user's IDE command template (resolved by Core) through the
+        // shell so a bare exe name on PATH (code / rider64 / devenv) resolves
+        // and the template's own flags/quoting work. cmd /c "<command>" — the
+        // outer quotes guard cmd's quote-stripping when the command itself
+        // contains a quoted path.
+        let launched =
+            match projectRoot pid model.Projects, Map.tryFind pid model.ProjectInfo with
+            | Some root, Some (ProjectInfoOk project) ->
+                match model.AppSettings.IdeCommand with
+                | Some template ->
+                    match Engines.resolveIdeCommand project.Engine root template with
+                    | Ok cmdLine ->
+                        try
+                            let psi = System.Diagnostics.ProcessStartInfo("cmd.exe")
+                            psi.Arguments <- sprintf "/c \"%s\"" cmdLine
+                            psi.UseShellExecute <- false
+                            psi.CreateNoWindow <- true
+                            psi.WorkingDirectory <- root
+                            System.Diagnostics.Process.Start(psi) |> ignore
+                            true
+                        with _ -> false
+                    | Error _ -> false
+                | None -> false
+            | _ -> false
+        if not launched then model, Cmd.none
+        else
+            let reEnable : Cmd<Msg> =
+                [ fun dispatch ->
+                    async {
+                        do! Async.SwitchToThreadPool ()
+                        do! Async.Sleep 12000
+                        Dispatcher.UIThread.Post(fun () -> dispatch (ClearOpeningIde pid))
+                    }
+                    |> Async.Start ]
+            { model with OpeningIde = Set.add pid model.OpeningIde }, reEnable
+    | ClearOpeningIde pid ->
+        { model with OpeningIde = Set.remove pid model.OpeningIde }, Cmd.none
+    | SetIdeCommandDraft text ->
+        { model with IdeCommandDraft = text }, Cmd.none
+    | SaveIdeCommand ->
+        // Persist the (trimmed) draft to machine-local settings; blank clears it.
+        let trimmed = model.IdeCommandDraft.Trim()
+        let ideCommand = if trimmed = "" then None else Some trimmed
+        let settings = { model.AppSettings with IdeCommand = ideCommand }
+        (try AppSettings.save settings with _ -> ())
+        { model with AppSettings = settings; IdeCommandDraft = defaultArg ideCommand "" }, Cmd.none
+    | DetectIdes ->
+        // Detection spawns vswhere + scans dirs — do it off the UI thread.
+        let cmd : Cmd<Msg> =
+            [ fun dispatch ->
+                async {
+                    do! Async.SwitchToThreadPool ()
+                    let found = try Ides.detect () with _ -> []
+                    Dispatcher.UIThread.Post(fun () -> dispatch (IdesDetected found))
+                }
+                |> Async.Start ]
+        model, cmd
+    | IdesDetected candidates ->
+        { model with IdeCandidates = candidates }, Cmd.none
+    | PickIdeCandidate command ->
+        { model with IdeCommandDraft = command }, Cmd.none
     | SetRunLogFilter (pid, runId, text) ->
         // A new query resets the match cursor to the first hit.
         { model with

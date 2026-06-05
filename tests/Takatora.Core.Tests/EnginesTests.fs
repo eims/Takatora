@@ -171,6 +171,44 @@ let ``resolveProjectEngine Unity errors without ProjectVersion`` () =
         | Ok _ -> Assert.Fail("expected Error when ProjectVersion.txt is absent")
     finally Directory.Delete(d, true)
 
+// ─── resolveIdeCommand ─────────────────────────────────────────────
+
+[<Fact>]
+let ``resolveIdeCommand substitutes project_dir`` () =
+    let root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))
+    match Engines.resolveIdeCommand (engineOf EngineKind.Godot None None) root "code \"{project_dir}\"" with
+    | Ok cmd -> Assert.Equal(sprintf "code \"%s\"" root, cmd)
+    | Error e -> Assert.Fail($"expected Ok, got {e}")
+
+[<Fact>]
+let ``resolveIdeCommand substitutes uproject for UE`` () =
+    let root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))
+    match Engines.resolveIdeCommand (engineOf EngineKind.Unreal (Some "Game.uproject") None) root "rider64 \"{uproject}\"" with
+    | Ok cmd -> Assert.Equal(sprintf "rider64 \"%s\"" (Path.Combine(root, "Game.uproject")), cmd)
+    | Error e -> Assert.Fail($"expected Ok, got {e}")
+
+[<Fact>]
+let ``resolveIdeCommand errors on uproject placeholder for a non-UE project`` () =
+    match Engines.resolveIdeCommand (engineOf EngineKind.Godot None None) (Path.GetTempPath()) "rider64 \"{uproject}\"" with
+    | Error _ -> ()
+    | Ok _ -> Assert.Fail("expected Error: {uproject} on a non-UE project")
+
+[<Fact>]
+let ``resolveIdeCommand errors when the template is blank`` () =
+    match Engines.resolveIdeCommand (engineOf EngineKind.Godot None None) (Path.GetTempPath()) "   " with
+    | Error _ -> ()
+    | Ok _ -> Assert.Fail("expected Error for a blank template")
+
+[<Fact>]
+let ``resolveIdeCommand errors on sln placeholder when none exists`` () =
+    let root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory root |> ignore
+    try
+        match Engines.resolveIdeCommand (engineOf EngineKind.Unity None None) root "devenv \"{sln}\"" with
+        | Error _ -> ()
+        | Ok _ -> Assert.Fail("expected Error: no .sln present")
+    finally Directory.Delete(root, true)
+
 // ─── .uproject EngineAssociation ───────────────────────────────────
 
 [<Fact>]

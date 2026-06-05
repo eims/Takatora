@@ -932,11 +932,83 @@ let private secretsBlock (pid: ProjectId) (names: string list) (dispatch: Msg ->
         ]
     ] :> _
 
+/// Editor for the global "Open in IDE" command template. Machine-local
+/// (applies to every project), so it lives in app settings, not project.toml.
+/// "Detect" finds installed IDEs (VS via vswhere / Rider / VS Code) so the
+/// user can one-click a preset instead of hand-writing versioned exe paths.
+let private ideCommandBlock
+        (draft: string)
+        (candidates: IdeCandidate list)
+        (dispatch: Msg -> unit)
+        : IView =
+    StackPanel.create [
+        StackPanel.spacing 6.0
+        StackPanel.children [
+            sectionHeader "Open in IDE (global)"
+            TextBlock.create [
+                TextBlock.text "Command for the project header's \"Open in IDE\" button — applies to all projects (machine-local, not committed). Use Detect for a preset, or edit by hand. Placeholders: {project_dir} · {uproject} · {sln} · {target} (per-engine)."
+                TextBlock.foreground mutedBrush
+                TextBlock.fontSize 12.0
+                TextBlock.textWrapping TextWrapping.Wrap
+            ]
+            // Detect + the resulting presets.
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 8.0
+                StackPanel.children [
+                    Button.create [
+                        Button.content "Detect IDEs"
+                        Button.onClick ((fun _ -> dispatch DetectIdes), SubPatchOptions.Always)
+                    ]
+                    TextBlock.create [
+                        TextBlock.text
+                            (if List.isEmpty candidates then "(scan for installed IDEs)"
+                             else sprintf "%d found — click one to use it:" (List.length candidates))
+                        TextBlock.foreground mutedBrush
+                        TextBlock.fontSize 11.0
+                        TextBlock.verticalAlignment VerticalAlignment.Center
+                    ]
+                ]
+            ]
+            (if List.isEmpty candidates then TextBlock.create [ TextBlock.text "" ] :> IView
+             else
+                WrapPanel.create [
+                    WrapPanel.orientation Orientation.Horizontal
+                    WrapPanel.children [
+                        for c in candidates ->
+                            Button.create [
+                                Button.content c.Name
+                                Button.margin (Thickness(0.0, 0.0, 6.0, 6.0))
+                                Button.onClick ((fun _ -> dispatch (PickIdeCandidate c.Command)), SubPatchOptions.Always)
+                            ] :> IView
+                    ]
+                ] :> IView)
+            DockPanel.create [
+                DockPanel.children [
+                    Button.create [
+                        DockPanel.dock Dock.Right
+                        Button.content "Save"
+                        Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                        Button.onClick ((fun _ -> dispatch SaveIdeCommand), SubPatchOptions.Always)
+                    ]
+                    TextBox.create [
+                        TextBox.text draft
+                        TextBox.watermark "code \"{project_dir}\""
+                        TextBox.fontFamily (FontFamily "Consolas, Menlo, monospace")
+                        TextBox.onTextChanged ((fun s -> dispatch (SetIdeCommandDraft s)), SubPatchOptions.Always)
+                    ]
+                ]
+            ]
+        ]
+    ] :> IView
+
 let private settingsBody
         (pid: ProjectId)
         (projectRoot: string)
         (load: ProjectInfoLoad)
         (secrets: string list)
+        (ideCommandDraft: string)
+        (ideCandidates: IdeCandidate list)
         (dispatch: Msg -> unit)
         : IView =
     let header =
@@ -994,6 +1066,7 @@ let private settingsBody
                         StackPanel.spacing 8.0
                         StackPanel.children [
                             projectInfoBlock proj projectRoot
+                            ideCommandBlock ideCommandDraft ideCandidates dispatch
                             secretsBlock pid secrets dispatch
                         ]
                     ]
@@ -1213,6 +1286,33 @@ let private projectView
             | Some ProjectInfoMissing    -> Error "project.toml is missing"
             | Some (ProjectInfoError e)  -> Error e
             | None                       -> Error "project not loaded"
+        // "Open in IDE" resolves the global command template against this
+        // project (UE→{uproject}, any→{sln}/{project_dir}). Disabled (with a
+        // reason) when no template is set or a placeholder can't be filled.
+        let ideLaunch : Result<string, string> =
+            match model.AppSettings.IdeCommand with
+            | None -> Error "set the IDE command in Settings"
+            | Some t ->
+                match Map.tryFind pid model.ProjectInfo with
+                | Some (ProjectInfoOk proj) -> Engines.resolveIdeCommand proj.Engine p.Path t
+                | _ -> Error "project not loaded"
+        let isOk = function Ok _ -> true | Error _ -> false
+        let reasonBlock (msg: string) : IView =
+            TextBlock.create [
+                TextBlock.text msg
+                TextBlock.foreground mutedBrush
+                TextBlock.fontSize 11.0
+                TextBlock.maxWidth 280.0
+                TextBlock.textWrapping TextWrapping.Wrap
+                TextBlock.verticalAlignment VerticalAlignment.Center
+            ] :> IView
+        let openButton (label: string) (result: Result<'a, string>) (opening: bool) (msg: Msg) : IView =
+            Button.create [
+                Button.content (if opening then "Opening…" else label)
+                Button.verticalAlignment VerticalAlignment.Center
+                Button.isEnabled (isOk result && not opening)
+                Button.onClick ((fun _ -> dispatch msg), SubPatchOptions.Always)
+            ] :> IView
         let openEditorControl : IView =
             StackPanel.create [
                 DockPanel.dock Dock.Right
@@ -1220,25 +1320,10 @@ let private projectView
                 StackPanel.spacing 8.0
                 StackPanel.verticalAlignment VerticalAlignment.Center
                 StackPanel.children [
-                    (match editorLaunch with
-                     | Error msg ->
-                         TextBlock.create [
-                             TextBlock.text msg
-                             TextBlock.foreground mutedBrush
-                             TextBlock.fontSize 11.0
-                             TextBlock.maxWidth 320.0
-                             TextBlock.textWrapping TextWrapping.Wrap
-                             TextBlock.verticalAlignment VerticalAlignment.Center
-                         ] :> IView
-                     | Ok _ -> TextBlock.create [ TextBlock.text "" ] :> IView)
-                    (let opening = Set.contains pid model.OpeningEditors
-                     Button.create [
-                        Button.content (if opening then "Opening…" else "Open in editor")
-                        Button.verticalAlignment VerticalAlignment.Center
-                        Button.isEnabled
-                            ((match editorLaunch with Ok _ -> true | Error _ -> false) && not opening)
-                        Button.onClick ((fun _ -> dispatch (OpenInEditor pid)), SubPatchOptions.Always)
-                     ])
+                    match editorLaunch with Error m -> reasonBlock m | Ok _ -> ()
+                    openButton "Open in editor" editorLaunch (Set.contains pid model.OpeningEditors) (OpenInEditor pid)
+                    match ideLaunch with Error m -> reasonBlock m | Ok _ -> ()
+                    openButton "Open in IDE" ideLaunch (Set.contains pid model.OpeningIde) (OpenInIde pid)
                 ]
             ] :> IView
         DockPanel.create [
@@ -1302,7 +1387,7 @@ let private projectView
                      let secrets =
                          Map.tryFind pid model.ProjectSecrets
                          |> Option.defaultValue []
-                     settingsBody pid p.Path load secrets dispatch)
+                     settingsBody pid p.Path load secrets model.IdeCommandDraft model.IdeCandidates dispatch)
             ]
         ] :> _
 

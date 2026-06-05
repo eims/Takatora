@@ -458,3 +458,48 @@ module Engines =
                 match detect EngineKind.Godot with
                 | d :: _ -> Ok d
                 | []     -> Error "no Godot executable found — set engine.engine_path, or put godot on PATH"
+
+    /// Resolve a user's "Open in IDE" command template into a runnable
+    /// command line (the caller runs it via the shell). Placeholders:
+    ///   {project_dir} — the project working dir (always available)
+    ///   {uproject}    — the .uproject path (Unreal projects only)
+    ///   {sln}         — first *.sln directly under the project dir
+    ///   {target}      — the natural target for this engine: UE→{uproject},
+    ///                   Unity→{sln}, Godot→{project_dir} (so a single Rider
+    ///                   preset opens any project type the way Rider expects)
+    /// A template referencing a placeholder we can't fill is an Error with a
+    /// helpful reason (e.g. {sln} before project files have been generated),
+    /// so the GUI can disable the button and say why.
+    let resolveIdeCommand (engine: Engine) (projectRoot: string) (template: string) : Result<string, string> =
+        if String.IsNullOrWhiteSpace template then Error "no IDE command configured"
+        else
+            let abs (p: string) = if Path.IsPathRooted p then p else Path.Combine(projectRoot, p)
+            let uproject =
+                match engine.Kind, engine.ProjectFile with
+                | EngineKind.Unreal, Some pf -> Some (abs pf)
+                | _ -> None
+            let sln =
+                try
+                    if Directory.Exists projectRoot then
+                        Directory.GetFiles(projectRoot, "*.sln") |> Array.sortBy id |> Array.tryHead
+                    else None
+                with _ -> None
+            let target, targetMiss =
+                match engine.Kind with
+                | EngineKind.Unreal -> uproject, "the .uproject (engine.project_file)"
+                | EngineKind.Unity  -> sln,      "a .sln (generate project files first)"
+                | EngineKind.Godot  -> Some projectRoot, ""
+            let needs (token: string) = template.Contains(token)
+            if needs "{uproject}" && Option.isNone uproject then
+                Error "{uproject} unavailable — this isn't an Unreal project (or engine.project_file is unset)"
+            elif needs "{sln}" && Option.isNone sln then
+                Error "{sln} unavailable — no .sln under the project dir (generate project files first)"
+            elif needs "{target}" && Option.isNone target then
+                Error (sprintf "{target} unavailable — needs %s" targetMiss)
+            else
+                template
+                    .Replace("{project_dir}", projectRoot)
+                    .Replace("{uproject}", defaultArg uproject "")
+                    .Replace("{sln}", defaultArg sln "")
+                    .Replace("{target}", defaultArg target "")
+                |> Ok
