@@ -63,6 +63,8 @@ type StateTests() =
           AppSettings    = AppSettings.empty
           IdeCommandDraft = ""
           IdeCandidates  = []
+          GodotSearchPathsDraft = ""
+          GodotCandidates = []
           SelectedStep   = None
           StepSchemas    = Map.empty
           StepSchemasLoading = Set.empty
@@ -146,6 +148,26 @@ type StateTests() =
         Assert.True(Map.isEmpty m.ProjectFlows)
         Assert.True(Map.isEmpty m.ProjectInfo)
         Assert.True(Map.isEmpty m.RunDetails)
+
+    // ─── effectiveEngine (Godot path injection) ─────────────────────
+
+    [<Fact>]
+    member _.``effectiveEngine injects the chosen Godot path when the project has none`` () =
+        let settings = { AppSettings.empty with GodotPath = Some @"C:\g\godot.exe" }
+        let eng : Engine = { Kind = EngineKind.Godot; ProjectFile = None; EnginePath = None; EngineVersion = None; Executable = None }
+        Assert.Equal<string option>(Some @"C:\g\godot.exe", (effectiveEngine settings eng).EnginePath)
+
+    [<Fact>]
+    member _.``effectiveEngine leaves an explicit engine_path alone`` () =
+        let settings = { AppSettings.empty with GodotPath = Some @"C:\g\godot.exe" }
+        let eng : Engine = { Kind = EngineKind.Godot; ProjectFile = None; EnginePath = Some @"D:\proj\godot.exe"; EngineVersion = None; Executable = None }
+        Assert.Equal<string option>(Some @"D:\proj\godot.exe", (effectiveEngine settings eng).EnginePath)
+
+    [<Fact>]
+    member _.``effectiveEngine does not touch non-Godot engines`` () =
+        let settings = { AppSettings.empty with GodotPath = Some @"C:\g\godot.exe" }
+        let ue : Engine = { Kind = EngineKind.Unreal; ProjectFile = Some "G.uproject"; EnginePath = None; EngineVersion = None; Executable = None }
+        Assert.Equal<string option>(None, (effectiveEngine settings ue).EnginePath)
 
     // ─── OpenProject ────────────────────────────────────────────────
 

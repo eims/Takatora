@@ -243,33 +243,56 @@ module Engines =
         let m = System.Text.RegularExpressions.Regex.Match(name, @"v(\d+(?:\.\d+){1,3}[a-z0-9\-]*)")
         if m.Success then m.Groups.[1].Value else name
 
-    let private detectGodotFromPath () : DetectedEngine list =
-        let pathEnv = Environment.GetEnvironmentVariable("PATH")
-        if String.IsNullOrEmpty pathEnv then []
+    // godot* executables in a dir. `recurse` walks subdirs (search paths
+    // often point at an install ROOT with per-version subfolders); console
+    // builds are excluded (we want the editor exe). Inaccessible subdirs and
+    // any error are skipped rather than aborting the scan.
+    let private godotExesInDir (recurse: bool) (dir: string) : string array =
+        if String.IsNullOrWhiteSpace dir || not (Directory.Exists dir) then [||]
         else
-            let separator = if isWindows then ';' else ':'
-            pathEnv.Split(separator)
-            |> Array.collect (fun dir ->
-                if String.IsNullOrWhiteSpace dir || not (Directory.Exists dir) then [||]
-                else
-                    try
-                        Directory.GetFiles(dir, $"godot*{executableSuffix}")
-                        |> Array.append (Directory.GetFiles(dir, $"Godot*{executableSuffix}"))
-                    with _ -> [||])
-            |> Array.distinct
-            |> Array.map (fun exe ->
-                {
-                    Kind = EngineKind.Godot
-                    Version = parseGodotVersion exe
-                    Path = Path.GetDirectoryName exe
-                    Executable = Some exe
-                    Association = None
-                })
-            |> List.ofArray
+            try
+                let opts =
+                    EnumerationOptions(
+                        RecurseSubdirectories = recurse,
+                        IgnoreInaccessible = true,
+                        MatchCasing = MatchCasing.CaseInsensitive,
+                        MaxRecursionDepth = 6)
+                Directory.GetFiles(dir, $"godot*{executableSuffix}", opts)
+                |> Array.filter (fun f -> not (Path.GetFileName(f).ToLowerInvariant().Contains "console"))
+                // Skip hidden dirs (e.g. Godot's own .editor_config caches).
+                |> Array.filter (fun f ->
+                    f.Replace('/', '\\').Split('\\') |> Array.forall (fun seg -> not (seg.StartsWith ".")))
+            with _ -> [||]
+
+    let private pathDirs () : string list =
+        match Environment.GetEnvironmentVariable("PATH") with
+        | null | "" -> []
+        | p -> p.Split(if isWindows then ';' else ':') |> Array.toList
+
+    let private godotEnginesIn (recurse: bool) (dirs: string list) : DetectedEngine list =
+        dirs
+        |> List.collect (godotExesInDir recurse >> Array.toList)
+        |> List.distinct
+        |> List.map (fun exe ->
+            { Kind = EngineKind.Godot
+              Version = parseGodotVersion exe
+              Path = Path.GetDirectoryName exe
+              Executable = Some exe
+              Association = None })
 
     let private detectGodot () : DetectedEngine list =
-        detectGodotFromPath ()
+        // PATH dirs are bin dirs — scan them directly (non-recursive).
+        godotEnginesIn false (pathDirs ())
         |> List.distinctBy (fun e -> e.Executable |> Option.defaultValue e.Path)
+
+    /// Godot executables found on PATH plus the given extra search dirs
+    /// (Godot has no canonical install location, so the GUI lets the user
+    /// configure where to look and pick one). PATH is scanned non-recursively;
+    /// the configured search dirs are scanned recursively (they typically
+    /// point at an install root). De-duped by exe path.
+    let godotCandidates (searchPaths: string list) : DetectedEngine list =
+        (godotEnginesIn false (pathDirs ()) @ godotEnginesIn true searchPaths)
+        |> List.distinctBy (fun e -> (e.Executable |> Option.defaultValue e.Path).ToLowerInvariant())
 
     // ─── Public surface ────────────────────────────────────────────
 

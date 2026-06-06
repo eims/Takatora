@@ -14,6 +14,13 @@ type AppSettings = {
     /// A full command line with placeholders ({project_dir} / {uproject} /
     /// {sln}); see `Engines.resolveIdeCommand`. None = unset (button off).
     IdeCommand: string option
+    /// Extra directories to scan for Godot executables (Godot has no
+    /// canonical install location). Used by `Engines.godotCandidates`.
+    GodotSearchPaths: string list
+    /// The chosen Godot executable (machine-level), picked from detected
+    /// candidates. Used as the Godot engine when a project doesn't set
+    /// `[engine].engine_path`. None = fall back to PATH detection.
+    GodotPath: string option
 }
 
 [<RequireQualifiedAccess>]
@@ -33,7 +40,7 @@ module AppSettings =
                 "Takatora",
                 "settings.toml")
 
-    let empty : AppSettings = { IdeCommand = None }
+    let empty : AppSettings = { IdeCommand = None; GodotSearchPaths = []; GodotPath = None }
 
     /// Load settings from disk. Missing/malformed file → empty (defaults).
     let load () : AppSettings =
@@ -48,7 +55,14 @@ module AppSettings =
                     match table.TryGetValue key with
                     | true, (:? string as s) when not (String.IsNullOrWhiteSpace s) -> Some s
                     | _ -> None
-                { IdeCommand = tryStr "ide_command" }
+                let tryStrList key =
+                    match table.TryGetValue key with
+                    | true, (:? TomlArray as arr) ->
+                        [ for v in arr do match v with :? string as s -> yield s | _ -> () ]
+                    | _ -> []
+                { IdeCommand = tryStr "ide_command"
+                  GodotSearchPaths = tryStrList "godot_search_paths"
+                  GodotPath = tryStr "godot_path" }
             with _ -> empty
 
     let private esc (s: string) =
@@ -65,4 +79,11 @@ module AppSettings =
         | Some c when not (String.IsNullOrWhiteSpace c) ->
             sb.AppendLine(sprintf "ide_command = %s" (esc c)) |> ignore
         | _ -> ()
+        match settings.GodotPath with
+        | Some p when not (String.IsNullOrWhiteSpace p) ->
+            sb.AppendLine(sprintf "godot_path = %s" (esc p)) |> ignore
+        | _ -> ()
+        if not (List.isEmpty settings.GodotSearchPaths) then
+            let arr = settings.GodotSearchPaths |> List.map esc |> String.concat ", "
+            sb.AppendLine(sprintf "godot_search_paths = [%s]" arr) |> ignore
         File.WriteAllText(path, sb.ToString())

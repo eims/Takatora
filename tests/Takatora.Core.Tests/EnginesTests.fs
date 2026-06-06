@@ -28,6 +28,13 @@ let ``detect Godot returns a list without throwing`` () =
     Assert.NotNull(xs :> obj)
 
 [<Fact>]
+let ``godotCandidates returns a list without throwing (extra search paths)`` () =
+    let xs = Engines.godotCandidates [ @"C:\does-not-exist-xyz" ]
+    Assert.NotNull(xs :> obj)
+    for c in xs do
+        Assert.Equal(EngineKind.Godot, c.Kind)
+
+[<Fact>]
 let ``detectAll has an entry for every engine kind`` () =
     let map = Engines.detectAll ()
     Assert.True(Map.containsKey EngineKind.Unreal map)

@@ -204,6 +204,11 @@ type Model = {
     /// Detected IDE presets (populated on demand by the Settings "Detect"
     /// button) the user can one-click into the command template.
     IdeCandidates: IdeCandidate list
+    /// In-progress text of the Godot search-paths editor (one dir per line).
+    GodotSearchPathsDraft: string
+    /// Detected Godot executables (PATH + configured search paths), for the
+    /// user to pick the machine-level Godot from.
+    GodotCandidates: DetectedEngine list
     /// The flow step whose describe-schema Inspector is open: (project, flow
     /// id, step index). None = no Inspector.
     SelectedStep: (ProjectId * string * int) option
@@ -276,6 +281,12 @@ type Msg =
     | IdesDetected of IdeCandidate list
     /// Fill the command draft from a detected IDE preset.
     | PickIdeCandidate of command:string
+    /// Godot search-paths editor / detection / pick (machine-level Godot).
+    | SetGodotSearchPathsDraft of string
+    | SaveGodotSearchPaths
+    | DetectGodot
+    | GodotDetected of DetectedEngine list
+    | PickGodot of path:string
     /// Open the describe-schema Inspector for a flow step (project, flow, idx).
     | SelectStep of ProjectId * flowId:string * stepIndex:int
     | CloseInspector
@@ -358,6 +369,8 @@ let init () : Model * Cmd<Msg> =
       AppSettings    = appSettings
       IdeCommandDraft = appSettings.IdeCommand |> Option.defaultValue ""
       IdeCandidates  = []
+      GodotSearchPathsDraft = String.concat "\n" appSettings.GodotSearchPaths
+      GodotCandidates = []
       SelectedStep   = None
       StepSchemas    = Map.empty
       StepSchemasLoading = Set.empty
@@ -715,6 +728,25 @@ let resolveStepTask (projectRoot: string) (taskType: string) : ResolvedTask opti
 let stepSchemaKey (path: string) : string =
     let ticks = try (File.GetLastWriteTimeUtc path).Ticks with _ -> 0L
     sprintf "%s|%d" path ticks
+
+/// Apply machine-level engine settings to a project's [engine]. For Godot
+/// (which has no canonical install), inject the chosen GodotPath as
+/// engine_path when the project doesn't set one — so engine resolution /
+/// "Open in editor" work without a per-project, committed path.
+let effectiveEngine (settings: AppSettings) (engine: Engine) : Engine =
+    match engine.Kind with
+    | EngineKind.Godot when (engine.EnginePath |> Option.forall System.String.IsNullOrWhiteSpace) ->
+        match settings.GodotPath with
+        | Some p when not (System.String.IsNullOrWhiteSpace p) -> { engine with EnginePath = Some p }
+        | _ -> engine
+    | _ -> engine
+
+/// Split the Godot search-paths editor text (one dir per line) into a list.
+let parseSearchPaths (text: string) : string list =
+    text.Split([| '\n'; '\r' |])
+    |> Array.map (fun s -> s.Trim())
+    |> Array.filter (fun s -> s <> "")
+    |> Array.toList
 
 // ─── Live run tailing ───────────────────────────────────────────────
 //
@@ -1341,7 +1373,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         let launched =
             match projectRoot pid model.Projects, Map.tryFind pid model.ProjectInfo with
             | Some root, Some (ProjectInfoOk project) ->
-                match Engines.resolveEditorLaunch project.Engine root with
+                match Engines.resolveEditorLaunch (effectiveEngine model.AppSettings project.Engine) root with
                 | Ok launch ->
                     try
                         let psi =
@@ -1446,6 +1478,32 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         { model with IdeCandidates = candidates }, Cmd.none
     | PickIdeCandidate command ->
         { model with IdeCommandDraft = command }, Cmd.none
+    | SetGodotSearchPathsDraft text ->
+        { model with GodotSearchPathsDraft = text }, Cmd.none
+    | SaveGodotSearchPaths ->
+        let paths = parseSearchPaths model.GodotSearchPathsDraft
+        let settings = { model.AppSettings with GodotSearchPaths = paths }
+        (try AppSettings.save settings with _ -> ())
+        { model with AppSettings = settings }, Cmd.none
+    | DetectGodot ->
+        // Scan PATH + the (draft) search paths off the UI thread.
+        let paths = parseSearchPaths model.GodotSearchPathsDraft
+        let cmd : Cmd<Msg> =
+            [ fun dispatch ->
+                async {
+                    do! Async.SwitchToThreadPool ()
+                    let found = try Engines.godotCandidates paths with _ -> []
+                    Dispatcher.UIThread.Post(fun () -> dispatch (GodotDetected found))
+                }
+                |> Async.Start ]
+        model, cmd
+    | GodotDetected candidates ->
+        { model with GodotCandidates = candidates }, Cmd.none
+    | PickGodot path ->
+        // Persist the chosen Godot as the machine-level engine.
+        let settings = { model.AppSettings with GodotPath = Some path }
+        (try AppSettings.save settings with _ -> ())
+        { model with AppSettings = settings }, Cmd.none
     | CloseInspector ->
         { model with SelectedStep = None }, Cmd.none
     | SetStepParam (pid, flowId, idx, key, value) ->

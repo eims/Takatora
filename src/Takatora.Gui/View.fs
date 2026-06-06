@@ -1258,12 +1258,14 @@ let private settingsFieldColored (label: string) (value: string) (fg: IBrush) : 
         ]
     ] :> _
 
-let private projectInfoBlock (proj: Project) (projectRoot: string) : IView =
+let private projectInfoBlock (proj: Project) (projectRoot: string) (appSettings: AppSettings) : IView =
     // The *resolved* engine — what this project will actually run on,
     // behind the (often auto-detected, hence blank above) config. Surfaces
     // the detection result so "which version am I on" is answerable.
+    // effectiveEngine injects the machine-level Godot path when the project
+    // doesn't set engine_path.
     let resolvedEngine : IView =
-        match Engines.resolveProjectEngine proj.Engine projectRoot with
+        match Engines.resolveProjectEngine (State.effectiveEngine appSettings proj.Engine) projectRoot with
         | Ok d ->
             StackPanel.create [
                 StackPanel.spacing 2.0
@@ -1432,15 +1434,99 @@ let private ideCommandBlock
         ]
     ] :> IView
 
+/// Editor for the machine-level Godot location. Godot has no canonical
+/// install path, so the user configures search dirs, Detects candidates
+/// (PATH + those dirs), and picks one; the chosen exe is used as the Godot
+/// engine for any project that doesn't set its own engine_path.
+let private godotBlock
+        (searchPathsDraft: string)
+        (candidates: DetectedEngine list)
+        (chosen: string option)
+        (dispatch: Msg -> unit)
+        : IView =
+    StackPanel.create [
+        StackPanel.spacing 6.0
+        StackPanel.children [
+            sectionHeader "Godot (global)"
+            TextBlock.create [
+                TextBlock.text "Where to look for Godot (one directory per line). Detect scans PATH + these, then pick one as this machine's Godot — used for any Godot project without its own engine_path."
+                TextBlock.foreground mutedBrush
+                TextBlock.fontSize 12.0
+                TextBlock.textWrapping TextWrapping.Wrap
+            ]
+            (match chosen with
+             | Some p ->
+                 settingsFieldColored "chosen" p (engineColor EngineKind.Godot)
+             | None ->
+                 TextBlock.create [
+                     TextBlock.text "(none chosen — using PATH detection)"
+                     TextBlock.foreground mutedBrush
+                     TextBlock.fontSize 11.0
+                 ] :> IView)
+            DockPanel.create [
+                DockPanel.children [
+                    Button.create [
+                        DockPanel.dock Dock.Right
+                        Button.content "Save paths"
+                        Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                        Button.onClick ((fun _ -> dispatch SaveGodotSearchPaths), SubPatchOptions.Always)
+                    ]
+                    TextBox.create [
+                        TextBox.text searchPathsDraft
+                        TextBox.watermark "C:\\Tools\\Godot"
+                        TextBox.acceptsReturn true
+                        TextBox.minHeight 48.0
+                        TextBox.fontFamily (FontFamily "Consolas, Menlo, monospace")
+                        TextBox.onTextChanged ((fun s -> dispatch (SetGodotSearchPathsDraft s)), SubPatchOptions.Always)
+                    ]
+                ]
+            ]
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 8.0
+                StackPanel.children [
+                    Button.create [
+                        Button.content "Detect Godot"
+                        Button.onClick ((fun _ -> dispatch DetectGodot), SubPatchOptions.Always)
+                    ]
+                    TextBlock.create [
+                        TextBlock.text
+                            (if List.isEmpty candidates then "(scan PATH + search paths)"
+                             else sprintf "%d found — click to choose:" (List.length candidates))
+                        TextBlock.foreground mutedBrush
+                        TextBlock.fontSize 11.0
+                        TextBlock.verticalAlignment VerticalAlignment.Center
+                    ]
+                ]
+            ]
+            (if List.isEmpty candidates then TextBlock.create [ TextBlock.text "" ] :> IView
+             else
+                WrapPanel.create [
+                    WrapPanel.children [
+                        for c in candidates ->
+                            match c.Executable with
+                            | Some exe ->
+                                Button.create [
+                                    Button.content (sprintf "%s (%s)" c.Version (System.IO.Path.GetFileName exe))
+                                    Button.margin (Thickness(0.0, 0.0, 6.0, 6.0))
+                                    Button.onClick ((fun _ -> dispatch (PickGodot exe)), SubPatchOptions.Always)
+                                ] :> IView
+                            | None -> TextBlock.create [ TextBlock.text "" ] :> IView
+                    ]
+                ] :> IView)
+        ]
+    ] :> IView
+
 let private settingsBody
         (pid: ProjectId)
         (projectRoot: string)
         (load: ProjectInfoLoad)
         (secrets: string list)
-        (ideCommandDraft: string)
-        (ideCandidates: IdeCandidate list)
+        (model: Model)
         (dispatch: Msg -> unit)
         : IView =
+    let ideCommandDraft = model.IdeCommandDraft
+    let ideCandidates = model.IdeCandidates
     let header =
         StackPanel.create [
             DockPanel.dock Dock.Top
@@ -1495,8 +1581,11 @@ let private settingsBody
                         StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
                         StackPanel.spacing 8.0
                         StackPanel.children [
-                            projectInfoBlock proj projectRoot
+                            projectInfoBlock proj projectRoot model.AppSettings
                             ideCommandBlock ideCommandDraft ideCandidates dispatch
+                            (if proj.Engine.Kind = EngineKind.Godot then
+                                godotBlock model.GodotSearchPathsDraft model.GodotCandidates model.AppSettings.GodotPath dispatch
+                             else TextBlock.create [ TextBlock.text "" ] :> IView)
                             secretsBlock pid secrets dispatch
                         ]
                     ]
@@ -1712,7 +1801,11 @@ let private projectView
         // with no engine_path explains itself rather than failing silently.
         let editorLaunch =
             match Map.tryFind pid model.ProjectInfo with
-            | Some (ProjectInfoOk proj)  -> Engines.resolveEditorLaunch proj.Engine p.Path
+            | Some (ProjectInfoOk proj)  ->
+                // effectiveEngine injects the chosen Godot path so the button
+                // enables once a machine-level Godot is picked (matches the
+                // OpenInEditor handler).
+                Engines.resolveEditorLaunch (State.effectiveEngine model.AppSettings proj.Engine) p.Path
             | Some ProjectInfoMissing    -> Error "project.toml is missing"
             | Some (ProjectInfoError e)  -> Error e
             | None                       -> Error "project not loaded"
@@ -1814,7 +1907,7 @@ let private projectView
                      let secrets =
                          Map.tryFind pid model.ProjectSecrets
                          |> Option.defaultValue []
-                     settingsBody pid p.Path load secrets model.IdeCommandDraft model.IdeCandidates dispatch)
+                     settingsBody pid p.Path load secrets model dispatch)
             ]
         ] :> _
 

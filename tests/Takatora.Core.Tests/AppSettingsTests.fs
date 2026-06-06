@@ -23,12 +23,23 @@ let ``load returns empty when no file exists`` () =
 [<Fact>]
 let ``save then load round-trips the ide command`` () =
     withTempSettings (fun () ->
-        AppSettings.save { IdeCommand = Some "code \"{project_dir}\"" }
+        AppSettings.save { AppSettings.empty with IdeCommand = Some "code \"{project_dir}\"" }
         Assert.Equal<string option>(Some "code \"{project_dir}\"", (AppSettings.load ()).IdeCommand))
 
 [<Fact>]
 let ``save None clears the ide command`` () =
     withTempSettings (fun () ->
-        AppSettings.save { IdeCommand = Some "rider64" }
-        AppSettings.save { IdeCommand = None }
+        AppSettings.save { AppSettings.empty with IdeCommand = Some "rider64" }
+        AppSettings.save { AppSettings.empty with IdeCommand = None }
         Assert.Equal<string option>(None, (AppSettings.load ()).IdeCommand))
+
+[<Fact>]
+let ``save then load round-trips Godot search paths and chosen path`` () =
+    withTempSettings (fun () ->
+        AppSettings.save
+            { AppSettings.empty with
+                GodotSearchPaths = [ @"C:\Tools\Godot"; @"D:\Godot" ]
+                GodotPath = Some @"C:\Tools\Godot\godot.exe" }
+        let s = AppSettings.load ()
+        Assert.Equal<string list>([ @"C:\Tools\Godot"; @"D:\Godot" ], s.GodotSearchPaths)
+        Assert.Equal<string option>(Some @"C:\Tools\Godot\godot.exe", s.GodotPath))
