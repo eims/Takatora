@@ -73,4 +73,4 @@ samples/
 
 ## License
 
-Not yet selected. All rights reserved by the author until a license is chosen.
+[MIT](LICENSE).

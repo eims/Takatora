@@ -10,7 +10,8 @@
     <Nullable>disable</Nullable>
     <Authors>Takatora contributors</Authors>
     <Product>Takatora</Product>
-    <Copyright>Copyright (c) Takatora contributors</Copyright>
+    <Copyright>Copyright (c) 2026 Takatora contributors</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryType>git</RepositoryType>
     <NeutralLanguage>en</NeutralLanguage>
 
