@@ -95,6 +95,8 @@ abort. This is what keeps `takatora describe` able to harvest the schema.
 - **Output:** `Output.set "name" value` → `${steps.<id>.outputs.name}`.
 - **Step:** `Step.run "label" (fun () -> ..)`, `Step.runResult`, `Step.skip`.
 - **Log:** `Log.info|warn|error|debug`, `Log.section`.
+- **Progress:** `Progress.during "label" everySec (fun () -> ..)` — heartbeat
+  around a long blocking op (e.g. a big zip) so the log doesn't go silent.
 - **Task:** `Task.fail<'T> "reason"`.
 - **Project/Engine:** `Project.workingDir|name`;
   `Engine.kind|path|version|projectFile|executable`.

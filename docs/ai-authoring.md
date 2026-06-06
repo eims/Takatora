@@ -136,6 +136,10 @@ Use `Task.fail "reason"` for clean user-facing aborts.
 
 **Log:** `Log.info|warn|error|debug "msg"`, `Log.section "heading"`.
 
+**Progress:** `Progress.during "label" everySec (fun () -> ...)` — run a long
+blocking op while emitting an info heartbeat every `everySec` seconds, so the
+log doesn't go silent (e.g. wrap a large zip).
+
 **Task:** `Task.fail<'T> "reason"` — abort cleanly (no F# stack dump).
 
 **Project / Engine** (read-only): `Project.workingDir`, `Project.name`;

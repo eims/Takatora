@@ -27,6 +27,7 @@ open System.IO
 open System.IO.Compression
 open System.Text.Json
 open System.Text.Json.Nodes
+open System.Text.Encodings.Web
 
 let sources  = Param.required<string[]> "sources"
 let destRoot = Param.optional<string>   "dest"    "Artifacts"
@@ -89,7 +90,9 @@ Step.run "artifact.collect" (fun () ->
     // Copy each source into the drop; build manifest entries as we go.
     let entries = JsonArray()
     for src in sources do
-        let s = resolve src
+        // GetFullPath canonicalises separators (no mixed `/`+`\` in the
+        // manifest) and collapses any `.`/`..`.
+        let s = Path.GetFullPath(resolve src)
         let entry = JsonObject()
         if File.Exists s then
             File.Copy(s, Path.Combine(targetDir, Path.GetFileName s), overwrite = true)
@@ -118,12 +121,19 @@ Step.run "artifact.collect" (fun () ->
     gitHash |> Option.iter (fun h -> manifest.["git_hash"] <- JsonValue.Create(h))
     manifest.["artifacts"]      <- entries
     let manifestPath = Path.Combine(targetDir, "manifest.json")
-    File.WriteAllText(manifestPath, manifest.ToJsonString(JsonSerializerOptions(WriteIndented = true)))
+    // UnsafeRelaxedJsonEscaping: this manifest is read by humans, so don't
+    // escape '+' → + (or <>&). It's a local file, not HTML-embedded.
+    let manifestJson =
+        manifest.ToJsonString(
+            JsonSerializerOptions(WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping))
+    File.WriteAllText(manifestPath, manifestJson)
 
     if archive then
         let zipPath = Path.Combine(destAbs, folderName + ".zip")
         if File.Exists zipPath then File.Delete zipPath
-        ZipFile.CreateFromDirectory(targetDir, zipPath, CompressionLevel.Optimal, includeBaseDirectory = false)
+        // Heartbeat so a large drop doesn't make the log go silent.
+        Progress.during (sprintf "  archiving → %s" (Path.GetFileName zipPath)) 3.0 (fun () ->
+            ZipFile.CreateFromDirectory(targetDir, zipPath, CompressionLevel.Optimal, includeBaseDirectory = false))
         Directory.Delete(targetDir, true)
         Output.set "artifact_path" zipPath
         Output.set "size"          (FileInfo zipPath).Length

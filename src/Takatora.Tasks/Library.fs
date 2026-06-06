@@ -574,6 +574,27 @@ module Log =
             "message", box msg
         ]
 
+/// Heartbeat for long, blocking operations so the run log doesn't go
+/// silent (e.g. a large zip). Runs `action`, emitting an info line
+/// "<label> … (Ns)" every `everySec` seconds on a background thread until
+/// it returns. No-op heartbeat in describe mode.
+[<RequireQualifiedAccess>]
+module Progress =
+    let during (label: string) (everySec: float) (action: unit -> 'T) : 'T =
+        if Io.isDescribeMode () then action ()
+        else
+            let mutable running = true
+            let sw = System.Diagnostics.Stopwatch.StartNew()
+            let t =
+                System.Threading.Thread(fun () ->
+                    while running do
+                        System.Threading.Thread.Sleep(max 250 (int (everySec * 1000.0)))
+                        if running then
+                            Log.info (sprintf "%s … (%.0fs)" label sw.Elapsed.TotalSeconds))
+            t.IsBackground <- true
+            t.Start()
+            try action () finally running <- false
+
 /// Read-only project metadata as supplied by the runner.
 /// Members are properties (not let-bound values) so they re-read the
 /// input on each access; otherwise tests + GUI re-init scenarios would
