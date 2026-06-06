@@ -10,11 +10,11 @@ type Outcome =
     | MissingFile of path: string
     | ConfigError of source: string * message: string
 
-let private ciDir (workingDir: string) = Path.Combine(workingDir, ".ci")
+let private ciDir (workingDir: string) = Path.Combine(workingDir, ".takatora")
 let private projectFile (workingDir: string) = Path.Combine(ciDir workingDir, "project.toml")
 let private flowsFile (workingDir: string) = Path.Combine(ciDir workingDir, "flows.toml")
 
-/// Read project.toml + flows.toml under `<workingDir>/.ci/` and run them
+/// Read project.toml + flows.toml under `<workingDir>/.takatora/` and run them
 /// through `TomlConfig`. Pure with respect to stdout/stderr — formatting is
 /// the caller's responsibility.
 let run (workingDir: string) : Outcome =

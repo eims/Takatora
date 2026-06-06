@@ -6,7 +6,7 @@ open Xunit
 open Takatora.Core
 
 /// End-to-end runner tests. Each test sets up a small project under a
-/// temp dir, drops a task .fsx into `.ci/tasks/`, and calls
+/// temp dir, drops a task .fsx into `.takatora/tasks/`, and calls
 /// `Run.execute` in-process. The runner spawns real `dotnet fsi`, so
 /// these tests are slower than the rest of the suite (≈1s per case)
 /// but they exercise the actual contract end to end.
@@ -59,8 +59,8 @@ type = "godot"
 
     [<Fact>]
     member _.``execute runs a single task and writes manifest + events`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "smoke"
 [flow.vars]
@@ -70,7 +70,7 @@ message = { type = "string", default = "hello" }
 id = "notify"
 type = "test-notify"
 """
-        writeFile ".ci/tasks/test-notify.fsx" """
+        writeFile ".takatora/tasks/test-notify.fsx" """
 open Takatora.Tasks
 let msg = Param.required<string> "message"
 Step.run "do-it" (fun () -> Log.info msg)
@@ -111,8 +111,8 @@ Output.set "echoed" msg
 
     [<Fact>]
     member _.``CLI --var override flows into the task`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "smoke"
 [flow.vars]
@@ -121,7 +121,7 @@ message = { type = "string", default = "default-message" }
 [[flow.steps]]
 type = "echo"
 """
-        writeFile ".ci/tasks/echo.fsx" """
+        writeFile ".takatora/tasks/echo.fsx" """
 open Takatora.Tasks
 let msg = Param.required<string> "message"
 Output.set "echoed" msg
@@ -136,8 +136,8 @@ Output.set "echoed" msg
 
     [<Fact>]
     member _.``when=false marks step as skipped without spawning fsi`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "smoke"
 [flow.vars]
@@ -163,8 +163,8 @@ when = "${vars.do_step}"
 
     [<Fact>]
     member _.``failing step fails run and skips later steps`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "smoke"
 
@@ -176,7 +176,7 @@ type = "explode"
 id = "after"
 type = "explode"
 """
-        writeFile ".ci/tasks/explode.fsx" """
+        writeFile ".takatora/tasks/explode.fsx" """
 open Takatora.Tasks
 Task.fail<unit> "deliberate failure"
 """
@@ -196,8 +196,8 @@ Task.fail<unit> "deliberate failure"
 
     [<Fact>]
     member _.``plan returns runnable steps and reflects var overrides`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "preview"
 [flow.vars]
@@ -207,7 +207,7 @@ configuration = { type = "string", default = "Development" }
 id = "notify"
 type = "test-notify"
 """
-        writeFile ".ci/tasks/test-notify.fsx" "open Takatora.Tasks\nLog.info \"x\"\n"
+        writeFile ".takatora/tasks/test-notify.fsx" "open Takatora.Tasks\nLog.info \"x\"\n"
 
         let opts = buildOptions "preview" (Map.ofList [ "configuration", TString "Shipping" ])
         match Run.plan opts with
@@ -224,8 +224,8 @@ type = "test-notify"
 
     [<Fact>]
     member _.``plan flags when=false steps with skip reason`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "guarded"
 [flow.vars]
@@ -245,8 +245,8 @@ when = "${vars.do_it}"
 
     [<Fact>]
     member _.``plan flags missing task .fsx as skip reason`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "broken"
 [[flow.steps]]
@@ -264,8 +264,8 @@ type = "no-such-task"
 
     [<Fact>]
     member _.``unknown flow id returns FlowNotFound`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "smoke"
 [[flow.steps]]
@@ -279,14 +279,14 @@ type = "noop"
 
     [<Fact>]
     member _.``builtin fs.clean removes a directory and reports counts`` () =
-        writeFile ".ci/project.toml" projectToml
+        writeFile ".takatora/project.toml" projectToml
         // Set up a junk dir with two files of known size.
         let target = Path.Combine(dir, "junk")
         Directory.CreateDirectory(Path.Combine(target, "sub")) |> ignore
         File.WriteAllText(Path.Combine(target, "a.txt"), String.replicate 100 "x")
         File.WriteAllText(Path.Combine(target, "sub", "b.txt"), String.replicate 50 "y")
 
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "clean-it"
 [flow.vars]
@@ -318,7 +318,7 @@ type = "fs.clean"
 
     [<Fact>]
     member _.``builtin ue.clean preset safe removes intermediate + binaries`` () =
-        writeFile ".ci/project.toml" projectToml
+        writeFile ".takatora/project.toml" projectToml
         // Set up the canonical UE artifact dirs the `safe` preset
         // touches, plus an unrelated dir we expect to survive.
         Directory.CreateDirectory(Path.Combine(dir, "Intermediate", "Build")) |> ignore
@@ -328,7 +328,7 @@ type = "fs.clean"
         Directory.CreateDirectory(Path.Combine(dir, "Saved")) |> ignore
         File.WriteAllText(Path.Combine(dir, "Saved", "log.txt"), "log")
 
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "clean"
 
@@ -358,14 +358,14 @@ preset = "safe"
 
     [<Fact>]
     member _.``builtin artifact.collect copies sources into a named drop with a manifest`` () =
-        writeFile ".ci/project.toml" projectToml
+        writeFile ".takatora/project.toml" projectToml
         // A build output dir to collect.
         Directory.CreateDirectory(Path.Combine(dir, "build", "sub")) |> ignore
         File.WriteAllText(Path.Combine(dir, "build", "Game.exe"), "exe")
         File.WriteAllText(Path.Combine(dir, "build", "sub", "data.bin"), "data")
 
         // stamp=none keeps the drop name deterministic (= project name).
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "collect"
 
@@ -400,11 +400,11 @@ archive = false
 
     [<Fact>]
     member _.``builtin artifact.collect zips the drop when archive is set`` () =
-        writeFile ".ci/project.toml" projectToml
+        writeFile ".takatora/project.toml" projectToml
         Directory.CreateDirectory(Path.Combine(dir, "build")) |> ignore
         File.WriteAllText(Path.Combine(dir, "build", "Game.exe"), "exe")
 
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "zip"
 
@@ -440,13 +440,13 @@ archive = true
 
     [<Fact>]
     member _.``builtin fs.write writes content, interpolating a prior step output`` () =
-        writeFile ".ci/project.toml" projectToml
+        writeFile ".takatora/project.toml" projectToml
         // First step records an output; fs.write interpolates it into content.
-        writeFile ".ci/tasks/emit.fsx" """
+        writeFile ".takatora/tasks/emit.fsx" """
 open Takatora.Tasks
 Step.run "emit" (fun () -> Output.set "tag" "v1")
 """
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "w"
 
@@ -481,10 +481,10 @@ content = "tag=${steps.e.outputs.tag}"
 
     [<Fact>]
     member _.``builtin shell task echoes through to log.txt`` () =
-        writeFile ".ci/project.toml" projectToml
+        writeFile ".takatora/project.toml" projectToml
         // Use a marker that survives both /bin/sh and cmd.exe quoting.
         let marker = "TAKATORA_SHELL_OK"
-        writeFile ".ci/flows.toml" (sprintf """
+        writeFile ".takatora/flows.toml" (sprintf """
 [[flow]]
 id = "shell-smoke"
 [flow.vars]
@@ -518,8 +518,8 @@ type = "shell"
 
     [<Fact>]
     member _.``secret var values are masked in manifest and input json`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "sec"
 [flow.vars]
@@ -551,15 +551,15 @@ message = "leak ${vars.password}"
 
     [<Fact>]
     member _.``secret real value reaches the task via TAKATORA_SECRET env var`` () =
-        writeFile ".ci/project.toml" projectToml
+        writeFile ".takatora/project.toml" projectToml
         // Project-local task that echoes the secret env var into the log,
         // proving the real value is delivered out-of-band (not via disk).
-        writeFile ".ci/tasks/echo.secret.fsx" """
+        writeFile ".takatora/tasks/echo.secret.fsx" """
 open Takatora.Tasks
 let v = System.Environment.GetEnvironmentVariable "TAKATORA_SECRET_password"
 Step.run "echo" (fun () -> printfn "ENV=%s" v)
 """
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "sec2"
 [flow.vars]
@@ -582,8 +582,8 @@ type = "echo.secret"
         // Regression: backslashes in a param value must be escaped, or the
         // manifest is invalid TOML — the run vanishes from history and
         // RunDetail / show-run report "not found".
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "p"
 [flow.vars]
@@ -614,7 +614,7 @@ message = "done"
         // Regression guard: the new non-unity-build task file is packaged
         // into builtin-tasks/ and the resolver finds it. (A real build needs
         // an engine, so we stop at plan — no UBT invocation.)
-        writeFile ".ci/project.toml" """
+        writeFile ".takatora/project.toml" """
 [project]
 name = "g"
 working_dir = "."
@@ -622,7 +622,7 @@ working_dir = "."
 type = "unreal"
 project_file = "g.uproject"
 """
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "ci"
 [[flow.steps]]
@@ -640,8 +640,8 @@ type = "ue.build_nonunity"
 
     [<Fact>]
     member _.``ue.* step waits on engine mutex and emits mutex events`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "ue-stub"
 
@@ -649,7 +649,7 @@ id = "ue-stub"
 id = "stub"
 type = "ue.stub"
 """
-        writeFile ".ci/tasks/ue.stub.fsx" """
+        writeFile ".takatora/tasks/ue.stub.fsx" """
 open Takatora.Tasks
 Log.info "got past the mutex"
 """
@@ -681,14 +681,14 @@ Log.info "got past the mutex"
 
     [<Fact>]
     member _.``non-engine step types skip the mutex (no mutex events emitted)`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "plain"
 [[flow.steps]]
 type = "plain-task"
 """
-        writeFile ".ci/tasks/plain-task.fsx" """
+        writeFile ".takatora/tasks/plain-task.fsx" """
 open Takatora.Tasks
 Log.info "no mutex required"
 """
@@ -705,8 +705,8 @@ Log.info "no mutex required"
 
     [<Fact>]
     member _.``CANCEL flag mid-flight cancels current step + skips rest`` () =
-        writeFile ".ci/project.toml" projectToml
-        writeFile ".ci/flows.toml" """
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
 [[flow]]
 id = "long"
 
@@ -718,14 +718,14 @@ type = "sleep"
 id = "after"
 type = "sleep"
 """
-        writeFile ".ci/tasks/sleep.fsx" """
+        writeFile ".takatora/tasks/sleep.fsx" """
 open Takatora.Tasks
 Step.run "sleeping" (fun () ->
     System.Threading.Thread.Sleep(System.TimeSpan.FromSeconds(10.0)))
 """
         // Predict the run dir without racing: capture run id by watching
         // the runs/ directory for the new entry, then drop CANCEL inside.
-        let runsRoot = Path.Combine(dir, ".ci", "runs")
+        let runsRoot = Path.Combine(dir, ".takatora", "runs")
         Directory.CreateDirectory(runsRoot) |> ignore
 
         let runTask =

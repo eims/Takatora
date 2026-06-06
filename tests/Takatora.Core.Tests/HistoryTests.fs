@@ -56,7 +56,7 @@ let ``load on project with no runs dir yields empty list`` () =
 [<Fact>]
 let ``load parses multiple runs and sorts newest first`` () =
     withProjectTree (fun root ->
-        let runs = Path.Combine(root, ".ci", "runs")
+        let runs = Path.Combine(root, ".takatora", "runs")
         writeManifest (Path.Combine(runs, "r-2026051010-0100-aaaa")) "r-2026051010-0100-aaaa"
                       "smoke" "2026-05-10T10:01:00+00:00" "success"
         writeManifest (Path.Combine(runs, "r-2026051110-0200-bbbb")) "r-2026051110-0200-bbbb"
@@ -73,7 +73,7 @@ let ``load parses multiple runs and sorts newest first`` () =
 [<Fact>]
 let ``load skips broken manifests instead of failing the list`` () =
     withProjectTree (fun root ->
-        let runs = Path.Combine(root, ".ci", "runs")
+        let runs = Path.Combine(root, ".takatora", "runs")
         writeManifest (Path.Combine(runs, "r-2026051010-0100-aaaa")) "r-2026051010-0100-aaaa"
                       "smoke" "2026-05-10T10:01:00+00:00" "success"
         // Drop a malformed manifest in a sibling dir.
@@ -87,7 +87,7 @@ let ``load skips broken manifests instead of failing the list`` () =
 [<Fact>]
 let ``findRun returns entry and step summaries for matching id`` () =
     withProjectTree (fun root ->
-        let runs = Path.Combine(root, ".ci", "runs")
+        let runs = Path.Combine(root, ".takatora", "runs")
         writeManifest (Path.Combine(runs, "r-only")) "r-only" "smoke" "2026-05-10T10:00:00+00:00" "success"
         match RunHistory.findRun root "r-only" with
         | Some (entry, steps) ->
@@ -110,7 +110,7 @@ let ``findRun returns None for unknown id`` () =
 let ``runOutputs reads step outputs from the run dir`` () =
     withProjectTree (fun dir ->
         let runId = "r-out"
-        let outDir = Path.Combine(dir, ".ci", "runs", runId, "outputs")
+        let outDir = Path.Combine(dir, ".takatora", "runs", runId, "outputs")
         Directory.CreateDirectory(outDir) |> ignore
         File.WriteAllText(
             Path.Combine(outDir, "ue.build_cook_run-1.ndjson"),

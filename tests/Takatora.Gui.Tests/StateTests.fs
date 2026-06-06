@@ -24,7 +24,7 @@ type private InMemorySecretStore() =
 /// structural defaults — not the registry-derived Projects field.
 ///
 /// Tests that exercise OpenProject's file I/O paths write a small
-/// .ci/ tree under a per-instance tmp dir.
+/// .takatora/ tree under a per-instance tmp dir.
 type StateTests() =
 
     let tmpRoot =
@@ -110,11 +110,11 @@ type StateTests() =
     let fakeEntryFlow (runId: string) (flowId: string) : RunHistoryEntry =
         { fakeEntry runId with FlowId = flowId }
 
-    /// Write a minimal `.ci/` tree under tmpRoot and return a
+    /// Write a minimal `.takatora/` tree under tmpRoot and return a
     /// ProjectRegistration pointing at it.
     let setupProjectDir (name: string) (flowsToml: string option) : ProjectRegistration =
         let pdir = Path.Combine(tmpRoot, name)
-        let ci  = Path.Combine(pdir, ".ci")
+        let ci  = Path.Combine(pdir, ".takatora")
         Directory.CreateDirectory(ci) |> ignore
         File.WriteAllText(
             Path.Combine(ci, "project.toml"),
@@ -254,7 +254,7 @@ type StateTests() =
 
     [<Fact>]
     member _.``OpenProject yields ProjectInfoMissing when project.toml absent`` () =
-        // Create a registry entry pointing at a dir with no .ci/project.toml.
+        // Create a registry entry pointing at a dir with no .takatora/project.toml.
         let pdir = Path.Combine(tmpRoot, "tp-no-info")
         Directory.CreateDirectory(pdir) |> ignore
         let entry =
@@ -267,7 +267,7 @@ type StateTests() =
     [<Fact>]
     member _.``OpenProject yields ProjectInfoError when project.toml is malformed`` () =
         let pdir = Path.Combine(tmpRoot, "tp-bad-info")
-        let ci = Path.Combine(pdir, ".ci")
+        let ci = Path.Combine(pdir, ".takatora")
         Directory.CreateDirectory(ci) |> ignore
         File.WriteAllText(Path.Combine(ci, "project.toml"), "garbage [[")
         let entry =
@@ -899,7 +899,7 @@ type StateTests() =
     [<Fact>]
     member _.``RunDialogConfirm with SaveDefaults writes the new default back to flows.toml`` () =
         let dir = Path.Combine(tmpRoot, "savedef")
-        let ci = Path.Combine(dir, ".ci")
+        let ci = Path.Combine(dir, ".takatora")
         Directory.CreateDirectory ci |> ignore
         File.WriteAllText(
             Path.Combine(ci, "flows.toml"),

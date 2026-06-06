@@ -66,7 +66,7 @@ let private historyToJson (entries: RunHistoryEntry list) : string =
 let invokeHistory (project: string) (flowFilter: string option) (limit: int) (format: Format) : int =
     match resolveProject project with
     | None ->
-        Console.Error.WriteLine(sprintf "history: '%s' is not a registered name or a directory with .ci/" project)
+        Console.Error.WriteLine(sprintf "history: '%s' is not a registered name or a directory with .takatora/" project)
         3
     | Some root ->
         let entries =
@@ -170,7 +170,7 @@ let private showToJson (entry: RunHistoryEntry) (steps: StepSummary list) : stri
 let invokeShowRun (project: string) (runId: string) (format: Format) : int =
     match resolveProject project with
     | None ->
-        Console.Error.WriteLine(sprintf "show-run: '%s' is not a registered name or a directory with .ci/" project)
+        Console.Error.WriteLine(sprintf "show-run: '%s' is not a registered name or a directory with .takatora/" project)
         3
     | Some root ->
         match RunHistory.findRun root runId with
@@ -194,7 +194,7 @@ let invokeShowRun (project: string) (runId: string) (format: Format) : int =
 let invokeReplay (project: string) (runId: string) : int =
     match resolveProject project with
     | None ->
-        Console.Error.WriteLine(sprintf "replay-run: '%s' is not a registered name or a directory with .ci/" project)
+        Console.Error.WriteLine(sprintf "replay-run: '%s' is not a registered name or a directory with .takatora/" project)
         3
     | Some root ->
         match RunHistory.findRun root runId with

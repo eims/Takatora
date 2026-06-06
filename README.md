@@ -68,7 +68,7 @@ src/
 tests/
   Takatora.Core.Tests/
 samples/
-  sample-game/.ci/         # Sample project used for runner integration tests
+  sample-game/.takatora/         # Sample project used for runner integration tests
 ```
 
 ## License

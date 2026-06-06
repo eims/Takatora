@@ -103,7 +103,7 @@ module TaskResolver =
                 (userTasksDir: string option)
                 (builtinDir: string)
                 (taskType: string) : ResolvedTask option =
-        let projectLocal = Path.Combine(workingDir, ".ci", "tasks", $"{taskType}.fsx")
+        let projectLocal = Path.Combine(workingDir, ".takatora", "tasks", $"{taskType}.fsx")
         let userLocal = userTasksDir |> Option.map (fun d -> Path.Combine(d, $"{taskType}.fsx"))
         let builtin = Path.Combine(builtinDir, $"{taskType}.fsx")
         if File.Exists projectLocal then
@@ -124,7 +124,7 @@ module TaskResolver =
 module Run =
 
     type Options = {
-        /// Project working directory containing `.ci/`.
+        /// Project working directory containing `.takatora/`.
         WorkingDir: string
         /// Flow id from `flows.toml`.
         FlowId: string
@@ -439,7 +439,7 @@ module Run =
 
         // 2) Resolve task .fsx, fail step if not found.
         // Lookup is anchored at the project root (the dir containing
-        // `.ci/`), which may differ from `effectiveWorkingDir` when
+        // `.takatora/`), which may differ from `effectiveWorkingDir` when
         // project.toml's `working_dir` is non-".".
         match TaskResolver.resolve projectRoot opts.UserTasksDir opts.BuiltinTasksDir step.Type with
         | None ->
@@ -693,8 +693,8 @@ module Run =
     /// Used by `takatora run --dry-run` to preview what would happen.
     let plan (opts: Options) : Result<RunPlan, RunFailure> =
         let projectRoot = Path.GetFullPath(opts.WorkingDir)
-        let projectPath = Path.Combine(projectRoot, ".ci", "project.toml")
-        let flowsPath   = Path.Combine(projectRoot, ".ci", "flows.toml")
+        let projectPath = Path.Combine(projectRoot, ".takatora", "project.toml")
+        let flowsPath   = Path.Combine(projectRoot, ".takatora", "flows.toml")
         let load () =
             try
                 let p  = TomlConfig.loadProject projectPath
@@ -787,12 +787,12 @@ module Run =
     let execute (opts: Options) : Result<RunOutcome, RunFailure> =
         // Anchor everything in absolute paths so behavior doesn't depend
         // on the parent process's CWD. `projectRoot` is the dir
-        // containing `.ci/`; `effectiveWorkingDir` (resolved later) is
+        // containing `.takatora/`; `effectiveWorkingDir` (resolved later) is
         // where .fsx subprocesses run, which may differ if project.toml
         // declares a non-"." working_dir.
         let projectRoot = Path.GetFullPath(opts.WorkingDir)
-        let projectPath = Path.Combine(projectRoot, ".ci", "project.toml")
-        let flowsPath   = Path.Combine(projectRoot, ".ci", "flows.toml")
+        let projectPath = Path.Combine(projectRoot, ".takatora", "project.toml")
+        let flowsPath   = Path.Combine(projectRoot, ".takatora", "flows.toml")
 
         let load () =
             try
@@ -834,7 +834,7 @@ module Run =
                     | None -> project
 
             let runId = RunId.generate DateTimeOffset.UtcNow
-            let runDir = Path.Combine(projectRoot, ".ci", "runs", runId)
+            let runDir = Path.Combine(projectRoot, ".takatora", "runs", runId)
             Directory.CreateDirectory(runDir) |> ignore
             let eventsPath = Path.Combine(runDir, "events.ndjson")
             let logPath    = Path.Combine(runDir, "log.txt")

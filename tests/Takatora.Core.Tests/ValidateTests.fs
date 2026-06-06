@@ -22,7 +22,7 @@ let private withTempDir (action: string -> 'a) : 'a =
         try Directory.Delete(dir, recursive = true) with _ -> ()
 
 let private writeCi (workingDir: string) (projectToml: string) (flowsToml: string) =
-    let ci = Path.Combine(workingDir, ".ci")
+    let ci = Path.Combine(workingDir, ".takatora")
     Directory.CreateDirectory(ci) |> ignore
     File.WriteAllText(Path.Combine(ci, "project.toml"), projectToml)
     File.WriteAllText(Path.Combine(ci, "flows.toml"), flowsToml)
@@ -57,7 +57,7 @@ let ``run returns Valid when both files parse`` () =
 [<Fact>]
 let ``run returns MissingFile when project toml absent`` () =
     withTempDir (fun dir ->
-        // Don't create .ci/ at all.
+        // Don't create .takatora/ at all.
         match Validate.run dir with
         | Validate.MissingFile path ->
             Assert.EndsWith("project.toml", path)
@@ -66,7 +66,7 @@ let ``run returns MissingFile when project toml absent`` () =
 [<Fact>]
 let ``run returns MissingFile when flows toml absent but project present`` () =
     withTempDir (fun dir ->
-        let ci = Path.Combine(dir, ".ci")
+        let ci = Path.Combine(dir, ".takatora")
         Directory.CreateDirectory(ci) |> ignore
         File.WriteAllText(Path.Combine(ci, "project.toml"), validProjectToml)
         match Validate.run dir with
@@ -129,14 +129,14 @@ let ``format Valid yields exit 0 and prints to stdout`` () =
 
 [<Fact>]
 let ``format MissingFile yields exit 3 to stderr`` () =
-    let _, stderr, code = Validate.format (Validate.MissingFile "X/.ci/project.toml")
+    let _, stderr, code = Validate.format (Validate.MissingFile "X/.takatora/project.toml")
     Assert.Equal(3, code)
     Assert.Contains("not found", stderr)
     Assert.Contains("project.toml", stderr)
 
 [<Fact>]
 let ``format ConfigError yields exit 2 to stderr`` () =
-    let _, stderr, code = Validate.format (Validate.ConfigError ("X/.ci/flows.toml", "bad enum"))
+    let _, stderr, code = Validate.format (Validate.ConfigError ("X/.takatora/flows.toml", "bad enum"))
     Assert.Equal(2, code)
     Assert.Contains("flows.toml", stderr)
     Assert.Contains("bad enum", stderr)

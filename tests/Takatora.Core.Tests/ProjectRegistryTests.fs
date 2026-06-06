@@ -22,7 +22,7 @@ type ProjectRegistryTests() =
         ProjectRegistry.setPathForTests (Path.Combine(dir, "projects.toml"))
 
     let writeProjectAt (root: string) (name: string) =
-        let ci = Path.Combine(root, ".ci")
+        let ci = Path.Combine(root, ".takatora")
         Directory.CreateDirectory(ci) |> ignore
         File.WriteAllText(
             Path.Combine(ci, "project.toml"),
@@ -82,7 +82,7 @@ type ProjectRegistryTests() =
         | other -> Assert.Fail($"expected InvalidPath, got %A{other}")
 
     [<Fact>]
-    member _.``add on dir without .ci\project.toml returns InvalidPath`` () =
+    member _.``add on dir without .takatora\project.toml returns InvalidPath`` () =
         let projDir = Path.Combine(dir, "bare-dir")
         Directory.CreateDirectory(projDir) |> ignore
         match ProjectRegistry.add projDir None with

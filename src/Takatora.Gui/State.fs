@@ -103,7 +103,7 @@ type ProjectSubTab =
     | ProjectHistory
     | ProjectSettings
 
-/// Result of trying to read a project's `.ci/flows.toml`. The three
+/// Result of trying to read a project's `.takatora/flows.toml`. The three
 /// outcomes need distinct UX — missing file is a setup hint, parse
 /// failure is a config bug to surface, success is the happy path.
 type FlowsLoad =
@@ -153,7 +153,7 @@ type RunDialogState = {
     Error: string option
 }
 
-/// Same shape as FlowsLoad but for `.ci/project.toml`. Project info
+/// Same shape as FlowsLoad but for `.takatora/project.toml`. Project info
 /// is technically validated at `project add` time, but the file may
 /// have been edited or deleted between registration and now.
 type ProjectInfoLoad =
@@ -377,7 +377,7 @@ type Msg =
 let private engineKindsFor (projects: ProjectRegistration list) : Map<ProjectId, EngineKind> =
     projects
     |> List.choose (fun (p: ProjectRegistration) ->
-        let path = Path.Combine(p.Path, ".ci", "project.toml")
+        let path = Path.Combine(p.Path, ".takatora", "project.toml")
         if not (File.Exists path) then None
         else try Some (p.Name, (TomlConfig.loadProject path).Engine.Kind) with _ -> None)
     |> Map.ofList
@@ -558,7 +558,7 @@ let private refreshHistoryIfOpen
         Map.add pid (loadHistoryFor pid model.Projects) model.ProjectHistory
     else model.ProjectHistory
 
-/// Read and classify `.ci/flows.toml` for the given project. We keep
+/// Read and classify `.takatora/flows.toml` for the given project. We keep
 /// the three outcomes distinct because each maps to a different UX:
 /// missing → "no flows yet, here's how to add one"; error → "your
 /// flows.toml has a bug, here's the message"; ok → render the list.
@@ -569,7 +569,7 @@ let private loadFlowsFor
     match projectRoot pid projects with
     | None -> FlowsError (sprintf "Project '%s' not in registry" pid)
     | Some root ->
-        let path = Path.Combine(root, ".ci", "flows.toml")
+        let path = Path.Combine(root, ".takatora", "flows.toml")
         if not (File.Exists path) then FlowsMissing
         else
             try FlowsOk (TomlConfig.loadFlows path)
@@ -816,26 +816,26 @@ let parseSearchPaths (text: string) : string list =
 // ─── Live run tailing ───────────────────────────────────────────────
 //
 // The runner writes events.ndjson + log.txt under
-// `<root>/.ci/runs/<runId>/` while it executes (each step appends as it
+// `<root>/.takatora/runs/<runId>/` while it executes (each step appends as it
 // goes). The GUI never learns the runId — Run.execute generates it
-// internally — so we detect the new run dir by diffing `.ci/runs/`
+// internally — so we detect the new run dir by diffing `.takatora/runs/`
 // against a snapshot captured the instant before the run starts, then
 // poll that dir on a background thread, marshaling snapshots to the UI.
 
-/// Run-dir names present under `<root>/.ci/runs/` right now. Captured at
+/// Run-dir names present under `<root>/.takatora/runs/` right now. Captured at
 /// launch so the poller can spot the one this run creates.
 let private existingRunDirs (root: string) : Set<string> =
-    let runsDir = Path.Combine(root, ".ci", "runs")
+    let runsDir = Path.Combine(root, ".takatora", "runs")
     if Directory.Exists runsDir then
         Directory.GetDirectories runsDir
         |> Array.map Path.GetFileName
         |> Set.ofArray
     else Set.empty
 
-/// The newest run dir under `<root>/.ci/runs/` not present in `before`.
+/// The newest run dir under `<root>/.takatora/runs/` not present in `before`.
 /// Run ids sort lexicographically by time, so the max name is the latest.
 let private findNewRunDir (root: string) (before: Set<string>) : string option =
-    let runsDir = Path.Combine(root, ".ci", "runs")
+    let runsDir = Path.Combine(root, ".takatora", "runs")
     if not (Directory.Exists runsDir) then None
     else
         Directory.GetDirectories runsDir
@@ -912,7 +912,7 @@ let private readProgress (runDir: string) : LiveProgress =
         else all
     { RunDir = Some runDir; Steps = List.ofSeq steps; LogTail = logTail; Ended = ended }
 
-/// Same shape as `loadFlowsFor` but for `.ci/project.toml`.
+/// Same shape as `loadFlowsFor` but for `.takatora/project.toml`.
 let private loadProjectInfoFor
         (pid: ProjectId)
         (projects: ProjectRegistration list)
@@ -920,7 +920,7 @@ let private loadProjectInfoFor
     match projectRoot pid projects with
     | None -> ProjectInfoError (sprintf "Project '%s' not in registry" pid)
     | Some root ->
-        let path = Path.Combine(root, ".ci", "project.toml")
+        let path = Path.Combine(root, ".takatora", "project.toml")
         if not (File.Exists path) then ProjectInfoMissing
         else
             try ProjectInfoOk (TomlConfig.loadProject path)
@@ -1081,7 +1081,7 @@ let private editFlowsFile
     match projectRoot pid model.Projects with
     | None -> model
     | Some root ->
-        let flowsPath = Path.Combine(root, ".ci", "flows.toml")
+        let flowsPath = Path.Combine(root, ".takatora", "flows.toml")
         try
             let text = File.ReadAllText flowsPath
             let newText, ok = edit text
@@ -1388,7 +1388,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     match projectRoot d.ProjectId model.Projects with
                     | None -> run model   // unregistered/transient — just run
                     | Some root ->
-                        let flowsPath = Path.Combine(root, ".ci", "flows.toml")
+                        let flowsPath = Path.Combine(root, ".takatora", "flows.toml")
                         try
                             let text = File.ReadAllText flowsPath
                             let newText, skipped = FlowsEdit.setVarDefaults text d.FlowId changed
@@ -1820,10 +1820,10 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 withError "Directory path is required."
             else
                 try
-                    // Scaffold the dir + .ci/ (project.toml + a runnable
+                    // Scaffold the dir + .takatora/ (project.toml + a runnable
                     // starter flow), then register. Creating the dir is the
                     // whole point of the wizard — it removes the CLI's
-                    // "directory does not exist" / "no .ci/project.toml"
+                    // "directory does not exist" / "no .takatora/project.toml"
                     // friction. Existing files are never clobbered. Shared
                     // with the CLI `init` command via Core's Scaffold.
                     let absDir = Path.GetFullPath dir

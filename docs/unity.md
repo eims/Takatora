@@ -38,7 +38,7 @@ A getting-started guide for driving Unity builds from Takatora. See the
 takatora init . --name MyGame --engine unity
 ```
 
-`.ci/flows.toml` gets two Unity presets (plus `smoke`):
+`.takatora/flows.toml` gets two Unity presets (plus `smoke`):
 
 - **`build`** — batch build via `unity.build`.
 - **`clean`** — remove `Temp/` + `obj/` (`unity.clean`, `safe`).
@@ -58,7 +58,7 @@ installed.
 
 ## 3. Fill in the build preset
 
-Edit the `# ←` marked value in `.ci/flows.toml`:
+Edit the `# ←` marked value in `.takatora/flows.toml`:
 
 ```toml
 [[flow.steps]]

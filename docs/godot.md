@@ -18,7 +18,7 @@ A getting-started guide for driving Godot exports from Takatora. See the
 takatora init . --name MyGame --engine godot
 ```
 
-`.ci/flows.toml` gets two Godot presets (plus `smoke`):
+`.takatora/flows.toml` gets two Godot presets (plus `smoke`):
 
 - **`export`** — headless export via `godot.export`.
 - **`clean`** — remove the cache (`.godot/` or `.import/`) + build output
@@ -45,7 +45,7 @@ engine_path = "C:/Tools/Godot/godot.exe"
 
 ## 3. Fill in the export preset
 
-Edit the `# ←` marked value in `.ci/flows.toml` so `preset` matches a name
+Edit the `# ←` marked value in `.takatora/flows.toml` so `preset` matches a name
 from your `export_presets.cfg`:
 
 ```toml

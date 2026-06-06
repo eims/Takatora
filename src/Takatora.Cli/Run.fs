@@ -75,14 +75,14 @@ let defaultUserTasksDir () =
 
 /// Accept a CLI `<project>` argument as either a registered name (see
 /// `takatora project add`) or a filesystem path to a working dir
-/// containing `.ci/`. Returns the project root or None on miss.
+/// containing `.takatora/`. Returns the project root or None on miss.
 /// Shared by `run`, `history`, `show-run`, `replay-run`.
 let resolveProject (nameOrPath: string) : string option =
     match Takatora.Core.ProjectRegistry.find nameOrPath (Takatora.Core.ProjectRegistry.load ()) with
     | Some entry -> Some entry.Path
     | None ->
         let abs = Path.GetFullPath(nameOrPath)
-        if Directory.Exists(Path.Combine(abs, ".ci")) then Some abs
+        if Directory.Exists(Path.Combine(abs, ".takatora")) then Some abs
         else None
 
 // ─── Execute + format ─────────────────────────────────────────────
@@ -314,7 +314,7 @@ let invoke
     match resolveProject projectArg with
     | None ->
         Console.Error.WriteLine(
-            sprintf "run: '%s' is not a registered name and does not contain a .ci/ directory"
+            sprintf "run: '%s' is not a registered name and does not contain a .takatora/ directory"
                 projectArg)
         3
     | Some workingDir ->

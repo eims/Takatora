@@ -1,6 +1,6 @@
 ---
 name: takatora-run
-description: Run, inspect, and debug Takatora CI flows from the command line. Use when the user wants to run a Takatora flow, list or validate flows, inspect a task's params/outputs, dry-run a plan, override flow variables, or read run history/results for a project that has a `.ci/` directory (Takatora is a local CI for game builds — UE/Unity/Godot).
+description: Run, inspect, and debug Takatora CI flows from the command line. Use when the user wants to run a Takatora flow, list or validate flows, inspect a task's params/outputs, dry-run a plan, override flow variables, or read run history/results for a project that has a `.takatora/` directory (Takatora is a local CI for game builds — UE/Unity/Godot).
 ---
 
 # Operating Takatora from the CLI
@@ -14,7 +14,7 @@ The CLI is `takatora`. If it's vendored into a project it may be at e.g.
 `dotnet run --project src/Takatora.Cli --`. Substitute accordingly.
 
 A `<project>` argument is **either** a registered name (`takatora project list`)
-**or** a path to a working dir containing `.ci/`.
+**or** a path to a working dir containing `.takatora/`.
 
 ## Inspect before running
 
@@ -52,7 +52,7 @@ takatora run <project> <flow> [--var KEY=VALUE]... [--output-format json]
   detail: the `params` it ran with + per-step summary.
 - `takatora replay-run <project> <run-id>` — re-run with a prior run's exact
   params (secrets excluded).
-- On-disk under `run_dir` = `<project>/.ci/runs/<run-id>/`: `log.txt` (full
+- On-disk under `run_dir` = `<project>/.takatora/runs/<run-id>/`: `log.txt` (full
   log), `events.ndjson` (one JSON event per line — best for parsing
   step/run progress), `manifest.toml` (metadata + params), `outputs/`.
 

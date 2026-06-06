@@ -57,13 +57,13 @@ type ScaffoldTests() =
         let outcome = Scaffold.writeCi dir "fresh" EngineKind.Unity
         Assert.True(outcome.ProjectTomlCreated)
         Assert.True(outcome.FlowsTomlCreated)
-        Assert.True(File.Exists(Path.Combine(dir, ".ci", "project.toml")))
-        Assert.True(File.Exists(Path.Combine(dir, ".ci", "flows.toml")))
+        Assert.True(File.Exists(Path.Combine(dir, ".takatora", "project.toml")))
+        Assert.True(File.Exists(Path.Combine(dir, ".takatora", "flows.toml")))
 
     [<Fact>]
     member _.``writeCi never clobbers existing files`` () =
         let dir = Path.Combine(tmpRoot, "existing")
-        let ci = Path.Combine(dir, ".ci")
+        let ci = Path.Combine(dir, ".takatora")
         Directory.CreateDirectory ci |> ignore
         File.WriteAllText(Path.Combine(ci, "project.toml"), "# hand written")
         let outcome = Scaffold.writeCi dir "existing" EngineKind.Unreal

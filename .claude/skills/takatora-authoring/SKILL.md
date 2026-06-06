@@ -1,6 +1,6 @@
 ---
 name: takatora-authoring
-description: Write or edit Takatora CI config — define flows in .ci/flows.toml and author custom .fsx tasks with the Takatora.Tasks SDK. Use when the user wants to add/change a flow, add a step, declare flow variables, or write a custom task for a Takatora project (local CI for game builds — UE/Unity/Godot). For running/inspecting existing flows, use takatora-run instead.
+description: Write or edit Takatora CI config — define flows in .takatora/flows.toml and author custom .fsx tasks with the Takatora.Tasks SDK. Use when the user wants to add/change a flow, add a step, declare flow variables, or write a custom task for a Takatora project (local CI for game builds — UE/Unity/Godot). For running/inspecting existing flows, use takatora-run instead.
 ---
 
 # Authoring Takatora flows & custom tasks
@@ -11,7 +11,7 @@ After any change: `takatora validate <path>`, then `takatora run <path>
 `Tools/Takatora/Takatora.Cli.exe`, or `dotnet run --project src/Takatora.Cli
 --` from source.)
 
-## Flows — `<project>/.ci/flows.toml`
+## Flows — `<project>/.takatora/flows.toml`
 
 ```toml
 [[flow]]
@@ -58,7 +58,7 @@ with `takatora describe <type> --project <p>`.
 
 ## Custom task — a `.fsx`
 
-Put `<type>.fsx` in `<project>/.ci/tasks/` (project) or
+Put `<type>.fsx` in `<project>/.takatora/tasks/` (project) or
 `%APPDATA%\Takatora\tasks` (user); resolution is project → user → built-in.
 The step `type` is the filename without `.fsx`.
 
@@ -112,7 +112,7 @@ abort. This is what keeps `takatora describe` able to harvest the schema.
 Compose built-ins when a short chain reads clearly in TOML (e.g. `git.info` +
 `fs.write` to stamp). Write a `.fsx` when conditionals/formatting are clearer
 in code, or to branch on an enum (`when` can't). The repo sample
-(`samples/sample-game/.ci/flows.toml`) shows both: `package` (built-ins) vs
+(`samples/sample-game/.takatora/flows.toml`) shows both: `package` (built-ins) vs
 `package-custom` (a `pkg.stamp` .fsx) doing the same job.
 
 (Fuller human-facing docs, if this skill ships inside the Takatora repo:

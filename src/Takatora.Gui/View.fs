@@ -585,7 +585,7 @@ let private addProjectForm (form: AddProjectForm) (dispatch: Msg -> unit) : IVie
                         TextBlock.fontWeight FontWeight.SemiBold
                     ]
                     TextBlock.create [
-                        TextBlock.text "Creates the folder (if needed) and a starter .ci/project.toml, then registers it."
+                        TextBlock.text "Creates the folder (if needed) and a starter .takatora/project.toml, then registers it."
                         TextBlock.foreground mutedBrush
                         TextBlock.fontSize 12.0
                         TextBlock.textWrapping TextWrapping.Wrap
@@ -1292,7 +1292,7 @@ let private flowsBody
                     TextBlock.text
                         (match load with
                          | FlowsOk fs -> sprintf "%d flow(s)" (List.length fs)
-                         | FlowsMissing -> "(no .ci/flows.toml)"
+                         | FlowsMissing -> "(no .takatora/flows.toml)"
                          | FlowsError _ -> "(flows.toml error)")
                     TextBlock.foreground mutedBrush
                     TextBlock.verticalAlignment VerticalAlignment.Center
@@ -1349,7 +1349,7 @@ let private flowsBody
         match load with
         | FlowsMissing ->
             TextBlock.create [
-                TextBlock.text "No `.ci/flows.toml` in this project's working directory. Create one (or use the planned init/wizard) to define runnable flows."
+                TextBlock.text "No `.takatora/flows.toml` in this project's working directory. Create one (or use the planned init/wizard) to define runnable flows."
                 TextBlock.margin (Thickness 16.0)
                 TextBlock.foreground mutedBrush
                 TextBlock.textWrapping TextWrapping.Wrap
@@ -1360,7 +1360,7 @@ let private flowsBody
                 StackPanel.spacing 6.0
                 StackPanel.children [
                     TextBlock.create [
-                        TextBlock.text "Could not parse `.ci/flows.toml`:"
+                        TextBlock.text "Could not parse `.takatora/flows.toml`:"
                         TextBlock.foreground (brush "#f15a5a")
                     ]
                     TextBlock.create [
@@ -1737,8 +1737,8 @@ let private settingsBody
                 TextBlock.create [
                     TextBlock.text
                         (match load with
-                         | ProjectInfoOk _      -> "From .ci/project.toml — read-only in this slice"
-                         | ProjectInfoMissing   -> "(no .ci/project.toml)"
+                         | ProjectInfoOk _      -> "From .takatora/project.toml — read-only in this slice"
+                         | ProjectInfoMissing   -> "(no .takatora/project.toml)"
                          | ProjectInfoError _   -> "(project.toml error)")
                     TextBlock.foreground mutedBrush
                     TextBlock.verticalAlignment VerticalAlignment.Center
@@ -1760,7 +1760,7 @@ let private settingsBody
         match load with
         | ProjectInfoMissing ->
             TextBlock.create [
-                TextBlock.text "No `.ci/project.toml` under this project's working directory. The registry entry expects one — has it been moved or deleted?"
+                TextBlock.text "No `.takatora/project.toml` under this project's working directory. The registry entry expects one — has it been moved or deleted?"
                 TextBlock.margin (Thickness 16.0)
                 TextBlock.foreground mutedBrush
                 TextBlock.textWrapping TextWrapping.Wrap
@@ -1771,7 +1771,7 @@ let private settingsBody
                 StackPanel.spacing 6.0
                 StackPanel.children [
                     TextBlock.create [
-                        TextBlock.text "Could not parse `.ci/project.toml`:"
+                        TextBlock.text "Could not parse `.takatora/project.toml`:"
                         TextBlock.foreground (brush "#f15a5a")
                     ]
                     TextBlock.create [

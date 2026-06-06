@@ -2,7 +2,7 @@ namespace Takatora.Core
 
 open System.IO
 
-/// Generates and writes the starter `.ci/` tree (project.toml + flows.toml)
+/// Generates and writes the starter `.takatora/` tree (project.toml + flows.toml)
 /// for a new project. Shared by the CLI `init` command and the GUI Add-
 /// Project wizard so both emit identical, immediately-runnable scaffolding.
 [<RequireQualifiedAccess>]
@@ -159,10 +159,10 @@ module Scaffold =
         FlowsTomlCreated: bool
     }
 
-    /// Create `<dir>/.ci/` and write project.toml + flows.toml when absent.
+    /// Create `<dir>/.takatora/` and write project.toml + flows.toml when absent.
     /// Existing files are never overwritten. Returns which were created.
     let writeCi (dir: string) (name: string) (engine: EngineKind) : Outcome =
-        let ciDir = Path.Combine(dir, ".ci")
+        let ciDir = Path.Combine(dir, ".takatora")
         Directory.CreateDirectory ciDir |> ignore
         let projectPath = Path.Combine(ciDir, "project.toml")
         let flowsPath   = Path.Combine(ciDir, "flows.toml")

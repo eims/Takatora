@@ -20,7 +20,7 @@ The CLI is `takatora` (the published exe) or, from a source checkout,
 Anywhere a command takes a `<project>` / `<path>`, you can pass **either**:
 
 - a **registered name** (from `takatora project list`), or
-- a **path** to a working directory that contains a `.ci/` folder.
+- a **path** to a working directory that contains a `.takatora/` folder.
 
 So `takatora run my-game smoke` and `takatora run ./path/to/game smoke` are
 equivalent if `my-game` is registered at that path.
@@ -50,7 +50,7 @@ sample-game (unreal): valid
 ```
 
 **Inspect a task's contract** (params + outputs) as JSON. Pass `--project` so
-project-local (`.ci/tasks`) and user task overrides resolve too:
+project-local (`.takatora/tasks`) and user task overrides resolve too:
 
 ```
 takatora describe <task-type> --project <path>
@@ -108,7 +108,7 @@ takatora run <project> <flow> [--var KEY=VALUE]... [--output-format json]
   "started_at": "2026-06-06T17:23:27.82+00:00",
   "finished_at": "2026-06-06T17:23:28.87+00:00",
   "duration_sec": 1.06,
-  "run_dir": ".../.ci/runs/r-2026060617-2327-3924",
+  "run_dir": ".../.takatora/runs/r-2026060617-2327-3924",
   "steps": [
     { "id": "notify.console-1", "type": "notify.console",
       "status": "success", "duration_sec": 1.03, "outputs": {} }
@@ -131,7 +131,7 @@ takatora history <project> [--flow <id>] [--limit N] [--output-format json]
 { "runs": [ {
   "run_id": "r-2026060617-2327-3924", "flow_id": "smoke",
   "result": "success", "trigger": "cli",
-  "duration_sec": 1.058, "run_dir": ".../.ci/runs/r-..."
+  "duration_sec": 1.058, "run_dir": ".../.takatora/runs/r-..."
 } ] }
 ```
 `trigger` tells you how the run was started (e.g. `cli`).
@@ -158,7 +158,7 @@ takatora replay-run <project> <run-id>
 ```
 
 **On-disk artifacts.** Each run writes to `run_dir`
-(`<project>/.ci/runs/<run-id>/`):
+(`<project>/.takatora/runs/<run-id>/`):
 
 - `log.txt` — full combined log
 - `events.ndjson` — one JSON event per line (step start/end, run end) — best

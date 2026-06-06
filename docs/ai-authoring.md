@@ -8,7 +8,7 @@ Workflow: write → `takatora validate <path>` → `takatora run <path> <flow>
 --dry-run` → run. For custom tasks also `takatora describe <type> --project
 <path>` to confirm the schema you authored.
 
-## 1. Flows (`<project>/.ci/flows.toml`)
+## 1. Flows (`<project>/.takatora/flows.toml`)
 
 A project has one or more flows. Each is an ordered list of steps.
 
@@ -23,7 +23,7 @@ clean = { type = "bool", default = false, description = "Clean before building."
 
 [[flow.steps]]
 id = "git"                     # optional; needed if a later step references its outputs
-type = "git.info"              # the task to run (built-in or a .ci/tasks/*.fsx)
+type = "git.info"              # the task to run (built-in or a .takatora/tasks/*.fsx)
 
 [[flow.steps]]
 id = "stamp"
@@ -82,9 +82,9 @@ Write one when logic is clearer in code than in flow params: conditionals
 composition into one named step.
 
 **Where it goes / how it's named.** Put `<task-type>.fsx` in
-`<project>/.ci/tasks/` (project-local), or `%APPDATA%\Takatora\tasks` (user),
+`<project>/.takatora/tasks/` (project-local), or `%APPDATA%\Takatora\tasks` (user),
 or it's a built-in. Resolution order: **project → user → built-in**. The step's
-`type` is the filename without `.fsx` (so `.ci/tasks/pkg.stamp.fsx` → `type =
+`type` is the filename without `.fsx` (so `.takatora/tasks/pkg.stamp.fsx` → `type =
 "pkg.stamp"`).
 
 **Skeleton:**
@@ -165,7 +165,7 @@ log doesn't go silent (e.g. wrap a large zip).
 
 ### Built-in composition vs custom task — pick deliberately
 Two worked examples live in the repo sample
-(`samples/sample-game/.ci/flows.toml`): the `package` flow stamps a version
+(`samples/sample-game/.takatora/flows.toml`): the `package` flow stamps a version
 file with built-ins (`git.info` + `fs.write`); `package-custom` does the same
 stamp with one project-local `.fsx` (`pkg.stamp`). Use built-ins when a short
 composition reads clearly in TOML; reach for a `.fsx` when conditionals or

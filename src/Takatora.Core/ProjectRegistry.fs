@@ -114,16 +114,16 @@ module ProjectRegistry =
         | InvalidPath of reason: string
 
     /// Register a project. `nameHint`, if provided, overrides the
-    /// project.toml's declared name. Verifies that `<path>/.ci/project.toml`
+    /// project.toml's declared name. Verifies that `<path>/.takatora/project.toml`
     /// exists before recording anything.
     let add (path: string) (nameHint: string option) : AddOutcome =
         let absPath = Path.GetFullPath(path)
         if not (Directory.Exists absPath) then
             InvalidPath (sprintf "directory does not exist: %s" absPath)
         else
-            let projectToml = Path.Combine(absPath, ".ci", "project.toml")
+            let projectToml = Path.Combine(absPath, ".takatora", "project.toml")
             if not (File.Exists projectToml) then
-                InvalidPath (sprintf "no .ci/project.toml at %s" absPath)
+                InvalidPath (sprintf "no .takatora/project.toml at %s" absPath)
             else
                 let parsed =
                     try Some (TomlConfig.loadProject projectToml)

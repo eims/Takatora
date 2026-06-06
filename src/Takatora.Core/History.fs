@@ -7,7 +7,7 @@ open System.Text.Json
 open System.Text.Json.Nodes
 open Tomlyn.Model
 
-/// One line of run history, derived from `<wd>/.ci/runs/<id>/manifest.toml`.
+/// One line of run history, derived from `<wd>/.takatora/runs/<id>/manifest.toml`.
 /// Captures enough for listing + replay; full details still live in the
 /// run dir for show-run to render.
 type RunHistoryEntry = {
@@ -126,7 +126,7 @@ module RunHistory =
     /// All run entries for a project, newest first. Malformed manifests
     /// are silently skipped — a broken run dir shouldn't break the list.
     let load (projectRoot: string) : RunHistoryEntry list =
-        let runsDir = Path.Combine(projectRoot, ".ci", "runs")
+        let runsDir = Path.Combine(projectRoot, ".takatora", "runs")
         if not (Directory.Exists runsDir) then []
         else
             Directory.GetDirectories(runsDir)
@@ -141,7 +141,7 @@ module RunHistory =
     /// so `show-run` can render the full picture in one pass.
     let findRun (projectRoot: string) (runId: string)
             : (RunHistoryEntry * StepSummary list) option =
-        let runDir = Path.Combine(projectRoot, ".ci", "runs", runId)
+        let runDir = Path.Combine(projectRoot, ".takatora", "runs", runId)
         let manifest = Path.Combine(runDir, "manifest.toml")
         if not (File.Exists manifest) then None
         else
@@ -155,7 +155,7 @@ module RunHistory =
     /// `maxLines` only as a memory guard for a runaway log (keeping the
     /// start, where a failure usually originates). Empty if absent.
     let readLog (projectRoot: string) (runId: string) (maxLines: int) : string list =
-        let p = Path.Combine(projectRoot, ".ci", "runs", runId, "log.txt")
+        let p = Path.Combine(projectRoot, ".takatora", "runs", runId, "log.txt")
         if not (File.Exists p) then []
         else
             try
@@ -169,7 +169,7 @@ module RunHistory =
     /// rendered as a string). Used by the GUI to surface e.g. a UE package's
     /// `archive_path` so it can be opened. Missing/empty → empty map.
     let runOutputs (projectRoot: string) (runId: string) : Map<string, Map<string, string>> =
-        let outDir = Path.Combine(projectRoot, ".ci", "runs", runId, "outputs")
+        let outDir = Path.Combine(projectRoot, ".takatora", "runs", runId, "outputs")
         if not (Directory.Exists outDir) then Map.empty
         else
             Directory.GetFiles(outDir, "*.ndjson")

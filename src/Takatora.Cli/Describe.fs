@@ -8,7 +8,7 @@ open Takatora.Core
 let invoke (taskType: string) (project: string option) : int =
     let builtinDir = Run.defaultBuiltinTasksDir ()
     let sdkPath    = Run.defaultSdkAssemblyPath ()
-    // With --project, resolve project-local (.ci/tasks) + user-level
+    // With --project, resolve project-local (.takatora/tasks) + user-level
     // overrides against that root; otherwise builtin-only (cwd).
     let resolvedRoot =
         match project with
@@ -16,7 +16,7 @@ let invoke (taskType: string) (project: string option) : int =
         | Some p ->
             match Run.resolveProject p with
             | Some root -> Ok root
-            | None -> Error (sprintf "describe: project '%s' not found (registered name or a dir with .ci/)" p)
+            | None -> Error (sprintf "describe: project '%s' not found (registered name or a dir with .takatora/)" p)
     match resolvedRoot with
     | Error msg -> Console.Error.WriteLine msg; 2
     | Ok projectRoot ->
@@ -28,7 +28,7 @@ let invoke (taskType: string) (project: string option) : int =
         3
     | Some resolved ->
         // Absolute path: the describe wrapper is written to (and #loads from)
-        // a temp dir, so a project-local task resolved as ".\.ci\tasks\…"
+        // a temp dir, so a project-local task resolved as ".\.takatora\tasks\…"
         // wouldn't be found relative to that temp dir.
         match Takatora.Core.Describe.spawnJson sdkPath (Path.GetFullPath resolved.Path) taskType with
         | Error msg ->

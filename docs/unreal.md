@@ -16,7 +16,7 @@ artifacts from Takatora. See the [docs index](README.md) for the basics.
 takatora init . --name MyGame --engine unreal
 ```
 
-This writes `.ci/project.toml`:
+This writes `.takatora/project.toml`:
 
 ```toml
 [project]
@@ -27,7 +27,7 @@ working_dir = "."
 type = "unreal"
 ```
 
-and `.ci/flows.toml` with three Unreal presets (plus a `smoke` flow):
+and `.takatora/flows.toml` with three Unreal presets (plus a `smoke` flow):
 
 - **`compile`** — non-unity compile check (`ue.build_nonunity`, drives UBT
   with `-DisableUnity` to catch missing `#include`s the unity build hides).
@@ -66,7 +66,7 @@ If you must override (rare), set `engine_path` to the engine root in
 
 ## 3. Fill in the package preset
 
-Open `.ci/flows.toml` and adjust the `# ←` marked value:
+Open `.takatora/flows.toml` and adjust the `# ←` marked value:
 
 ```toml
 [[flow.steps]]

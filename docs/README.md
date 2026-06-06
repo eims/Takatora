@@ -1,7 +1,7 @@
 # Takatora documentation
 
 Takatora is local-first build automation for game development — CI without a
-CI server. You define **flows** (ordered steps) in `.ci/flows.toml`, and run
+CI server. You define **flows** (ordered steps) in `.takatora/flows.toml`, and run
 them from the CLI (`takatora`) or the desktop GUI. TOML is the source of
 truth; the GUI is an editor/runner on top of it.
 
@@ -21,7 +21,7 @@ truth; the GUI is an editor/runner on top of it.
    takatora init . --name MyGame --engine unreal   # or unity / godot
    ```
 
-   This writes `.ci/project.toml` and `.ci/flows.toml` (a runnable `smoke`
+   This writes `.takatora/project.toml` and `.takatora/flows.toml` (a runnable `smoke`
    flow plus engine-specific presets) and registers the project. Existing
    files are never overwritten. The GUI's **Add Project** wizard does the
    same thing.
@@ -61,13 +61,13 @@ skill folder into your own project's `.claude/skills/` to use it there.
 | `takatora project list \| add \| remove` | Manage the project registry |
 
 `<project>` is either a registered name or a path to a directory containing
-`.ci/`.
+`.takatora/`.
 
 ## Concepts
 
 - **Flow** — a named, ordered list of steps (`[[flow]]` in `flows.toml`).
 - **Task** — what a step runs (`type = "..."`), an `.fsx` resolved from the
-  project (`.ci/tasks/`), the user dir, or the builtins.
+  project (`.takatora/tasks/`), the user dir, or the builtins.
 - **Vars** — flow inputs (`[flow.vars]`), overridable at run time
   (`--var name=value`, or the GUI's run dialog). Referenced as
   `${vars.name}` in step params.

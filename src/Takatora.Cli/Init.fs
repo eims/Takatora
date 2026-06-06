@@ -12,7 +12,7 @@ let parseEngine (s: string) : Result<EngineKind, string> =
     | "godot"              -> Ok EngineKind.Godot
     | other -> Error (sprintf "unknown engine '%s', expected unreal | unity | godot" other)
 
-/// Scaffold a new project's `.ci/` tree (creating the directory if needed)
+/// Scaffold a new project's `.takatora/` tree (creating the directory if needed)
 /// and register it for `takatora run` lookup. Existing project.toml /
 /// flows.toml are left untouched.
 let invoke (path: string) (nameHint: string option) (engine: EngineKind) : int =
@@ -28,7 +28,7 @@ let invoke (path: string) (nameHint: string option) (engine: EngineKind) : int =
         Console.Out.WriteLine(sprintf "Scaffolded %s" outcome.CiDir)
         let note created file =
             Console.Out.WriteLine(
-                sprintf "  %s .ci/%s" (if created then "created" else "kept   ") file)
+                sprintf "  %s .takatora/%s" (if created then "created" else "kept   ") file)
         note outcome.ProjectTomlCreated "project.toml"
         note outcome.FlowsTomlCreated   "flows.toml"
 

@@ -131,7 +131,7 @@ let private infoToHuman (entry: ProjectRegistration) (project: Project option) (
                          |> Option.defaultValue ""))
         |> ignore
     | None ->
-        sb.AppendLine("Engine:   (could not parse .ci/project.toml)") |> ignore
+        sb.AppendLine("Engine:   (could not parse .takatora/project.toml)") |> ignore
     sb.AppendLine() |> ignore
     if List.isEmpty flows then
         sb.AppendLine("Flows:    (none)") |> ignore
@@ -155,8 +155,8 @@ let invokeInfo (name: string) (format: Format) : int =
     | Some entry ->
         // Best-effort load of project.toml + flows.toml — info still
         // works (with partial output) if those moved or got broken.
-        let projectToml = Path.Combine(entry.Path, ".ci", "project.toml")
-        let flowsToml   = Path.Combine(entry.Path, ".ci", "flows.toml")
+        let projectToml = Path.Combine(entry.Path, ".takatora", "project.toml")
+        let flowsToml   = Path.Combine(entry.Path, ".takatora", "flows.toml")
         let project =
             if File.Exists projectToml then
                 try Some (TomlConfig.loadProject projectToml) with _ -> None

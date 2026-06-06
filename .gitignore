@@ -37,7 +37,7 @@ Thumbs.db
 .DS_Store
 
 # Takatora runtime state in sample projects
-samples/**/.ci/runs/
+samples/**/.takatora/runs/
 
 # Local-only secrets fallback (real secrets go to OS keychain)
-**/.ci/.secrets.local
+**/.takatora/.secrets.local

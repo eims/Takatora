@@ -18,7 +18,7 @@ let main argv =
 
     // ─── init ─────────────────────────────────────────────────────
     let initPathArg = Argument<string>("path")
-    initPathArg.Description <- "Directory to scaffold a .ci/ in (created if missing; default: current dir)"
+    initPathArg.Description <- "Directory to scaffold a .takatora/ in (created if missing; default: current dir)"
     initPathArg.DefaultValueFactory <- (fun _ -> ".")
 
     let initNameOpt = Option<string>("--name")
@@ -29,7 +29,7 @@ let main argv =
     initEngineOpt.DefaultValueFactory <- (fun _ -> "unreal")
 
     let initCmd =
-        Command("init", "Scaffold a new project's .ci/ (project.toml + a starter flow) and register it")
+        Command("init", "Scaffold a new project's .takatora/ (project.toml + a starter flow) and register it")
     initCmd.Arguments.Add(initPathArg)
     initCmd.Options.Add(initNameOpt)
     initCmd.Options.Add(initEngineOpt)
@@ -46,11 +46,11 @@ let main argv =
 
     // ─── validate ─────────────────────────────────────────────────
     let validatePathArg = Argument<string>("path")
-    validatePathArg.Description <- "Project working directory containing .ci/ (default: current dir)"
+    validatePathArg.Description <- "Project working directory containing .takatora/ (default: current dir)"
     validatePathArg.DefaultValueFactory <- (fun _ -> ".")
 
     let validateCmd =
-        Command("validate", "Check that .ci/project.toml and .ci/flows.toml parse cleanly")
+        Command("validate", "Check that .takatora/project.toml and .takatora/flows.toml parse cleanly")
     validateCmd.Arguments.Add(validatePathArg)
     validateCmd.SetAction(fun (pr: ParseResult) ->
         let path = pr.GetValue(validatePathArg)
@@ -63,7 +63,7 @@ let main argv =
 
     // ─── run ──────────────────────────────────────────────────────
     let runPathArg = Argument<string>("path")
-    runPathArg.Description <- "Project working directory containing .ci/"
+    runPathArg.Description <- "Project working directory containing .takatora/"
     runPathArg.DefaultValueFactory <- (fun _ -> ".")
 
     let runFlowArg = Argument<string>("flow")
@@ -80,7 +80,7 @@ let main argv =
     runFormatOpt.Description <- "Output format: human (default) | json"
     runFormatOpt.DefaultValueFactory <- (fun _ -> "human")
 
-    let runCmd = Command("run", "Execute a flow against a project's .ci/ configuration")
+    let runCmd = Command("run", "Execute a flow against a project's .takatora/ configuration")
     runCmd.Arguments.Add(runPathArg)
     runCmd.Arguments.Add(runFlowArg)
     runCmd.Options.Add(runVarOpt)
@@ -103,7 +103,7 @@ let main argv =
 
     // ─── cancel ───────────────────────────────────────────────────
     let cancelPathArg = Argument<string>("path")
-    cancelPathArg.Description <- "Project working directory containing .ci/"
+    cancelPathArg.Description <- "Project working directory containing .takatora/"
     cancelPathArg.DefaultValueFactory <- (fun _ -> ".")
 
     let cancelRunIdArg = Argument<string>("run-id")
@@ -142,7 +142,7 @@ let main argv =
 
     // project add <path> [--name X]
     let projAddPath = Argument<string>("path")
-    projAddPath.Description <- "Path to the project working directory containing .ci/"
+    projAddPath.Description <- "Path to the project working directory containing .takatora/"
     let projAddName = Option<string>("--name")
     projAddName.Description <- "Override the registered name (default: project.toml's [project] name)"
     let projAddCmd = Command("add", "Register a project for `takatora run` lookup")
@@ -160,7 +160,7 @@ let main argv =
     let projRemoveName = Argument<string>("name")
     projRemoveName.Description <- "Registered project name (see `takatora project list`)"
     let projRemoveCmd =
-        Command("remove", "Unregister a project (does NOT delete its .ci/ directory)")
+        Command("remove", "Unregister a project (does NOT delete its .takatora/ directory)")
     projRemoveCmd.Arguments.Add(projRemoveName)
     projRemoveCmd.SetAction(fun (pr: ParseResult) ->
         Project.invokeRemove (pr.GetValue(projRemoveName)))
@@ -202,7 +202,7 @@ let main argv =
 
     // ─── history ──────────────────────────────────────────────────
     let historyProjectArg = Argument<string>("project")
-    historyProjectArg.Description <- "Registered project name OR path to a working dir with .ci/"
+    historyProjectArg.Description <- "Registered project name OR path to a working dir with .takatora/"
     let historyFlowOpt = Option<string>("--flow")
     historyFlowOpt.Description <- "Limit to runs of this flow id"
     let historyLimitOpt = Option<int>("--limit")
@@ -270,7 +270,7 @@ let main argv =
     let describeTypeArg = Argument<string>("task-type")
     describeTypeArg.Description <- "Task type (e.g. ue.build_cook_run, shell, notify.console)"
     let describeProjectOpt = Option<string>("--project")
-    describeProjectOpt.Description <- "Resolve project-local (.ci/tasks) + user task overrides against this project (name or path)"
+    describeProjectOpt.Description <- "Resolve project-local (.takatora/tasks) + user task overrides against this project (name or path)"
     let describeCmd =
         Command("describe", "Print the param + output schema for a built-in task as JSON")
     describeCmd.Arguments.Add(describeTypeArg)
