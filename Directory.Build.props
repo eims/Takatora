@@ -9,5 +9,18 @@
     <Copyright>Copyright (c) Takatora contributors</Copyright>
     <RepositoryType>git</RepositoryType>
     <NeutralLanguage>en</NeutralLanguage>
+
+    <!-- Keep build/publish output tidy enough to vendor into a game project.
+         Without these, every output dir gains 13 localization satellite
+         folders (cs/ de/ … from FSharp.Core + System.CommandLine) plus a
+         .pdb and .xml per dependency — pure noise for a bundled tool. -->
+    <!-- Drop all localization satellite assemblies (we ship English only). -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Embed debug info into each assembly instead of emitting loose .pdb. -->
+    <DebugType>embedded</DebugType>
+    <!-- Don't copy dependencies' .xml docs / .pdb next to our outputs. -->
+    <AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>
+    <CopyDocumentationFilesFromPackages>false</CopyDocumentationFilesFromPackages>
+    <CopyDebugSymbolsFilesFromPackages>false</CopyDebugSymbolsFilesFromPackages>
   </PropertyGroup>
 </Project>

@@ -29,4 +29,20 @@
     <PackageReference Include="System.CommandLine" Version="3.0.0-preview.3.26207.106" />
   </ItemGroup>
 
+  <!--
+    Keep the Tasks SDK assembly OUT of a single-file bundle so it stays a
+    loose .dll next to the exe. The .fsx task wrappers `#r` it by physical
+    path (Run.execute resolves AppContext.BaseDirectory\Takatora.Tasks.dll);
+    inside a single-file exe it would be embedded, not on disk, and FSI
+    would fail with FS0078 "file not found". Excluding it from the bundle
+    makes `dotnet publish -p:PublishSingleFile=true` emit it as a sidecar.
+  -->
+  <Target Name="KeepTasksSdkLooseInSingleFile" BeforeTargets="_ComputeFilesToBundle">
+    <ItemGroup>
+      <ResolvedFileToPublish Condition="'%(Filename)%(Extension)' == 'Takatora.Tasks.dll'">
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
 </Project>
