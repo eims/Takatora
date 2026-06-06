@@ -741,6 +741,19 @@ let effectiveEngine (settings: AppSettings) (engine: Engine) : Engine =
         | _ -> engine
     | _ -> engine
 
+/// Split a command line into (exe, args): a leading quoted path, else the
+/// first whitespace-delimited token, is the exe; the rest is the args string.
+let splitCommand (cmd: string) : string * string =
+    let s = cmd.Trim()
+    if s.StartsWith("\"") then
+        match s.IndexOf('"', 1) with
+        | q when q > 0 -> s.Substring(1, q - 1), s.Substring(q + 1).TrimStart()
+        | _ -> s.Trim('"'), ""
+    else
+        match s.IndexOf(' ') with
+        | sp when sp > 0 -> s.Substring(0, sp), s.Substring(sp + 1).TrimStart()
+        | _ -> s, ""
+
 /// Split the Godot search-paths editor text (one dir per line) into a list.
 let parseSearchPaths (text: string) : string list =
     text.Split([| '\n'; '\r' |])
@@ -1417,11 +1430,13 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | OpenInIde pid when Set.contains pid model.OpeningIde ->
         model, Cmd.none
     | OpenInIde pid ->
-        // Run the user's IDE command template (resolved by Core) through the
-        // shell so a bare exe name on PATH (code / rider64 / devenv) resolves
-        // and the template's own flags/quoting work. cmd /c "<command>" — the
-        // outer quotes guard cmd's quote-stripping when the command itself
-        // contains a quoted path.
+        // Launch the IDE the SAME way the OS shell does when the user starts it
+        // by hand — ProcessStartInfo with UseShellExecute=true (ShellExecuteEx).
+        // Launching it as our child via `cmd` ran it in a non-interactive
+        // context, which broke single-instance IDEs (Rider's DirectoryLock /
+        // OneDrive-backed .port couldn't be activated/hydrated — yet a manual
+        // launch worked). Shell-executing the resolved exe + args matches the
+        // manual path.
         let launched =
             match projectRoot pid model.Projects, Map.tryFind pid model.ProjectInfo with
             | Some root, Some (ProjectInfoOk project) ->
@@ -1430,10 +1445,10 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     match Engines.resolveIdeCommand project.Engine root template with
                     | Ok cmdLine ->
                         try
-                            let psi = System.Diagnostics.ProcessStartInfo("cmd.exe")
-                            psi.Arguments <- sprintf "/c \"%s\"" cmdLine
-                            psi.UseShellExecute <- false
-                            psi.CreateNoWindow <- true
+                            let exe, args = splitCommand cmdLine
+                            let psi = System.Diagnostics.ProcessStartInfo(exe)
+                            psi.Arguments <- args
+                            psi.UseShellExecute <- true
                             psi.WorkingDirectory <- root
                             System.Diagnostics.Process.Start(psi) |> ignore
                             true
