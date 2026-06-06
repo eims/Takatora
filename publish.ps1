@@ -1,14 +1,15 @@
 #!/usr/bin/env pwsh
 # Build vendorable, single-file Takatora bundles (CLI and/or GUI).
 #
-#   ./publish.ps1                                  -> publish/Takatora + publish/Takatora-Gui
-#   ./publish.ps1 -Target Cli                      -> CLI bundle only
-#   ./publish.ps1 -Target Gui                      -> GUI bundle only
-#   ./publish.ps1 -Dest D:\Game\Tools\Takatora     -> also copy the CLI bundle there
+#   ./publish.ps1                                  -> publish/Takatora (CLI + GUI together)
+#   ./publish.ps1 -Target Cli                      -> CLI bundle only  (publish/Takatora)
+#   ./publish.ps1 -Target Gui                      -> GUI bundle only  (publish/Takatora-Gui)
+#   ./publish.ps1 -Dest D:\Game\Tools\Takatora     -> also copy the bundle there
 #
-# Output is framework-dependent single-file (needs .NET 8 runtime on the box):
-#   CLI -> Takatora.Cli.exe + Takatora.Tasks.dll + builtin-tasks/
-#   GUI -> Takatora.Gui.exe + Takatora.Tasks.dll + builtin-tasks/
+# Output is framework-dependent single-file (needs .NET 8 runtime on the box).
+# Both exes resolve Takatora.Tasks.dll + builtin-tasks/ from their own folder,
+# so when shipping both they share ONE copy in a single folder:
+#   Takatora.Cli.exe + Takatora.Gui.exe + Takatora.Tasks.dll + builtin-tasks/
 # Takatora.Tasks.dll is kept loose (the .fsx task wrappers `#r` it by path);
 # the GUI also self-extracts its Avalonia/Skia native libs from the exe.
 param(
@@ -34,28 +35,53 @@ function Publish-Bundle([string]$Proj, [string]$Out, [string[]]$Extra) {
         -c $Configuration -r $Rid -p:SelfContained=false -p:PublishSingleFile=true @Extra `
         -o $Out | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $Proj (exit $LASTEXITCODE)" }
+}
+
+function Show-Dir([string]$Out) {
     Get-ChildItem $Out |
         Select-Object Name, @{N='Size';E={if ($_.PSIsContainer) {'<dir>'} else {'{0:N0} B' -f $_.Length}}} |
         Format-Table -AutoSize | Out-Host
 }
 
-$cliOut = Join-Path $OutputRoot "Takatora"
-$guiOut = Join-Path $OutputRoot "Takatora-Gui"
+$cliProj = "src/Takatora.Cli/Takatora.Cli.fsproj"
+$guiProj = "src/Takatora.Gui/Takatora.Gui.fsproj"
+$guiExtra = @('-p:IncludeNativeLibrariesForSelfExtract=true')  # fold native libs into the GUI exe
 
-if ($Target -in 'Cli','Both') {
-    Publish-Bundle "src/Takatora.Cli/Takatora.Cli.fsproj" $cliOut @()
-}
-if ($Target -in 'Gui','Both') {
-    # Embed Avalonia/Skia native libs so the GUI is a single exe (+ Tasks.dll).
-    Publish-Bundle "src/Takatora.Gui/Takatora.Gui.fsproj" $guiOut @('-p:IncludeNativeLibrariesForSelfExtract=true')
-    Write-Host "Launch the GUI:  $guiOut\Takatora.Gui.exe" -ForegroundColor Green
+# The folder we hand to -Dest (and announce). Set per target below.
+$mainOut = $null
+
+switch ($Target) {
+    'Cli' {
+        $mainOut = Join-Path $OutputRoot "Takatora"
+        Publish-Bundle $cliProj $mainOut @()
+        Show-Dir $mainOut
+    }
+    'Gui' {
+        $mainOut = Join-Path $OutputRoot "Takatora-Gui"
+        Publish-Bundle $guiProj $mainOut $guiExtra
+        Show-Dir $mainOut
+        Write-Host "Launch the GUI:  $mainOut\Takatora.Gui.exe" -ForegroundColor Green
+    }
+    'Both' {
+        # One shared folder. Publish the CLI (gives Takatora.Tasks.dll +
+        # builtin-tasks/), then publish the GUI to a temp and drop just its exe
+        # alongside — both share the CLI's loose Tasks.dll + builtin-tasks/.
+        $mainOut = Join-Path $OutputRoot "Takatora"
+        Publish-Bundle $cliProj $mainOut @()
+        $guiTmp = Join-Path $OutputRoot ".gui-tmp"
+        Publish-Bundle $guiProj $guiTmp $guiExtra
+        Copy-Item -Force (Join-Path $guiTmp "Takatora.Gui.exe") $mainOut
+        Remove-Item -Recurse -Force $guiTmp
+        Show-Dir $mainOut
+        Write-Host "Launch the GUI:  $mainOut\Takatora.Gui.exe" -ForegroundColor Green
+        Write-Host "Run a flow:      $mainOut\Takatora.Cli.exe run <project> <flow>" -ForegroundColor Green
+    }
 }
 
 if ($Dest) {
-    if ($Target -eq 'Gui') { throw "-Dest copies the CLI bundle, but -Target was 'Gui'" }
     if (-not [System.IO.Path]::IsPathRooted($Dest)) { $Dest = Join-Path (Get-Location) $Dest }
-    Write-Host "Copying CLI bundle to $Dest ..." -ForegroundColor Cyan
+    Write-Host "Copying bundle to $Dest ..." -ForegroundColor Cyan
     if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Force $Dest | Out-Null }
-    Copy-Item -Recurse -Force (Join-Path $cliOut '*') $Dest
+    Copy-Item -Recurse -Force (Join-Path $mainOut '*') $Dest
     Write-Host "Done -> $Dest" -ForegroundColor Green
 }
