@@ -23,6 +23,21 @@ $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 if (-not [System.IO.Path]::IsPathRooted($OutputRoot)) { $OutputRoot = Join-Path $root $OutputRoot }
 
+# A previously-published Takatora.exe running from the output dir would lock
+# its files, so the clean step (Remove-Item) below fails and the publish can't
+# complete. Stop ONLY copies launched from under $OutputRoot — leave dev builds
+# (bin/) and vendored copies elsewhere alone.
+Get-Process -Name Takatora.Cli, Takatora.Gui -ErrorAction SilentlyContinue |
+    Where-Object {
+        try { $_.MainModule.FileName.StartsWith($OutputRoot, [StringComparison]::OrdinalIgnoreCase) }
+        catch { $false }
+    } |
+    ForEach-Object {
+        Write-Host "Stopping $($_.ProcessName) running from the publish dir (pid $($_.Id))" -ForegroundColor Yellow
+        try { $_ | Stop-Process -Force } catch {}
+    }
+Start-Sleep -Milliseconds 400  # let Windows release the file handles
+
 function Publish-Bundle([string]$Proj, [string]$Out, [string[]]$Extra) {
     Write-Host "Publishing $Proj ($Configuration / $Rid, single-file) -> $Out ..." -ForegroundColor Cyan
     if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
@@ -70,7 +85,9 @@ switch ($Target) {
         Publish-Bundle $cliProj $mainOut @()
         $guiTmp = Join-Path $OutputRoot ".gui-tmp"
         Publish-Bundle $guiProj $guiTmp $guiExtra
-        Copy-Item -Force (Join-Path $guiTmp "Takatora.Gui.exe") $mainOut
+        # Explicit file destination (NOT the dir): copying a file onto a
+        # non-existent dir path would otherwise create a FILE named "Takatora".
+        Copy-Item -Force (Join-Path $guiTmp "Takatora.Gui.exe") (Join-Path $mainOut "Takatora.Gui.exe")
         Remove-Item -Recurse -Force $guiTmp
         Show-Dir $mainOut
         Write-Host "Launch the GUI:  $mainOut\Takatora.Gui.exe" -ForegroundColor Green
