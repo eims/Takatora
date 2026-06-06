@@ -41,6 +41,10 @@ truth; the GUI is an editor/runner on top of it.
 - [Unity](unity.md)
 - [Godot](godot.md)
 
+## For AI agents
+
+- [Driving Takatora from the CLI](ai-cli.md) — inspect existing flows/tasks and run them from the command line (machine-readable output)
+
 ## Common commands
 
 | Command | What it does |
