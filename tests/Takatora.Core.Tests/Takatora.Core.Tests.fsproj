@@ -20,6 +20,7 @@
     <Compile Include="SecretsTests.fs" />
     <Compile Include="ScaffoldTests.fs" />
     <Compile Include="HistoryTests.fs" />
+    <Compile Include="DescribeTests.fs" />
     <Compile Include="TasksTests.fs" />
     <Compile Include="RunTests.fs" />
     <Compile Include="Program.fs" />

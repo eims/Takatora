@@ -67,6 +67,9 @@ module internal Io =
         EnumValues: string list option
         /// File-picker filters for kind="file" (e.g. ["*.uproject"]); None otherwise.
         Filter: string list option
+        /// Author-supplied human description (via `Param.note`); shown as a
+        /// tooltip in the GUI. None until annotated.
+        Description: string option
     }
 
     let private syncRoot = obj ()
@@ -136,6 +139,15 @@ module internal Io =
 
     let registerParam (entry: ParamSchema) : unit =
         lock syncRoot (fun () -> paramSchemas <- entry :: paramSchemas)
+
+    /// Attach a description to an already-registered param (by name). Used by
+    /// `Param.note`, called after the param's own declaration in describe mode.
+    let annotateParam (name: string) (description: string) : unit =
+        lock syncRoot (fun () ->
+            paramSchemas <-
+                paramSchemas
+                |> List.map (fun p ->
+                    if p.Name = name then { p with Description = Some description } else p))
 
     let registerOutput (name: string) : unit =
         lock syncRoot (fun () ->
@@ -250,6 +262,9 @@ module internal Io =
                                 for f in fs do arr.Add(JsonValue.Create(f))
                                 entry.["filter"] <- arr
                             | None -> ()
+                            match p.Description with
+                            | Some d -> entry.["description"] <- JsonValue.Create(d)
+                            | None -> ()
                             paramsArr.Add(entry)
                         root.["params"] <- paramsArr
                         let outsArr = JsonArray()
@@ -340,6 +355,7 @@ module Param =
                 Default = None
                 EnumValues = None
                 Filter = None
+                Description = None
             }
             safeDefault<'T> ()
         else
@@ -357,6 +373,7 @@ module Param =
                 Default = defaultToNode defaultValue
                 EnumValues = None
                 Filter = None
+                Description = None
             }
             defaultValue
         else
@@ -376,6 +393,7 @@ module Param =
                 Default = None
                 EnumValues = None
                 Filter = None
+                Description = None
             }
             false
         else
@@ -394,6 +412,7 @@ module Param =
                 Default = None
                 EnumValues = Some values
                 Filter = None
+                Description = None
             }
             match values with
             | v :: _ -> v
@@ -415,7 +434,7 @@ module Param =
         if Io.isDescribeMode () then
             Io.registerParam {
                 Name = name; Kind = kind; Required = true
-                Default = None; EnumValues = None; Filter = filter
+                Default = None; EnumValues = None; Filter = filter; Description = None
             }
             ""
         else
@@ -427,7 +446,7 @@ module Param =
         if Io.isDescribeMode () then
             Io.registerParam {
                 Name = name; Kind = kind; Required = false
-                Default = defaultToNode defaultValue; EnumValues = None; Filter = filter
+                Default = defaultToNode defaultValue; EnumValues = None; Filter = filter; Description = None
             }
             defaultValue
         else
@@ -462,12 +481,19 @@ module Param =
                 Default = defaultToNode (List.toArray defaultValue)
                 EnumValues = None
                 Filter = None
+                Description = None
             }
             defaultValue
         else
             match Io.tryParam name with
             | Some node when not (isNull node) -> convert<'T[]> name node |> List.ofArray
             | _ -> defaultValue
+
+    /// Attach a human description to a previously-declared param — surfaced as
+    /// a tooltip in the GUI (Inspector / run dialog). Call it right after the
+    /// param's declaration. describe-mode only; a no-op at run time.
+    let note (name: string) (description: string) : unit =
+        if Io.isDescribeMode () then Io.annotateParam name description
 
 /// Surface step outputs to subsequent steps via NDJSON appended to
 /// `TAKATORA_OUTPUT_FILE`. Visible as `${steps.<id>.outputs.<name>}` in

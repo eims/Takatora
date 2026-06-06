@@ -204,6 +204,13 @@ type Model = {
     /// Detected IDE presets (populated on demand by the Settings "Detect"
     /// button) the user can one-click into the command template.
     IdeCandidates: IdeCandidate list
+    /// The flow step whose describe-schema Inspector is open: (project, flow
+    /// id, step index). None = no Inspector.
+    SelectedStep: (ProjectId * string * int) option
+    /// Describe schema cache, keyed by `stepSchemaKey` (task path + mtime).
+    StepSchemas: Map<string, Result<DescribeSchema, string>>
+    /// Schema keys with a describe spawn in flight (shows "inspecting…").
+    StepSchemasLoading: Set<string>
     /// Live state of every LiveRun tab the user has kicked off. Entries
     /// are added by RunFlow and removed by LiveRunCompleted (which also
     /// drops the entry if its tab has been closed).
@@ -262,6 +269,11 @@ type Msg =
     | IdesDetected of IdeCandidate list
     /// Fill the command draft from a detected IDE preset.
     | PickIdeCandidate of command:string
+    /// Open the describe-schema Inspector for a flow step (project, flow, idx).
+    | SelectStep of ProjectId * flowId:string * stepIndex:int
+    | CloseInspector
+    /// A step's describe schema finished loading (cache key + result).
+    | StepSchemaLoaded of key:string * Result<DescribeSchema, string>
     /// RunDetail log search query for a run (a find, not a filter).
     | SetRunLogFilter of ProjectId * RunId * string
     /// Move to the next / previous match of the current log search.
@@ -329,6 +341,9 @@ let init () : Model * Cmd<Msg> =
       AppSettings    = appSettings
       IdeCommandDraft = appSettings.IdeCommand |> Option.defaultValue ""
       IdeCandidates  = []
+      SelectedStep   = None
+      StepSchemas    = Map.empty
+      StepSchemasLoading = Set.empty
       LiveRuns       = Map.empty
       AddProject     = None
       CurrentProject = None
@@ -664,6 +679,22 @@ let private sdkAssemblyPath () =
 
 let private builtinTasksDir () =
     Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+
+let private userTasksDir () =
+    Path.Combine(
+        System.Environment.GetFolderPath System.Environment.SpecialFolder.ApplicationData,
+        "Takatora", "tasks")
+
+/// Resolve a step's task .fsx (+ its source: project/user/builtin) the same
+/// way the runner does. Used by the describe-driven step Inspector.
+let resolveStepTask (projectRoot: string) (taskType: string) : ResolvedTask option =
+    TaskResolver.resolve projectRoot (Some (userTasksDir ())) (builtinTasksDir ()) taskType
+
+/// Describe-schema cache key: task path + its mtime, so editing the .fsx
+/// invalidates the cached schema.
+let stepSchemaKey (path: string) : string =
+    let ticks = try (File.GetLastWriteTimeUtc path).Ticks with _ -> 0L
+    sprintf "%s|%d" path ticks
 
 // ─── Live run tailing ───────────────────────────────────────────────
 //
@@ -1372,6 +1403,46 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         { model with IdeCandidates = candidates }, Cmd.none
     | PickIdeCandidate command ->
         { model with IdeCommandDraft = command }, Cmd.none
+    | CloseInspector ->
+        { model with SelectedStep = None }, Cmd.none
+    | StepSchemaLoaded (key, res) ->
+        { model with
+            StepSchemas = Map.add key res model.StepSchemas
+            StepSchemasLoading = Set.remove key model.StepSchemasLoading }, Cmd.none
+    | SelectStep (pid, flowId, idx) ->
+        let model' = { model with SelectedStep = Some (pid, flowId, idx) }
+        // Resolve the clicked step's task; fetch its describe schema (off the
+        // UI thread) unless already cached/in-flight. Source + the form render
+        // from the cache in the view.
+        let stepTask =
+            match projectRoot pid model.Projects, Map.tryFind pid model.ProjectFlows with
+            | Some root, Some (FlowsOk flows) ->
+                flows
+                |> List.tryFind (fun f -> f.Id = flowId)
+                |> Option.bind (fun f -> List.tryItem idx f.Steps)
+                |> Option.map (fun step -> root, step)
+            | _ -> None
+        match stepTask with
+        | None -> model', Cmd.none
+        | Some (root, step) ->
+            match resolveStepTask root step.Type with
+            | None -> model', Cmd.none   // Inspector shows "task not found"
+            | Some resolved ->
+                let key = stepSchemaKey resolved.Path
+                if Map.containsKey key model.StepSchemas || Set.contains key model.StepSchemasLoading then
+                    model', Cmd.none
+                else
+                    let cmd : Cmd<Msg> =
+                        [ fun dispatch ->
+                            async {
+                                do! Async.SwitchToThreadPool ()
+                                let res =
+                                    try Describe.schema (sdkAssemblyPath ()) resolved.Path step.Type
+                                    with ex -> Error ex.Message
+                                Dispatcher.UIThread.Post(fun () -> dispatch (StepSchemaLoaded (key, res)))
+                            }
+                            |> Async.Start ]
+                    { model' with StepSchemasLoading = Set.add key model.StepSchemasLoading }, cmd
     | SetRunLogFilter (pid, runId, text) ->
         // A new query resets the match cursor to the first hit.
         { model with

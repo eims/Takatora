@@ -27,6 +27,14 @@ let archiveDir    =
     Param.optional<string> "archive_dir" (sprintf "Build/%s-%s" platform configuration)
 let extraUatArgs  = Param.optional<string[]>   "extra_uat_args" [||]
 
+// Descriptions surface as GUI tooltips (Inspector / run dialog).
+Param.note "configuration"  "Build configuration passed to UAT (-clientconfig)."
+Param.note "platform"       "Target platform, e.g. Win64 / Mac / Linux."
+Param.note "target"         "Build target (Game / Client / Server / Editor)."
+Param.note "maps"           "Maps to cook; empty uses the project's defaults."
+Param.note "archive_dir"    "Output directory for the staged/archived build."
+Param.note "extra_uat_args" "Extra args passed through to RunUAT verbatim."
+
 let archiveAbs =
     if Path.IsPathRooted archiveDir then archiveDir
     else Path.Combine(Project.workingDir, archiveDir)

@@ -76,7 +76,7 @@ module Scaffold =
             "name = \"Windows package (BuildCookRun)\""
             ""
             "[flow.vars]"
-            "configuration = { type = \"enum\", values = [\"Development\", \"DebugGame\", \"Shipping\", \"Test\"], default = \"Development\" }"
+            "configuration = { type = \"enum\", values = [\"Development\", \"DebugGame\", \"Shipping\", \"Test\"], default = \"Development\", description = \"Build configuration — Shipping for release builds.\" }"
             ""
             "[[flow.steps]]"
             "type = \"ue.build_cook_run\""

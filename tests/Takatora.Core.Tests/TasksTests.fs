@@ -353,6 +353,15 @@ type TasksSdkTests() =
             Assert.Equal("list<string>", pars.[0].Kind))
 
     [<Fact>]
+    member _.``Param.note attaches a description to its param in describe mode`` () =
+        runInDescribeMode (fun () ->
+            Param.required<string> "src" |> ignore
+            Param.note "src" "the source path"
+            let pars, _ = Io.describeSnapshot ()
+            let p = pars |> List.find (fun p -> p.Name = "src")
+            Assert.Equal<string option>(Some "the source path", p.Description))
+
+    [<Fact>]
     member _.``requiredPath returns the input value at run time`` () =
         setupInput """{"params":{"src":"C:\\work\\game"}}"""
         Assert.Equal("C:\\work\\game", Param.requiredPath "src")

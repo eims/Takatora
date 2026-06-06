@@ -167,6 +167,22 @@ configuration = { type = "enum", values = ["Development","Shipping"], default = 
     Assert.Equal(Some (TString "Shipping"), v.Default)
 
 [<Fact>]
+let ``parseFlows reads a flow var description`` () =
+    let toml = """
+[[flow]]
+id = "release"
+
+[flow.vars]
+configuration = { type = "string", default = "Dev", description = "Build configuration" }
+plain = { type = "string", default = "x" }
+"""
+    let vars = (TomlConfig.parseFlows toml).[0].Vars
+    let cfg = vars |> List.find (fun v -> v.Name = "configuration")
+    let plain = vars |> List.find (fun v -> v.Name = "plain")
+    Assert.Equal<string option>(Some "Build configuration", cfg.Description)
+    Assert.Equal<string option>(None, plain.Description)
+
+[<Fact>]
 let ``parseFlows rejects enum without values`` () =
     let toml = """
 [[flow]]

@@ -5,7 +5,7 @@ open Takatora.Core
 
 module FlowsEditTests =
 
-    let private mkVar name kind dflt : FlowVar = { Name = name; Kind = kind; Default = dflt }
+    let private mkVar name kind dflt : FlowVar = { Name = name; Kind = kind; Default = dflt; Description = None }
 
     let private sample = """# my flows — hand authored
 [[flow]]

@@ -171,7 +171,11 @@ module TomlConfig =
             match tbl.TryGetValue("default") with
             | true, v -> Some (convert v)
             | _ -> None
-        { Name = name; Kind = kind; Default = defaultVal }
+        let description =
+            match tbl.TryGetValue("description") with
+            | true, (:? string as s) when not (System.String.IsNullOrWhiteSpace s) -> Some s
+            | _ -> None
+        { Name = name; Kind = kind; Default = defaultVal; Description = description }
 
     let private reservedStepKeys = Set.ofList [ "type"; "id"; "when" ]
 

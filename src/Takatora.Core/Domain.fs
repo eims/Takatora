@@ -79,6 +79,9 @@ type FlowVar = {
     Name: string
     Kind: VarKind
     Default: TomlValue option
+    /// Optional human description (flows.toml `description = "..."`) — shown
+    /// as a tooltip on the run-dialog field. Distinct from a TOML `#` comment.
+    Description: string option
 }
 
 /// Step — "what runs". Reserved keys (type/id/when) are lifted to fields;

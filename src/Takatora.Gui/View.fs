@@ -645,9 +645,60 @@ let private projectSubTabHeader
         )
     ] :> _
 
+/// A clickable step row inside a flow card — opens the describe Inspector.
+let private stepRow
+        (pid: ProjectId)
+        (flowId: string)
+        (idx: int)
+        (step: Step)
+        (selected: bool)
+        (dispatch: Msg -> unit)
+        : IView =
+    Button.create [
+        Button.horizontalAlignment HorizontalAlignment.Stretch
+        Button.horizontalContentAlignment HorizontalAlignment.Left
+        Button.background (if selected then activeBg else transparentBrush)
+        Button.borderThickness (Thickness 0.0)
+        // Roomier vertical hit area — short/lowercase step text otherwise
+        // leaves a thin clickable strip.
+        Button.padding (Thickness(6.0, 7.0))
+        Button.minHeight 30.0
+        Button.verticalContentAlignment VerticalAlignment.Center
+        Button.cursor handCursor
+        Button.onClick ((fun _ -> dispatch (SelectStep (pid, flowId, idx))), SubPatchOptions.Always)
+        Button.content (
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 8.0
+                StackPanel.children [
+                    TextBlock.create [
+                        TextBlock.text (sprintf "%d." (idx + 1))
+                        TextBlock.foreground mutedBrush
+                        TextBlock.fontSize 12.0
+                    ]
+                    TextBlock.create [
+                        TextBlock.text step.Type
+                        TextBlock.fontSize 12.0
+                        TextBlock.fontFamily (FontFamily "Consolas, Menlo, monospace")
+                    ]
+                    (match step.When with
+                     | Some w ->
+                         TextBlock.create [
+                             TextBlock.text (sprintf "when %s" w)
+                             TextBlock.foreground mutedBrush
+                             TextBlock.fontSize 11.0
+                             TextBlock.verticalAlignment VerticalAlignment.Center
+                         ] :> IView
+                     | None -> TextBlock.create [ TextBlock.text "" ] :> IView)
+                ]
+            ]
+        )
+    ] :> _
+
 let private flowCard
         (pid: ProjectId)
         (f: Flow)
+        (selectedStep: (ProjectId * string * int) option)
         (dispatch: Msg -> unit)
         : IView =
     Border.create [
@@ -689,10 +740,17 @@ let private flowCard
                             ]
                             TextBlock.create [
                                 TextBlock.text
-                                    (sprintf "%d var(s)  ·  %d step(s)"
+                                    (sprintf "%d var(s)  ·  %d step(s)  ·  click a step to inspect"
                                         (List.length f.Vars) (List.length f.Steps))
                                 TextBlock.foreground mutedBrush
                                 TextBlock.fontSize 12.0
+                            ]
+                            StackPanel.create [
+                                StackPanel.margin (Thickness(0.0, 4.0, 0.0, 0.0))
+                                StackPanel.children [
+                                    for i, s in List.indexed f.Steps ->
+                                        stepRow pid f.Id i s (selectedStep = Some (pid, f.Id, i)) dispatch
+                                ]
                             ]
                         ]
                     ]
@@ -701,11 +759,191 @@ let private flowCard
         )
     ] :> _
 
-let private flowsBody
+/// A colored chip showing where a task resolved from.
+let private taskSourceBadge (src: TaskSource) : IView =
+    let label, color =
+        match src with
+        | TaskSource.ProjectLocal -> "project", brush "#C58AF0"
+        | TaskSource.UserLocal    -> "user",    brush "#E0902F"
+        | TaskSource.Builtin      -> "builtin", brush "#6FB86F"
+    Border.create [
+        Border.background color
+        Border.cornerRadius 3.0
+        Border.padding (Thickness(6.0, 1.0))
+        Border.verticalAlignment VerticalAlignment.Center
+        Border.child (
+            TextBlock.create [
+                TextBlock.text label
+                TextBlock.foreground (brush "#0A0A0A")
+                TextBlock.fontSize 11.0
+            ])
+    ] :> IView
+
+/// One param row in the Inspector's auto-generated (read-only) form.
+let private schemaParamRow (p: DescribeParam) : IView =
+    DockPanel.create [
+        yield DockPanel.margin (Thickness(0.0, 2.0))
+        // Transparent background → the whole row is hover-sensitive for the tooltip.
+        yield DockPanel.background transparentBrush
+        // Embedded description (task's `Param.note`) → hover tooltip.
+        match p.Description with
+        | Some d -> yield ToolTip.tip d
+        | None -> ()
+        yield DockPanel.children [
+            TextBlock.create [
+                DockPanel.dock Dock.Left
+                TextBlock.text p.Name
+                TextBlock.width 130.0
+                TextBlock.fontFamily (FontFamily "Consolas, Menlo, monospace")
+                TextBlock.fontSize 12.0
+            ]
+            TextBlock.create [
+                TextBlock.text (
+                    let kind = if p.Required then sprintf "%s (required)" p.Kind else p.Kind
+                    match p.Default with
+                    | Some d when d <> "" -> sprintf "%s · default: %s" kind d
+                    | _ -> kind)
+                TextBlock.foreground mutedBrush
+                TextBlock.fontSize 12.0
+                TextBlock.textWrapping TextWrapping.Wrap
+            ]
+        ]
+    ] :> IView
+
+/// The describe-driven, read-only Inspector for a selected flow step.
+let private stepInspector
         (pid: ProjectId)
-        (load: FlowsLoad)
+        (projectRoot: string)
+        (flowId: string)
+        (idx: int)
+        (model: Model)
         (dispatch: Msg -> unit)
         : IView =
+    let stepOpt =
+        match Map.tryFind pid model.ProjectFlows with
+        | Some (FlowsOk flows) ->
+            flows
+            |> List.tryFind (fun f -> f.Id = flowId)
+            |> Option.bind (fun f -> List.tryItem idx f.Steps)
+        | _ -> None
+    let title =
+        match stepOpt with
+        | Some s -> sprintf "Step %d: %s" (idx + 1) s.Type
+        | None -> "Step"
+    let bodyChildren : IView list =
+        match stepOpt with
+        | None -> [ TextBlock.create [ TextBlock.text "(step no longer exists)"; TextBlock.foreground mutedBrush ] :> IView ]
+        | Some step ->
+            match State.resolveStepTask projectRoot step.Type with
+            | None ->
+                [ TextBlock.create [
+                    TextBlock.text (sprintf "task '%s' not found (no project, user, or builtin match)" step.Type)
+                    TextBlock.foreground mutedBrush
+                    TextBlock.textWrapping TextWrapping.Wrap ] :> IView ]
+            | Some resolved ->
+                let key = State.stepSchemaKey resolved.Path
+                let schemaView : IView =
+                    if Set.contains key model.StepSchemasLoading then
+                        TextBlock.create [ TextBlock.text "inspecting… (running describe)"; TextBlock.foreground mutedBrush ] :> IView
+                    else
+                        match Map.tryFind key model.StepSchemas with
+                        | Some (Ok schema) ->
+                            StackPanel.create [
+                                StackPanel.spacing 4.0
+                                StackPanel.children [
+                                    sectionHeader "Parameters"
+                                    (if List.isEmpty schema.Params then
+                                        TextBlock.create [ TextBlock.text "(no params)"; TextBlock.foreground mutedBrush; TextBlock.fontSize 12.0 ] :> IView
+                                     else
+                                        StackPanel.create [ StackPanel.children [ for p in schema.Params -> schemaParamRow p ] ] :> IView)
+                                    sectionHeader "Outputs"
+                                    (if List.isEmpty schema.Outputs then
+                                        TextBlock.create [ TextBlock.text "(none declared at top level)"; TextBlock.foreground mutedBrush; TextBlock.fontSize 12.0 ] :> IView
+                                     else
+                                        TextBlock.create [
+                                            TextBlock.text (String.concat ", " schema.Outputs)
+                                            TextBlock.foreground dimBrush
+                                            TextBlock.fontSize 12.0
+                                            TextBlock.textWrapping TextWrapping.Wrap ] :> IView)
+                                ]
+                            ] :> IView
+                        | Some (Error e) ->
+                            StackPanel.create [
+                                StackPanel.spacing 4.0
+                                StackPanel.children [
+                                    TextBlock.create [ TextBlock.text "describe failed:"; TextBlock.foreground (brush "#f15a5a"); TextBlock.fontSize 12.0 ]
+                                    TextBlock.create [ TextBlock.text e; TextBlock.foreground dimBrush; TextBlock.fontSize 11.0; TextBlock.textWrapping TextWrapping.Wrap ]
+                                ]
+                            ] :> IView
+                        | None ->
+                            TextBlock.create [ TextBlock.text "…"; TextBlock.foreground mutedBrush ] :> IView
+                [ StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing 8.0
+                    StackPanel.children [
+                        TextBlock.create [ TextBlock.text "source:"; TextBlock.foreground mutedBrush; TextBlock.fontSize 12.0; TextBlock.verticalAlignment VerticalAlignment.Center ]
+                        taskSourceBadge resolved.Source
+                    ] ] :> IView
+                  (match step.When with
+                   | Some w ->
+                       TextBlock.create [
+                           TextBlock.text (sprintf "when: %s" w)
+                           TextBlock.foreground mutedBrush
+                           TextBlock.fontSize 12.0
+                           TextBlock.margin (Thickness(0.0, 4.0, 0.0, 0.0)) ] :> IView
+                   | None -> TextBlock.create [ TextBlock.text "" ] :> IView)
+                  schemaView ]
+    Border.create [
+        DockPanel.dock Dock.Right
+        Border.width 360.0
+        Border.background (brush "#1b1b1b")
+        Border.borderBrush stripBorder
+        Border.borderThickness (Thickness(1.0, 0.0, 0.0, 0.0))
+        Border.padding (Thickness 12.0)
+        Border.child (
+            DockPanel.create [
+                DockPanel.children [
+                    DockPanel.create [
+                        DockPanel.dock Dock.Top
+                        DockPanel.children [
+                            Button.create [
+                                DockPanel.dock Dock.Right
+                                Button.content "✕"
+                                Button.background transparentBrush
+                                Button.borderThickness (Thickness 0.0)
+                                Button.cursor handCursor
+                                Button.onClick ((fun _ -> dispatch CloseInspector), SubPatchOptions.Always)
+                            ]
+                            TextBlock.create [
+                                TextBlock.text title
+                                TextBlock.fontWeight FontWeight.SemiBold
+                                TextBlock.fontSize 14.0
+                                TextBlock.verticalAlignment VerticalAlignment.Center
+                            ]
+                        ]
+                    ]
+                    ScrollViewer.create [
+                        ScrollViewer.content (
+                            StackPanel.create [
+                                StackPanel.spacing 4.0
+                                StackPanel.margin (Thickness(0.0, 10.0, 0.0, 0.0))
+                                StackPanel.children bodyChildren
+                            ]
+                        )
+                    ]
+                ]
+            ]
+        )
+    ] :> IView
+
+let private flowsBody
+        (pid: ProjectId)
+        (projectRoot: string)
+        (model: Model)
+        (dispatch: Msg -> unit)
+        : IView =
+    let load = Map.tryFind pid model.ProjectFlows |> Option.defaultValue FlowsMissing
+    let selectedStep = model.SelectedStep
     let header =
         StackPanel.create [
             DockPanel.dock Dock.Top
@@ -761,16 +999,30 @@ let private flowsBody
                 TextBlock.textWrapping TextWrapping.Wrap
             ] :> _
         | FlowsOk fs ->
-            ScrollViewer.create [
-                ScrollViewer.content (
-                    StackPanel.create [
-                        StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
-                        StackPanel.spacing 6.0
-                        StackPanel.children [
-                            for f in fs -> flowCard pid f dispatch
+            let list =
+                ScrollViewer.create [
+                    ScrollViewer.content (
+                        StackPanel.create [
+                            StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
+                            StackPanel.spacing 6.0
+                            StackPanel.children [
+                                for f in fs -> flowCard pid f selectedStep dispatch
+                            ]
                         ]
-                    ]
-                )
+                    )
+                ]
+            // Dock the Inspector to the right when a step in THIS project is
+            // selected and still points at a real flow.
+            let inspector : IView option =
+                match selectedStep with
+                | Some (sp, fid, idx) when sp = pid && List.exists (fun (f: Flow) -> f.Id = fid) fs ->
+                    Some (stepInspector pid projectRoot fid idx model dispatch)
+                | _ -> None
+            DockPanel.create [
+                DockPanel.children [
+                    match inspector with Some i -> yield i | None -> ()
+                    yield list
+                ]
             ] :> _
     DockPanel.create [
         DockPanel.children [
@@ -1363,10 +1615,7 @@ let private projectView
                 projectSubTabHeader pid active dispatch
                 (match active with
                  | ProjectFlows    ->
-                     let load =
-                         Map.tryFind pid model.ProjectFlows
-                         |> Option.defaultValue FlowsMissing
-                     flowsBody pid load dispatch
+                     flowsBody pid p.Path model dispatch
                  | ProjectHistory  ->
                      let entries =
                          Map.tryFind pid model.ProjectHistory
@@ -2246,8 +2495,16 @@ let private runDialogField
                 TextBox.onTextChanged (fun s -> dispatch (RunDialogSetValue (v.Name, s)))
             ] :> _
     DockPanel.create [
-        DockPanel.margin (Thickness(0.0, 0.0, 0.0, 10.0))
-        DockPanel.children [ label; widget ]
+        yield DockPanel.margin (Thickness(0.0, 0.0, 0.0, 10.0))
+        // A transparent background makes the WHOLE row (incl. gaps) hit-test
+        // visible, so the tooltip triggers anywhere on the row — not only
+        // directly over the label glyphs / controls.
+        yield DockPanel.background transparentBrush
+        // Embedded description (flows.toml `description = "..."`) → hover tooltip.
+        match v.Description with
+        | Some d -> yield ToolTip.tip d
+        | None -> ()
+        yield DockPanel.children [ label; widget ]
     ] :> _
 
 let private runParamsDialog (d: RunDialogState) (dispatch: Msg -> unit) : IView =

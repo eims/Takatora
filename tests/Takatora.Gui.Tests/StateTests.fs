@@ -63,6 +63,9 @@ type StateTests() =
           AppSettings    = AppSettings.empty
           IdeCommandDraft = ""
           IdeCandidates  = []
+          SelectedStep   = None
+          StepSchemas    = Map.empty
+          StepSchemasLoading = Set.empty
           LiveRuns       = Map.empty
           AddProject     = None
           CurrentProject = None
@@ -113,7 +116,7 @@ type StateTests() =
         { Name = name; Path = pdir; AddedAt = DateTimeOffset.UtcNow }
 
     let mkVar (name: string) (kind: VarKind) (dflt: TomlValue option) : FlowVar =
-        { Name = name; Kind = kind; Default = dflt }
+        { Name = name; Kind = kind; Default = dflt; Description = None }
 
     /// A model with one project flow cached, carrying the given vars.
     let modelWithFlow (pid: string) (flowId: string) (vars: FlowVar list) : Model =
@@ -901,9 +904,9 @@ type StateTests() =
         let flow =
             { Id = "f"; Name = None
               Vars =
-                [ { Name = "clean";  Kind = VarKind.Bool;   Default = None }
-                  { Name = "upload"; Kind = VarKind.Bool;   Default = None }   // not referenced
-                  { Name = "branch"; Kind = VarKind.String; Default = None } ] // referenced but not bool
+                [ { Name = "clean";  Kind = VarKind.Bool;   Default = None; Description = None }
+                  { Name = "upload"; Kind = VarKind.Bool;   Default = None; Description = None }   // not referenced
+                  { Name = "branch"; Kind = VarKind.String; Default = None; Description = None } ] // referenced but not bool
               Steps =
                 [ { Id = Some "c"; Type = "ue.clean"; When = Some "${vars.clean}"; Params = Map.empty }
                   { Id = Some "b"; Type = "git.pull"; When = Some "${vars.branch}"; Params = Map.empty } ] }
@@ -914,8 +917,8 @@ type StateTests() =
         let flow =
             { Id = "rel"; Name = None
               Vars =
-                [ { Name = "clean"; Kind = VarKind.Bool; Default = Some (TBool false) }
-                  { Name = "cfg";   Kind = VarKind.String; Default = None } ]
+                [ { Name = "clean"; Kind = VarKind.Bool; Default = Some (TBool false); Description = None }
+                  { Name = "cfg";   Kind = VarKind.String; Default = None; Description = None } ]
               Steps = [ { Id = Some "c"; Type = "ue.clean"; When = Some "${vars.clean}"; Params = Map.empty } ] }
         let model = { baseModel with ProjectFlows = Map.ofList [ "p1", FlowsOk [ flow ] ] }
         let m = apply (RequestRun ("p1", "rel")) model
