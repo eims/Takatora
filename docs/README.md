@@ -44,6 +44,11 @@ truth; the GUI is an editor/runner on top of it.
 ## For AI agents
 
 - [Driving Takatora from the CLI](ai-cli.md) — inspect existing flows/tasks and run them from the command line (machine-readable output)
+- [Authoring flows & custom tasks](ai-authoring.md) — write `flows.toml` and custom `.fsx` tasks (Takatora.Tasks SDK)
+
+Both also ship as self-contained Claude Code skills under `.claude/skills/`
+(`takatora-run`, `takatora-authoring`) — auto-active in this repo, or copy a
+skill folder into your own project's `.claude/skills/` to use it there.
 
 ## Common commands
 
