@@ -175,6 +175,20 @@ Lists detected UE / Unity / Godot installs. Useful before running a flow that
 needs an engine — if the flow's engine isn't found, the run will fail at the
 engine step.
 
+## Known limitation: sandboxed hosts (MSIX)
+
+If you are running Takatora from **inside a packaged / MSIX-sandboxed host**
+(e.g. an AI tool installed from the Microsoft Store), engine builds can fail
+in a confusing way: spawned engine tools like Unreal's **UAT write logs under
+`%APPDATA%` / `%LOCALAPPDATA%`, and the sandbox blocks or virtualizes those
+writes**, so the tool exits non-zero before doing useful work. Symptom: a
+`ue.*` step fails early with an AppData/log write or path error.
+
+The reliable fix is to **run the build outside the sandbox** (e.g. approve
+external execution of the same Takatora command). This mostly affects engine
+builds; lightweight flows (shell, fs.*, notify) are usually unaffected. It's a
+host-sandbox limitation, not a Takatora or project misconfiguration.
+
 ## Quick recipe for an agent
 
 1. `takatora project list` → find the project (or use a path).

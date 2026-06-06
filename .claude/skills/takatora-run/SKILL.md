@@ -72,5 +72,15 @@ If a flow's engine isn't found, the run fails at the engine step.
 6. On failure: read `run_dir/log.txt` (or `events.ndjson`), or
    `show-run <p> <run-id> --output-format json`.
 
+## Note: sandboxed hosts (MSIX)
+
+If you're running inside a packaged/MSIX-sandboxed host (e.g. a Store-installed
+AI tool), engine builds may fail because spawned tools like Unreal's UAT can't
+write logs under `%APPDATA%`/`%LOCALAPPDATA%` (the sandbox blocks/virtualizes
+those writes) — a `ue.*` step fails early with an AppData/log path error. Fix:
+**run the build outside the sandbox** (approve external execution). Lightweight
+flows (shell, fs.*, notify) are usually fine. This is a host limitation, not a
+Takatora/config problem.
+
 (Fuller human-facing docs, if this skill ships inside the Takatora repo:
 `docs/ai-cli.md`.)
