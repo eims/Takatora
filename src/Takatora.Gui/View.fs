@@ -44,6 +44,12 @@ let private transparentBrush = Brushes.Transparent :> IBrush
 // Semi-transparent scrim behind the run-parameters modal (AARRGGBB).
 let private overlayBg   = brush "#aa101010"
 let private errorBrush  = brush "#f15a5a"
+// Watch status colors: green = armed & will fire, yellow = enabled but
+// nothing armed (idle), red = globally paused. Reused for the strip pill,
+// the per-project pill, and the project-list dot.
+let private watchGreen  = brush "#4ec97a"
+let private watchYellow = brush "#e0b341"
+let private watchRed    = brush "#f15a5a"
 
 let private handCursor = new Cursor(StandardCursorType.Hand)
 
@@ -271,6 +277,48 @@ let private projectSelector (model: Model) (dispatch: Msg -> unit) : IView =
             ]
         ] :> _
 
+/// Always-visible global watch master at the right of the strip: a green/red
+/// dot + label (Watching N / Idle / Paused). Click toggles WatchEnabled — the
+/// GUI-side twin of the tray's Pause/Resume item.
+let private watchStatusPill (model: Model) (dispatch: Msg -> unit) : IView =
+    let count = State.activeWatchCount model
+    let dot, label =
+        if not model.WatchEnabled then watchRed, "Paused"
+        elif count > 0 then watchGreen, sprintf "Watching %d" count
+        else watchYellow, "Idle"
+    Button.create [
+        DockPanel.dock Dock.Right
+        Button.margin (Thickness(6.0, 0.0))
+        Button.padding (Thickness(10.0, 4.0))
+        Button.background transparentBrush
+        Button.borderThickness (Thickness 0.0)
+        Button.verticalAlignment VerticalAlignment.Center
+        Button.cursor handCursor
+        ToolTip.tip
+            (if model.WatchEnabled then "Watching enabled — click to pause all"
+             else "Watching paused — click to resume")
+        Button.content (
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 6.0
+                StackPanel.children [
+                    TextBlock.create [
+                        TextBlock.text "●"
+                        TextBlock.fontSize 11.0
+                        TextBlock.verticalAlignment VerticalAlignment.Center
+                        TextBlock.foreground dot
+                    ]
+                    TextBlock.create [
+                        TextBlock.text label
+                        TextBlock.fontSize 12.0
+                        TextBlock.verticalAlignment VerticalAlignment.Center
+                        TextBlock.foreground dimBrush
+                    ]
+                ]
+            ])
+        Button.onClick ((fun _ -> dispatch ToggleGlobalWatch), SubPatchOptions.Always)
+    ] :> _
+
 let private rootTabStrip (model: Model) (dispatch: Msg -> unit) : IView =
     Border.create [
         DockPanel.dock Dock.Top
@@ -305,6 +353,9 @@ let private rootTabStrip (model: Model) (dispatch: Msg -> unit) : IView =
                                     ] :> IView
                         ]
                     ]
+                    // Global watch master, pinned to the right edge — always
+                    // visible so the user can see/toggle watching from any tab.
+                    watchStatusPill model dispatch
                     // Per-run chips scroll horizontally when they overflow.
                     // The visible bar is hidden (Fluent's overlay bar is thick
                     // and covers the chip text); horizontal scroll is driven by
@@ -339,6 +390,8 @@ let private rootTabStrip (model: Model) (dispatch: Msg -> unit) : IView =
 let private projectRow
         (p: ProjectRegistration)
         (engineKind: EngineKind option)
+        (watch: WatchInfo option)
+        (globalEnabled: bool)
         (dispatch: Msg -> unit)
         : IView =
     Border.create [
@@ -354,6 +407,45 @@ let private projectRow
                         Button.onClick (fun _ -> dispatch (OpenProject p.Name))
                         Button.verticalAlignment VerticalAlignment.Center
                     ]
+                    // Per-project watch control, mirroring the Flows-tab pill —
+                    // shown only when this project has a watched flow. Lets you
+                    // pause/resume a project's watch straight from the list.
+                    (match watch with
+                     | Some w ->
+                        let dot, tip =
+                            if not w.Enabled then watchRed, "Watch paused — click to resume"
+                            elif not globalEnabled then watchYellow, "Armed, but global watching is paused"
+                            else watchGreen, "Watching — click to pause"
+                        Button.create [
+                            DockPanel.dock Dock.Right
+                            Button.background transparentBrush
+                            Button.borderThickness (Thickness 0.0)
+                            Button.verticalAlignment VerticalAlignment.Center
+                            Button.margin (Thickness(0.0, 0.0, 8.0, 0.0))
+                            Button.cursor handCursor
+                            ToolTip.tip tip
+                            Button.content (
+                                StackPanel.create [
+                                    StackPanel.orientation Orientation.Horizontal
+                                    StackPanel.spacing 5.0
+                                    StackPanel.children [
+                                        TextBlock.create [
+                                            TextBlock.text "●"
+                                            TextBlock.fontSize 11.0
+                                            TextBlock.verticalAlignment VerticalAlignment.Center
+                                            TextBlock.foreground dot
+                                        ]
+                                        TextBlock.create [
+                                            TextBlock.text w.FlowId
+                                            TextBlock.fontSize 12.0
+                                            TextBlock.verticalAlignment VerticalAlignment.Center
+                                            TextBlock.foreground dimBrush
+                                        ]
+                                    ]
+                                ])
+                            Button.onClick ((fun _ -> dispatch (ToggleProjectWatch p.Name)), SubPatchOptions.Always)
+                        ] :> IView
+                     | None -> TextBlock.create [ TextBlock.text ""; DockPanel.dock Dock.Right ] :> IView)
                     StackPanel.create [
                         StackPanel.children [
                             TextBlock.create [
@@ -580,7 +672,8 @@ let private homeBody (model: Model) (dispatch: Msg -> unit) : IView =
                 StackPanel.spacing 6.0
                 StackPanel.children [
                     for p in model.Projects ->
-                        projectRow p (Map.tryFind p.Name model.ProjectEngines) dispatch
+                        projectRow p (Map.tryFind p.Name model.ProjectEngines)
+                            (Map.tryFind p.Name model.Watches) model.WatchEnabled dispatch
                 ]
             ] :> _
     ScrollViewer.create [
@@ -770,6 +863,7 @@ let private flowCard
         (expanded: bool)
         (editing: bool)
         (isWatched: bool)
+        (watchEffective: bool)
         (addStepDraft: string)
         (dispatch: Msg -> unit)
         : IView =
@@ -787,12 +881,20 @@ let private flowCard
                         Button.onClick ((fun _ -> dispatch (RequestRun (pid, f.Id))), SubPatchOptions.Always)
                     ]
                     // Watch toggle: auto-run this flow on new git commits.
+                    // When watched but suppressed (project/global paused) the
+                    // label says so and dims, so "set but won't fire" is clear.
                     Button.create [
                         DockPanel.dock Dock.Right
-                        Button.content (if isWatched then "● Watching" else "Watch")
+                        Button.content
+                            (if not isWatched then "Watch"
+                             elif watchEffective then "● Watching"
+                             else "○ Watching (paused)")
                         Button.margin (Thickness(0.0, 0.0, 8.0, 0.0))
                         Button.verticalAlignment VerticalAlignment.Center
-                        Button.foreground (if isWatched then accent else dimBrush)
+                        Button.foreground
+                            (if not isWatched then dimBrush
+                             elif watchEffective then watchGreen
+                             else mutedBrush)
                         Button.onClick ((fun _ -> dispatch (ToggleWatch (pid, f.Id))), SubPatchOptions.Always)
                     ]
                     // Edit toggle only once expanded.
@@ -1156,7 +1258,7 @@ let private flowsBody
             StackPanel.margin (Thickness(16.0, 12.0))
             StackPanel.spacing 12.0
             StackPanel.children [
-                TextBlock.create [
+                yield TextBlock.create [
                     TextBlock.text
                         (match load with
                          | FlowsOk fs -> sprintf "%d flow(s)" (List.length fs)
@@ -1164,11 +1266,53 @@ let private flowsBody
                          | FlowsError _ -> "(flows.toml error)")
                     TextBlock.foreground mutedBrush
                     TextBlock.verticalAlignment VerticalAlignment.Center
-                ]
-                Button.create [
+                ] :> IView
+                yield Button.create [
                     Button.content "Refresh"
                     Button.onClick (fun _ -> dispatch (RefreshFlows pid))
-                ]
+                ] :> IView
+                // Per-project watch on/off — shown only when a flow in this
+                // project is watched. Pauses/resumes this project's watch while
+                // keeping which flow it watches; dims when global is off too.
+                match Map.tryFind pid model.Watches with
+                | Some w ->
+                    // green = firing, red = this project paused, yellow =
+                    // armed but globally suppressed.
+                    let dot, label =
+                        if not w.Enabled then watchRed, sprintf "Paused (%s)" w.FlowId
+                        elif not model.WatchEnabled then watchYellow, sprintf "Suppressed (%s)" w.FlowId
+                        else watchGreen, sprintf "Watching %s" w.FlowId
+                    yield Button.create [
+                        Button.background transparentBrush
+                        Button.borderThickness (Thickness 0.0)
+                        Button.verticalAlignment VerticalAlignment.Center
+                        Button.cursor handCursor
+                        ToolTip.tip
+                            (if not w.Enabled then "This project's watch is paused — click to resume"
+                             elif not model.WatchEnabled then "Armed, but global watching is paused"
+                             else "Watching this project — click to pause")
+                        Button.content (
+                            StackPanel.create [
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.spacing 6.0
+                                StackPanel.children [
+                                    TextBlock.create [
+                                        TextBlock.text "●"
+                                        TextBlock.fontSize 11.0
+                                        TextBlock.verticalAlignment VerticalAlignment.Center
+                                        TextBlock.foreground dot
+                                    ]
+                                    TextBlock.create [
+                                        TextBlock.text label
+                                        TextBlock.fontSize 12.0
+                                        TextBlock.verticalAlignment VerticalAlignment.Center
+                                        TextBlock.foreground dimBrush
+                                    ]
+                                ]
+                            ])
+                        Button.onClick ((fun _ -> dispatch (ToggleProjectWatch pid)), SubPatchOptions.Always)
+                    ] :> IView
+                | None -> ()
             ]
         ]
     let body : IView =
@@ -1217,7 +1361,8 @@ let private flowsBody
                                 let editing  = Set.contains (pid, f.Id) model.EditingFlows
                                 let isWatched =
                                     (Map.tryFind pid model.Watches |> Option.map (fun w -> w.FlowId)) = Some f.Id
-                                flowCard pid f selectedStep expanded editing isWatched draft dispatch
+                                let watchEff = isWatched && State.watchEffective model pid
+                                flowCard pid f selectedStep expanded editing isWatched watchEff draft dispatch
                             ]
                         ]
                     )

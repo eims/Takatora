@@ -43,12 +43,12 @@ type MainWindow() as this =
         |> Program.run
 
 /// A small generated tray icon (no .ico asset in the repo): a rounded accent
-/// square. Falls back to None if rendering isn't available.
-let private trayIcon () : WindowIcon option =
+/// square in the given color. Falls back to None if rendering isn't available.
+let private trayIcon (hex: string) : WindowIcon option =
     try
         let rtb = new RenderTargetBitmap(PixelSize(32, 32), Vector(96.0, 96.0))
         use ctx = rtb.CreateDrawingContext()
-        ctx.FillRectangle(SolidColorBrush(Color.Parse "#3d8bfd"), Rect(0.0, 0.0, 32.0, 32.0), 6.0f)
+        ctx.FillRectangle(SolidColorBrush(Color.Parse hex), Rect(0.0, 0.0, 32.0, 32.0), 6.0f)
         let ms = new MemoryStream()
         rtb.Save(ms)
         ms.Position <- 0L
@@ -77,20 +77,53 @@ type App() =
                 win.Activate() |> ignore
 
             let tray = new TrayIcon()
-            trayIcon () |> Option.iter (fun i -> tray.Icon <- i)
+            // green = armed & firing, yellow = enabled but nothing armed
+            // (idle), red = globally paused. Pre-rendered so updates are cheap.
+            let greenIcon  = trayIcon "#4ec97a"
+            let yellowIcon = trayIcon "#e0b341"
+            let redIcon    = trayIcon "#f15a5a"
+            yellowIcon |> Option.iter (fun i -> tray.Icon <- i)
             tray.ToolTipText <- Version.Product
             tray.Clicked.Add(fun _ -> showWindow ())
             let menu = NativeMenu()
             let showItem = NativeMenuItem("Show")
             showItem.Click.Add(fun _ -> showWindow ())
+            // Watch master toggle — flips the global WatchEnabled via the model.
+            let watchItem = NativeMenuItem("Pause watching")
+            watchItem.Click.Add(fun _ -> TrayBridge.requestToggleGlobal ())
+            // A disabled info line above it ("Watching: N" / "Idle" / "Paused").
+            let watchInfo = NativeMenuItem("Watching: 0")
+            watchInfo.IsEnabled <- false
             let quitItem = NativeMenuItem("Quit")
             quitItem.Click.Add(fun _ ->
                 quitting <- true
                 desktop.Shutdown())
             menu.Items.Add(showItem)
+            menu.Items.Add(NativeMenuItemSeparator())
+            menu.Items.Add(watchInfo)
+            menu.Items.Add(watchItem)
+            menu.Items.Add(NativeMenuItemSeparator())
             menu.Items.Add(quitItem)
             tray.Menu <- menu
             tray.IsVisible <- true
+
+            // Reflect watch status pushed from the model: icon color, tooltip,
+            // and the menu's info line + Pause/Resume label. Marshaled to the
+            // UI thread (publish may come from a background WatchPoll tick).
+            TrayBridge.subscribeStatus(fun s ->
+                Dispatcher.UIThread.Post(fun () ->
+                    let icon =
+                        if not s.GlobalEnabled then redIcon
+                        elif s.Count > 0 then greenIcon
+                        else yellowIcon
+                    icon |> Option.iter (fun i -> tray.Icon <- i)
+                    let state =
+                        if not s.GlobalEnabled then "Paused"
+                        elif s.Count > 0 then sprintf "Watching: %d" s.Count
+                        else "Idle"
+                    watchInfo.Header <- state
+                    watchItem.Header <- (if s.GlobalEnabled then "Pause watching" else "Resume watching")
+                    tray.ToolTipText <- sprintf "%s — %s" Version.Product state))
         | _ -> ()
 
 /// Bring the running instance's window back to the front (used when a second

@@ -78,9 +78,12 @@ type LiveRunState = {
 
 /// A project's active "watch": auto-run FlowId when the git HEAD moves.
 /// LastHead is the commit we last acted on (the poll fires when HEAD differs).
+/// Enabled is the per-project on/off — false pauses this project's watch while
+/// keeping which flow it watches, so it can be resumed without reconfiguring.
 type WatchInfo = {
     FlowId: string
     LastHead: string option
+    Enabled: bool
 }
 
 /// Root tab variants. Home + Project + RunDetail + LiveRun are wired;
@@ -235,6 +238,10 @@ type Model = {
     /// Projects being watched (auto-run a flow on new commits), keyed by
     /// project id. One watched flow per project. Runtime-only (not persisted).
     Watches: Map<ProjectId, WatchInfo>
+    /// Global watch master. A watch fires only when this is on AND the
+    /// project's watch is Enabled AND a flow is watched (global ∧ project ∧
+    /// flow). Lets the user pause all watching at once (e.g. from the tray).
+    WatchEnabled: bool
     /// Live state of every LiveRun tab the user has kicked off. Entries
     /// are added by RunFlow and removed by LiveRunCompleted (which also
     /// drops the entry if its tab has been closed).
@@ -319,6 +326,10 @@ type Msg =
     /// Watch mode: toggle a project's watched flow; timer tick polls git HEAD.
     | ToggleWatch of ProjectId * flowId:string
     | WatchPoll
+    /// Flip the global watch master (also raised by the tray Pause/Resume).
+    | ToggleGlobalWatch
+    /// Flip a watched project's per-project on/off (keeps which flow it watches).
+    | ToggleProjectWatch of ProjectId
     /// RunDetail log search query for a run (a find, not a filter).
     | SetRunLogFilter of ProjectId * RunId * string
     /// Move to the next / previous match of the current log search.
@@ -396,20 +407,27 @@ let init () : Model * Cmd<Msg> =
       EditingFlows   = Set.empty
       SettingsFilter = ""
       Watches        = Map.empty
+      WatchEnabled   = true
       LiveRuns       = Map.empty
       AddProject     = None
       CurrentProject = None
       RunDialog      = None },
     // A always-on poll timer for watch mode. It's a no-op when nothing is
     // watched; when a project is watched, WatchPoll samples its git HEAD.
-    [ fun dispatch ->
+    [ (fun dispatch ->
         async {
             do! Async.SwitchToThreadPool ()
             while true do
                 do! Async.Sleep 5000
                 Dispatcher.UIThread.Post(fun () -> dispatch WatchPoll)
         }
-        |> Async.Start ]
+        |> Async.Start)
+      // Let the tray's Pause/Resume item flip the global watch master. We
+      // capture the real dispatch here (init's Cmds receive it) and marshal
+      // to the UI thread, so the tray can drive Elmish without a back-channel.
+      (fun dispatch ->
+        TrayBridge.requestToggleGlobal <-
+            fun () -> Dispatcher.UIThread.Post(fun () -> dispatch ToggleGlobalWatch)) ]
 
 let private moveOrAppend (tab: RootTab) (tabs: RootTab list) : RootTab list =
     if List.contains tab tabs then tabs else tabs @ [ tab ]
@@ -1076,6 +1094,29 @@ let private hasActiveWatchRun (pid: ProjectId) (model: Model) : bool =
     model.LiveRuns
     |> Map.exists (fun _ s -> s.ProjectId = pid && (match s.Phase with LivePending -> true | _ -> false))
 
+/// A project's watch is effective (will actually fire) when the global master
+/// is on, the project is Enabled, and a flow is watched. The flow being in
+/// `Watches` is the flow-level toggle; this folds in global ∧ project.
+let watchEffective (model: Model) (pid: ProjectId) : bool =
+    model.WatchEnabled &&
+    (match Map.tryFind pid model.Watches with Some w -> w.Enabled | None -> false)
+
+/// Count of effectively-armed watches (global on, project Enabled).
+let activeWatchCount (model: Model) : int =
+    if not model.WatchEnabled then 0
+    else model.Watches |> Map.toSeq |> Seq.filter (fun (_, w) -> w.Enabled) |> Seq.length
+
+/// True when at least one watch is effectively armed → green status, else red.
+let watchActive (model: Model) : bool = activeWatchCount model > 0
+
+/// Push the current watch status to the tray (icon color + Pause/Resume text).
+let private publishWatchStatus (model: Model) : Cmd<Msg> =
+    [ fun _ ->
+        TrayBridge.publish
+            { Watching = watchActive model
+              Count = activeWatchCount model
+              GlobalEnabled = model.WatchEnabled } ]
+
 let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | RefreshProjects ->
@@ -1590,15 +1631,26 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | SetSettingsFilter text ->
         { model with SettingsFilter = text }, Cmd.none
     | ToggleWatch (pid, flowId) ->
+        let model' =
+            match Map.tryFind pid model.Watches with
+            | Some w when w.FlowId = flowId ->
+                { model with Watches = Map.remove pid model.Watches }
+            | _ ->
+                // Start from the current commit so we only fire on NEW commits.
+                let head = projectRoot pid model.Projects |> Option.bind Watch.gitHead
+                { model with Watches = Map.add pid { FlowId = flowId; LastHead = head; Enabled = true } model.Watches }
+        model', publishWatchStatus model'
+    | ToggleGlobalWatch ->
+        let model' = { model with WatchEnabled = not model.WatchEnabled }
+        model', publishWatchStatus model'
+    | ToggleProjectWatch pid ->
         match Map.tryFind pid model.Watches with
-        | Some w when w.FlowId = flowId ->
-            { model with Watches = Map.remove pid model.Watches }, Cmd.none
-        | _ ->
-            // Start from the current commit so we only fire on NEW commits.
-            let head = projectRoot pid model.Projects |> Option.bind Watch.gitHead
-            { model with Watches = Map.add pid { FlowId = flowId; LastHead = head } model.Watches }, Cmd.none
+        | Some w ->
+            let model' = { model with Watches = Map.add pid { w with Enabled = not w.Enabled } model.Watches }
+            model', publishWatchStatus model'
+        | None -> model, Cmd.none
     | WatchPoll ->
-        if Map.isEmpty model.Watches then model, Cmd.none
+        if not model.WatchEnabled || Map.isEmpty model.Watches then model, Cmd.none
         else
             // Fire at most one watched run per tick (serialize). Per project:
             // sample HEAD; seed LastHead if unset; if it moved and no run is in
@@ -1607,7 +1659,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             let mutable model' = model
             let mutable toRun = None
             for (pid, info) in Map.toList model.Watches do
-                if Option.isNone toRun then
+                if Option.isNone toRun && info.Enabled then
                     match projectRoot pid model'.Projects with
                     | None -> ()
                     | Some root ->

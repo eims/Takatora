@@ -73,6 +73,7 @@ type StateTests() =
           EditingFlows   = Set.empty
           SettingsFilter = ""
           Watches        = Map.empty
+          WatchEnabled   = true
           LiveRuns       = Map.empty
           AddProject     = None
           CurrentProject = None
