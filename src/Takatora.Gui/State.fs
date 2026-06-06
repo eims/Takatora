@@ -211,6 +211,13 @@ type Model = {
     StepSchemas: Map<string, Result<DescribeSchema, string>>
     /// Schema keys with a describe spawn in flight (shows "inspecting…").
     StepSchemasLoading: Set<string>
+    /// In-progress "add step" task-type text, keyed by (project, flow id).
+    AddStepDraft: Map<ProjectId * string, string>
+    /// Flow cards whose step list is expanded (collapsed by default — keeps
+    /// the Flows tab low-noise; steps + editing live behind the expander).
+    ExpandedFlows: Set<ProjectId * string>
+    /// Expanded flows currently in edit mode (step move/delete/add controls).
+    EditingFlows: Set<ProjectId * string>
     /// Live state of every LiveRun tab the user has kicked off. Entries
     /// are added by RunFlow and removed by LiveRunCompleted (which also
     /// drops the entry if its tab has been closed).
@@ -276,6 +283,14 @@ type Msg =
     | StepSchemaLoaded of key:string * Result<DescribeSchema, string>
     /// Write a step param back to flows.toml (Inspector edit).
     | SetStepParam of ProjectId * flowId:string * stepIndex:int * key:string * value:TomlValue
+    /// Flow Editor: add / remove / move steps in flows.toml.
+    | SetAddStepDraft of ProjectId * flowId:string * string
+    | AddStep of ProjectId * flowId:string * taskType:string
+    | RemoveStep of ProjectId * flowId:string * stepIndex:int
+    | MoveStep of ProjectId * flowId:string * stepIndex:int * delta:int
+    /// Flow card expand / edit-mode toggles.
+    | ToggleFlowExpanded of ProjectId * flowId:string
+    | ToggleFlowEditing of ProjectId * flowId:string
     /// RunDetail log search query for a run (a find, not a filter).
     | SetRunLogFilter of ProjectId * RunId * string
     /// Move to the next / previous match of the current log search.
@@ -346,6 +361,9 @@ let init () : Model * Cmd<Msg> =
       SelectedStep   = None
       StepSchemas    = Map.empty
       StepSchemasLoading = Set.empty
+      AddStepDraft   = Map.empty
+      ExpandedFlows  = Set.empty
+      EditingFlows   = Set.empty
       LiveRuns       = Map.empty
       AddProject     = None
       CurrentProject = None
@@ -956,6 +974,29 @@ let private startRun
             LiveRuns       = Map.add key liveState model.LiveRuns },
         Cmd.batch [ runCmd; pollCmd ]
 
+/// Apply a surgical edit to a project's flows.toml, then reload the flows
+/// cache. `clearSelection` drops the Inspector (used when step indices shift).
+/// No-op (returns the model unchanged) if the project/file/edit doesn't apply.
+let private editFlowsFile
+        (pid: ProjectId) (model: Model) (clearSelection: bool)
+        (edit: string -> string * bool)
+        : Model =
+    match projectRoot pid model.Projects with
+    | None -> model
+    | Some root ->
+        let flowsPath = Path.Combine(root, ".ci", "flows.toml")
+        try
+            let text = File.ReadAllText flowsPath
+            let newText, ok = edit text
+            if not ok then model
+            else
+                File.WriteAllText(flowsPath, newText)
+                let m =
+                    { model with
+                        ProjectFlows = Map.add pid (loadFlowsFor pid model.Projects) model.ProjectFlows }
+                if clearSelection then { m with SelectedStep = None } else m
+        with _ -> model
+
 let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | RefreshProjects ->
@@ -1408,22 +1449,37 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | CloseInspector ->
         { model with SelectedStep = None }, Cmd.none
     | SetStepParam (pid, flowId, idx, key, value) ->
-        // Surgically write the param into flows.toml, then reload the flows
-        // cache so the Inspector reflects the change. No-op on any failure.
-        match projectRoot pid model.Projects with
-        | None -> model, Cmd.none
-        | Some root ->
-            let flowsPath = Path.Combine(root, ".ci", "flows.toml")
-            try
-                let text = File.ReadAllText flowsPath
-                let newText, ok = FlowsEdit.setStepParam text flowId idx key value
-                if ok then
-                    File.WriteAllText(flowsPath, newText)
-                    { model with
-                        ProjectFlows = Map.add pid (loadFlowsFor pid model.Projects) model.ProjectFlows },
-                    Cmd.none
-                else model, Cmd.none
-            with _ -> model, Cmd.none
+        editFlowsFile pid model false (fun text -> FlowsEdit.setStepParam text flowId idx key value), Cmd.none
+    | SetAddStepDraft (pid, flowId, text) ->
+        { model with AddStepDraft = Map.add (pid, flowId) text model.AddStepDraft }, Cmd.none
+    | AddStep (pid, flowId, taskType) ->
+        let t = taskType.Trim()
+        if t = "" then model, Cmd.none
+        else
+            let m = editFlowsFile pid model false (fun text -> FlowsEdit.addStep text flowId t)
+            { m with AddStepDraft = Map.remove (pid, flowId) m.AddStepDraft }, Cmd.none
+    | RemoveStep (pid, flowId, idx) ->
+        // Indices shift after a remove → drop the Inspector selection.
+        editFlowsFile pid model true (fun text -> FlowsEdit.removeStep text flowId idx), Cmd.none
+    | MoveStep (pid, flowId, idx, delta) ->
+        editFlowsFile pid model true (fun text -> FlowsEdit.moveStep text flowId idx delta), Cmd.none
+    | ToggleFlowExpanded (pid, flowId) ->
+        let key = (pid, flowId)
+        if Set.contains key model.ExpandedFlows then
+            // Collapsing also leaves edit mode.
+            { model with
+                ExpandedFlows = Set.remove key model.ExpandedFlows
+                EditingFlows  = Set.remove key model.EditingFlows }, Cmd.none
+        else { model with ExpandedFlows = Set.add key model.ExpandedFlows }, Cmd.none
+    | ToggleFlowEditing (pid, flowId) ->
+        let key = (pid, flowId)
+        if Set.contains key model.EditingFlows then
+            { model with EditingFlows = Set.remove key model.EditingFlows }, Cmd.none
+        else
+            // Entering edit mode implies the card is expanded.
+            { model with
+                EditingFlows  = Set.add key model.EditingFlows
+                ExpandedFlows = Set.add key model.ExpandedFlows }, Cmd.none
     | StepSchemaLoaded (key, res) ->
         { model with
             StepSchemas = Map.add key res model.StepSchemas

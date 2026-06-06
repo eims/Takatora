@@ -645,60 +645,110 @@ let private projectSubTabHeader
         )
     ] :> _
 
-/// A clickable step row inside a flow card — opens the describe Inspector.
+/// A flow step row: a select button (opens the Inspector) plus move
+/// up/down + delete controls (the Flow Editor).
 let private stepRow
         (pid: ProjectId)
         (flowId: string)
         (idx: int)
         (step: Step)
         (selected: bool)
+        (stepCount: int)
+        (editing: bool)
         (dispatch: Msg -> unit)
         : IView =
-    Button.create [
-        Button.horizontalAlignment HorizontalAlignment.Stretch
-        Button.horizontalContentAlignment HorizontalAlignment.Left
-        Button.background (if selected then activeBg else transparentBrush)
-        Button.borderThickness (Thickness 0.0)
-        // Roomier vertical hit area — short/lowercase step text otherwise
-        // leaves a thin clickable strip.
-        Button.padding (Thickness(6.0, 7.0))
-        Button.minHeight 30.0
-        Button.verticalContentAlignment VerticalAlignment.Center
-        Button.cursor handCursor
-        Button.onClick ((fun _ -> dispatch (SelectStep (pid, flowId, idx))), SubPatchOptions.Always)
-        Button.content (
-            StackPanel.create [
-                StackPanel.orientation Orientation.Horizontal
-                StackPanel.spacing 8.0
-                StackPanel.children [
-                    TextBlock.create [
-                        TextBlock.text (sprintf "%d." (idx + 1))
-                        TextBlock.foreground mutedBrush
-                        TextBlock.fontSize 12.0
+    let ctrlBtn (glyph: string) (enabled: bool) (msg: Msg) : IView =
+        Button.create [
+            DockPanel.dock Dock.Right
+            Button.content glyph
+            Button.fontSize 11.0
+            Button.padding (Thickness(7.0, 2.0))
+            Button.isEnabled enabled
+            Button.background transparentBrush
+            Button.borderThickness (Thickness 0.0)
+            Button.cursor handCursor
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.onClick ((fun _ -> dispatch msg), SubPatchOptions.Always)
+        ] :> IView
+    DockPanel.create [
+        DockPanel.margin (Thickness(0.0, 1.0))
+        DockPanel.children [
+            // Move/delete controls only in edit mode. Docked right, far-right
+            // first: ✕ then ▾ then ▴ (reads ▴ ▾ ✕).
+            if editing then yield ctrlBtn "✕" true (RemoveStep (pid, flowId, idx))
+            if editing then yield ctrlBtn "▾" (idx < stepCount - 1) (MoveStep (pid, flowId, idx, 1))
+            if editing then yield ctrlBtn "▴" (idx > 0) (MoveStep (pid, flowId, idx, -1))
+            yield Button.create [
+                Button.horizontalAlignment HorizontalAlignment.Stretch
+                Button.horizontalContentAlignment HorizontalAlignment.Left
+                Button.background (if selected then activeBg else transparentBrush)
+                Button.borderThickness (Thickness 0.0)
+                Button.padding (Thickness(6.0, 7.0))
+                Button.minHeight 30.0
+                Button.verticalContentAlignment VerticalAlignment.Center
+                Button.cursor handCursor
+                Button.onClick ((fun _ -> dispatch (SelectStep (pid, flowId, idx))), SubPatchOptions.Always)
+                Button.content (
+                    StackPanel.create [
+                        StackPanel.orientation Orientation.Horizontal
+                        StackPanel.spacing 8.0
+                        StackPanel.children [
+                            TextBlock.create [
+                                TextBlock.text (sprintf "%d." (idx + 1))
+                                TextBlock.foreground mutedBrush
+                                TextBlock.fontSize 12.0
+                            ]
+                            TextBlock.create [
+                                TextBlock.text step.Type
+                                TextBlock.fontSize 12.0
+                                TextBlock.fontFamily (FontFamily "Consolas, Menlo, monospace")
+                            ]
+                            (match step.When with
+                             | Some w ->
+                                 TextBlock.create [
+                                     TextBlock.text (sprintf "when %s" w)
+                                     TextBlock.foreground mutedBrush
+                                     TextBlock.fontSize 11.0
+                                     TextBlock.verticalAlignment VerticalAlignment.Center
+                                 ] :> IView
+                             | None -> TextBlock.create [ TextBlock.text "" ] :> IView)
+                        ]
                     ]
-                    TextBlock.create [
-                        TextBlock.text step.Type
-                        TextBlock.fontSize 12.0
-                        TextBlock.fontFamily (FontFamily "Consolas, Menlo, monospace")
-                    ]
-                    (match step.When with
-                     | Some w ->
-                         TextBlock.create [
-                             TextBlock.text (sprintf "when %s" w)
-                             TextBlock.foreground mutedBrush
-                             TextBlock.fontSize 11.0
-                             TextBlock.verticalAlignment VerticalAlignment.Center
-                         ] :> IView
-                     | None -> TextBlock.create [ TextBlock.text "" ] :> IView)
-                ]
+                )
             ]
-        )
+        ]
     ] :> _
+
+/// The "+ Add step" row at the bottom of a flow's step list.
+let private addStepRow
+        (pid: ProjectId) (flowId: string) (draft: string) (dispatch: Msg -> unit) : IView =
+    DockPanel.create [
+        DockPanel.margin (Thickness(0.0, 4.0, 0.0, 0.0))
+        DockPanel.children [
+            Button.create [
+                DockPanel.dock Dock.Right
+                Button.content "+ Add step"
+                Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                Button.isEnabled (draft.Trim() <> "")
+                Button.onClick ((fun _ -> dispatch (AddStep (pid, flowId, draft))), SubPatchOptions.Always)
+            ]
+            TextBox.create [
+                TextBox.text draft
+                TextBox.watermark "task type, e.g. shell / fs.zip / ue.clean"
+                TextBox.fontSize 12.0
+                TextBox.onTextChanged
+                    ((fun s -> dispatch (SetAddStepDraft (pid, flowId, s))), SubPatchOptions.Always)
+            ]
+        ]
+    ] :> IView
 
 let private flowCard
         (pid: ProjectId)
         (f: Flow)
         (selectedStep: (ProjectId * string * int) option)
+        (expanded: bool)
+        (editing: bool)
+        (addStepDraft: string)
         (dispatch: Msg -> unit)
         : IView =
     Border.create [
@@ -714,44 +764,88 @@ let private flowCard
                         Button.verticalAlignment VerticalAlignment.Center
                         Button.onClick ((fun _ -> dispatch (RequestRun (pid, f.Id))), SubPatchOptions.Always)
                     ]
+                    // Edit toggle only once expanded.
+                    (if expanded then
+                        Button.create [
+                            DockPanel.dock Dock.Right
+                            Button.content (if editing then "Done" else "Edit")
+                            Button.margin (Thickness(0.0, 0.0, 8.0, 0.0))
+                            Button.verticalAlignment VerticalAlignment.Center
+                            Button.onClick ((fun _ -> dispatch (ToggleFlowEditing (pid, f.Id))), SubPatchOptions.Always)
+                        ] :> IView
+                     else TextBlock.create [ TextBlock.text ""; DockPanel.dock Dock.Right ] :> IView)
                     StackPanel.create [
                         StackPanel.spacing 2.0
                         StackPanel.children [
-                            StackPanel.create [
-                                StackPanel.orientation Orientation.Horizontal
-                                StackPanel.spacing 12.0
-                                StackPanel.children [
-                                    TextBlock.create [
-                                        TextBlock.text f.Id
-                                        TextBlock.fontSize 16.0
-                                        TextBlock.fontWeight FontWeight.SemiBold
+                            // Header is the expander: click to show/hide steps.
+                            Button.create [
+                                Button.horizontalAlignment HorizontalAlignment.Stretch
+                                Button.horizontalContentAlignment HorizontalAlignment.Left
+                                Button.background transparentBrush
+                                Button.borderThickness (Thickness 0.0)
+                                // Inset the content so the ▸ glyph isn't at the
+                                // button's very edge — the Fluent press anim
+                                // scales the button in slightly, and an edge
+                                // click would land outside the shrunk bounds and
+                                // be dropped ("空振り").
+                                Button.padding (Thickness(8.0, 6.0))
+                                Button.cursor handCursor
+                                Button.onClick ((fun _ -> dispatch (ToggleFlowExpanded (pid, f.Id))), SubPatchOptions.Always)
+                                Button.content (
+                                    StackPanel.create [
+                                        StackPanel.spacing 2.0
+                                        StackPanel.children [
+                                            StackPanel.create [
+                                                StackPanel.orientation Orientation.Horizontal
+                                                StackPanel.spacing 8.0
+                                                StackPanel.children [
+                                                    TextBlock.create [
+                                                        TextBlock.text (if expanded then "▾" else "▸")
+                                                        TextBlock.foreground mutedBrush
+                                                        TextBlock.fontSize 13.0
+                                                        TextBlock.verticalAlignment VerticalAlignment.Center
+                                                    ]
+                                                    TextBlock.create [
+                                                        TextBlock.text f.Id
+                                                        TextBlock.fontSize 16.0
+                                                        TextBlock.fontWeight FontWeight.SemiBold
+                                                    ]
+                                                    (match f.Name with
+                                                     | Some n ->
+                                                         TextBlock.create [
+                                                             TextBlock.text n
+                                                             TextBlock.foreground mutedBrush
+                                                             TextBlock.fontSize 13.0
+                                                             TextBlock.verticalAlignment VerticalAlignment.Center
+                                                         ] :> IView
+                                                     | None ->
+                                                         TextBlock.create [ TextBlock.text "" ] :> IView)
+                                                ]
+                                            ]
+                                            TextBlock.create [
+                                                TextBlock.text
+                                                    (sprintf "%d var(s)  ·  %d step(s)"
+                                                        (List.length f.Vars) (List.length f.Steps))
+                                                TextBlock.foreground mutedBrush
+                                                TextBlock.fontSize 12.0
+                                                TextBlock.margin (Thickness(21.0, 0.0, 0.0, 0.0))
+                                            ]
+                                        ]
                                     ]
-                                    (match f.Name with
-                                     | Some n ->
-                                         TextBlock.create [
-                                             TextBlock.text n
-                                             TextBlock.foreground mutedBrush
-                                             TextBlock.fontSize 13.0
-                                             TextBlock.verticalAlignment VerticalAlignment.Center
-                                         ] :> IView
-                                     | None ->
-                                         TextBlock.create [ TextBlock.text "" ] :> IView)
-                                ]
+                                )
                             ]
-                            TextBlock.create [
-                                TextBlock.text
-                                    (sprintf "%d var(s)  ·  %d step(s)  ·  click a step to inspect"
-                                        (List.length f.Vars) (List.length f.Steps))
-                                TextBlock.foreground mutedBrush
-                                TextBlock.fontSize 12.0
-                            ]
-                            StackPanel.create [
-                                StackPanel.margin (Thickness(0.0, 4.0, 0.0, 0.0))
-                                StackPanel.children [
-                                    for i, s in List.indexed f.Steps ->
-                                        stepRow pid f.Id i s (selectedStep = Some (pid, f.Id, i)) dispatch
-                                ]
-                            ]
+                            // Steps appear only when expanded.
+                            (if not expanded then TextBlock.create [ TextBlock.text "" ] :> IView
+                             else
+                                StackPanel.create [
+                                    StackPanel.margin (Thickness(0.0, 6.0, 0.0, 0.0))
+                                    StackPanel.children [
+                                        let n = List.length f.Steps
+                                        for i, s in List.indexed f.Steps do
+                                            yield stepRow pid f.Id i s (selectedStep = Some (pid, f.Id, i)) n editing dispatch
+                                        if editing then yield addStepRow pid f.Id addStepDraft dispatch
+                                    ]
+                                ] :> IView)
                         ]
                     ]
                 ]
@@ -1086,7 +1180,11 @@ let private flowsBody
                             StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
                             StackPanel.spacing 6.0
                             StackPanel.children [
-                                for f in fs -> flowCard pid f selectedStep dispatch
+                                for f in fs ->
+                                let draft = Map.tryFind (pid, f.Id) model.AddStepDraft |> Option.defaultValue ""
+                                let expanded = Set.contains (pid, f.Id) model.ExpandedFlows
+                                let editing  = Set.contains (pid, f.Id) model.EditingFlows
+                                flowCard pid f selectedStep expanded editing draft dispatch
                             ]
                         ]
                     )

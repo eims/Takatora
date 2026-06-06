@@ -111,3 +111,55 @@ preset = "safe"
         Assert.False(okIdx)
         let _, okFlow = FlowsEdit.setStepParam stepsSample "nope" 0 "platform" (TString "Mac")
         Assert.False(okFlow)
+
+    // ─── add / remove / move steps ─────────────────────────────────
+
+    let private stepTypes (text: string) =
+        (TomlConfig.parseFlows text).[0].Steps |> List.map (fun s -> s.Type)
+
+    [<Fact>]
+    let ``removeStep deletes the targeted step, leaving the rest`` () =
+        let newText, ok = FlowsEdit.removeStep stepsSample "release" 0
+        Assert.True(ok)
+        Assert.Equal<string list>([ "ue.clean" ], stepTypes newText)
+
+    [<Fact>]
+    let ``addStep appends a new step at the end`` () =
+        let newText, ok = FlowsEdit.addStep stepsSample "release" "git.pull"
+        Assert.True(ok)
+        Assert.Equal<string list>([ "ue.build_cook_run"; "ue.clean"; "git.pull" ], stepTypes newText)
+
+    [<Fact>]
+    let ``moveStep up swaps a step with its predecessor`` () =
+        let newText, ok = FlowsEdit.moveStep stepsSample "release" 1 -1
+        Assert.True(ok)
+        Assert.Equal<string list>([ "ue.clean"; "ue.build_cook_run" ], stepTypes newText)
+        // The moved build step keeps its params.
+        let steps = (TomlConfig.parseFlows newText).[0].Steps
+        Assert.Equal(Some (TString "Win64"), Map.tryFind "platform" steps.[1].Params)
+
+    [<Fact>]
+    let ``moveStep down swaps a step with its successor`` () =
+        let newText, ok = FlowsEdit.moveStep stepsSample "release" 0 1
+        Assert.True(ok)
+        Assert.Equal<string list>([ "ue.clean"; "ue.build_cook_run" ], stepTypes newText)
+
+    [<Fact>]
+    let ``moveStep refuses out-of-range moves`` () =
+        let _, okUp = FlowsEdit.moveStep stepsSample "release" 0 -1
+        Assert.False(okUp)
+        let _, okDown = FlowsEdit.moveStep stepsSample "release" 1 1
+        Assert.False(okDown)
+
+    [<Fact>]
+    let ``addStep inserts before a comment that introduces the next flow`` () =
+        let sample = "[[flow]]\nid = \"a\"\n\n[[flow.steps]]\ntype = \"s1\"\n\n# next flow\n[[flow]]\nid = \"b\"\n\n[[flow.steps]]\ntype = \"s2\"\n"
+        let newText, ok = FlowsEdit.addStep sample "a" "added"
+        Assert.True(ok)
+        let flows = TomlConfig.parseFlows newText
+        let a = flows |> List.find (fun f -> f.Id = "a")
+        let b = flows |> List.find (fun f -> f.Id = "b")
+        Assert.Equal<string list>([ "s1"; "added" ], a.Steps |> List.map (fun s -> s.Type))
+        Assert.Equal<string list>([ "s2" ], b.Steps |> List.map (fun s -> s.Type))
+        // The next-flow comment still sits right above that flow's header.
+        Assert.Contains("# next flow\n[[flow]]\nid = \"b\"", newText)

@@ -87,6 +87,104 @@ module FlowsEdit =
                     | None -> skipped <- v.Name :: skipped
                 String.concat "\n" lines2, List.rev skipped
 
+    // ─── shared flow/step location helpers ─────────────────────────
+
+    /// The line range [start, end) of the `[[flow]]` block whose id matches.
+    let private locateFlow (lines: string[]) (flowId: string) : (int * int) option =
+        let trimmed i = lines.[i].Trim()
+        let headers = [ for i in 0 .. lines.Length - 1 do if (trimmed i).StartsWith("[[flow]]") then yield i ]
+        headers |> List.tryPick (fun h ->
+            let next = headers |> List.tryFind (fun x -> x > h) |> Option.defaultValue lines.Length
+            let hasId =
+                seq { h + 1 .. next - 1 } |> Seq.exists (fun i ->
+                    let m = Regex.Match(trimmed i, "^id\\s*=\\s*\"(.*)\"")
+                    m.Success && m.Groups.[1].Value = flowId)
+            if hasId then Some (h, next) else None)
+
+    let private stepHeadersIn (lines: string[]) (bStart: int) (bEnd: int) : int list =
+        [ for i in bStart .. bEnd - 1 do if (lines.[i].Trim()).StartsWith("[[flow.steps]]") then yield i ]
+
+    /// A step block runs from its header until the next table header (any
+    /// line starting "[") or the flow block's end.
+    let private stepBlockEnd (lines: string[]) (sh: int) (bEnd: int) : int =
+        seq { sh + 1 .. bEnd - 1 }
+        |> Seq.tryFind (fun i -> (lines.[i].Trim()).StartsWith("["))
+        |> Option.defaultValue bEnd
+
+    let private crlf (lines: string[]) =
+        if lines.Length > 0 && lines.[0].EndsWith("\r") then "\r" else ""
+
+    /// Remove the `stepIndex`-th step of a flow (its header + param lines, plus
+    /// one trailing blank line). Returns the new text and whether it landed.
+    let removeStep (text: string) (flowId: string) (stepIndex: int) : string * bool =
+        let lines = text.Split('\n')
+        match locateFlow lines flowId with
+        | None -> text, false
+        | Some (bStart, bEnd) ->
+            let shs = stepHeadersIn lines bStart bEnd
+            match List.tryItem stepIndex shs with
+            | None -> text, false
+            | Some sh ->
+                let se = stepBlockEnd lines sh bEnd
+                let kept = [ for i in 0 .. lines.Length - 1 do if i < sh || i >= se then yield lines.[i] ]
+                String.concat "\n" kept, true
+
+    /// Move the `stepIndex`-th step by `delta` (-1 = up, +1 = down), swapping
+    /// it with the adjacent step. Returns the new text and whether it landed.
+    let moveStep (text: string) (flowId: string) (stepIndex: int) (delta: int) : string * bool =
+        if delta <> -1 && delta <> 1 then text, false
+        else
+        let lines = text.Split('\n')
+        match locateFlow lines flowId with
+        | None -> text, false
+        | Some (bStart, bEnd) ->
+            let shs = stepHeadersIn lines bStart bEnd
+            let other = stepIndex + delta
+            if stepIndex < 0 || other < 0 || stepIndex >= List.length shs || other >= List.length shs then text, false
+            else
+                // Normalize to swapping the lower-indexed block (lo) with the next (hi).
+                let lo = min stepIndex other
+                let aStart = List.item lo shs
+                let bStartIdx = List.item (lo + 1) shs
+                let bEndIdx = stepBlockEnd lines bStartIdx bEnd
+                let take a b = [ for i in a .. b - 1 -> lines.[i] ]
+                let before = take 0 aStart
+                let aBlock = take aStart bStartIdx
+                let bBlock = take bStartIdx bEndIdx
+                let after  = take bEndIdx lines.Length
+                String.concat "\n" (before @ bBlock @ aBlock @ after), true
+
+    /// Append a new step (`[[flow.steps]]` + `type = "<taskType>"`) at the end
+    /// of a flow's steps. Returns the new text and whether it landed.
+    let addStep (text: string) (flowId: string) (taskType: string) : string * bool =
+        let lines = text.Split('\n')
+        match locateFlow lines flowId with
+        | None -> text, false
+        | Some (bStart, bEnd) ->
+            let cr = crlf lines
+            let shs = stepHeadersIn lines bStart bEnd
+            // The region end to insert before: end of the last step block, or
+            // the flow's end if there are no steps yet.
+            let regionEnd =
+                match List.tryLast shs with
+                | Some lastSh -> stepBlockEnd lines lastSh bEnd
+                | None -> bEnd
+            // Back up over trailing blank/comment lines so the new step lands
+            // right after the last real content — not after blank lines or a
+            // comment that actually introduces the *next* flow.
+            let mutable insertAt = regionEnd
+            while insertAt > bStart + 1
+                  && (let t = lines.[insertAt - 1].Trim() in t = "" || t.StartsWith("#")) do
+                insertAt <- insertAt - 1
+            let block =
+                [ "" + cr
+                  "[[flow.steps]]" + cr
+                  sprintf "type = \"%s\"%s" (taskType.Replace("\\", "\\\\").Replace("\"", "\\\"")) cr ]
+            let asList = List.ofArray lines
+            let before = asList |> List.truncate insertAt
+            let after = asList |> List.skip insertAt
+            String.concat "\n" (before @ block @ after), true
+
     let private reservedStepKeys = Set.ofList [ "type"; "id"; "when" ]
 
     /// Set (or add) a single param `key = value` on the `stepIndex`-th
