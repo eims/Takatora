@@ -22,11 +22,28 @@ type ScaffoldTests() =
         Assert.Equal(EngineKind.Godot, p.Engine.Kind)
 
     [<Fact>]
-    member _.``generated flows.toml parses with a runnable smoke flow`` () =
-        let flows = TomlConfig.parseFlows (Scaffold.flowsToml ())
-        Assert.Equal(1, List.length flows)
-        Assert.Equal("smoke", flows.[0].Id)
-        Assert.Contains(flows.[0].Steps, fun s -> s.Type = "notify.console")
+    member _.``generated flows.toml leads with a runnable smoke flow (every engine)`` () =
+        for engine in [ EngineKind.Unreal; EngineKind.Unity; EngineKind.Godot ] do
+            let flows = TomlConfig.parseFlows (Scaffold.flowsToml "MyGame" engine)
+            Assert.Equal("smoke", flows.[0].Id)
+            Assert.Contains(flows.[0].Steps, fun s -> s.Type = "notify.console")
+
+    [<Fact>]
+    member _.``generated flows.toml carries engine-specific preset flows`` () =
+        let idsAndTypes engine =
+            let flows = TomlConfig.parseFlows (Scaffold.flowsToml "MyGame" engine)
+            let ids = flows |> List.map (fun f -> f.Id) |> Set.ofList
+            let types = flows |> List.collect (fun f -> f.Steps |> List.map (fun s -> s.Type)) |> Set.ofList
+            ids, types
+        let ueIds, ueTypes = idsAndTypes EngineKind.Unreal
+        Assert.True(Set.isSubset (Set.ofList [ "compile"; "package"; "clean" ]) ueIds)
+        Assert.Contains("ue.build_cook_run", ueTypes)
+        let unityIds, unityTypes = idsAndTypes EngineKind.Unity
+        Assert.True(Set.isSubset (Set.ofList [ "build"; "clean" ]) unityIds)
+        Assert.Contains("unity.build", unityTypes)
+        let godotIds, godotTypes = idsAndTypes EngineKind.Godot
+        Assert.True(Set.isSubset (Set.ofList [ "export"; "clean" ]) godotIds)
+        Assert.Contains("godot.export", godotTypes)
 
     [<Fact>]
     member _.``project name with a backslash stays valid TOML`` () =
