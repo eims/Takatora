@@ -3,7 +3,11 @@
     <TargetFramework>net8.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <Nullable>enable</Nullable>
+    <!-- F# nullness analysis off: the codebase isn't annotated for the F#
+         nullness feature, so enabling it only spews FS3261/3264/3265 noise
+         from BCL nullable annotations, which TreatWarningsAsErrors then turns
+         into build breaks on a clean (uncached) Release/publish. -->
+    <Nullable>disable</Nullable>
     <Authors>Takatora contributors</Authors>
     <Product>Takatora</Product>
     <Copyright>Copyright (c) Takatora contributors</Copyright>

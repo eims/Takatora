@@ -26,8 +26,12 @@ function Publish-Bundle([string]$Proj, [string]$Out, [string[]]$Extra) {
     Write-Host "Publishing $Proj ($Configuration / $Rid, single-file) -> $Out ..." -ForegroundColor Cyan
     if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
     # Pipe to Out-Host so dotnet's build chatter doesn't leak into the return.
+    # NB: use -p:SelfContained=false, NOT --self-contained false. The CLI flag
+    # form isn't honored alongside -p:PublishSingleFile=true (the bundle ends
+    # up including the whole .NET runtime, ~95MB); the -p: form is respected
+    # and yields a proper framework-dependent single file (~27MB).
     dotnet publish (Join-Path $root $Proj) `
-        -c $Configuration -r $Rid --self-contained false -p:PublishSingleFile=true @Extra `
+        -c $Configuration -r $Rid -p:SelfContained=false -p:PublishSingleFile=true @Extra `
         -o $Out | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $Proj (exit $LASTEXITCODE)" }
     Get-ChildItem $Out |
