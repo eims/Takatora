@@ -86,3 +86,62 @@ module FlowsEdit =
                         lines2.[i] <- sprintf "%s%s = %s%s" m.Groups.[1].Value v.Name (renderVarInline v def) m.Groups.[2].Value
                     | None -> skipped <- v.Name :: skipped
                 String.concat "\n" lines2, List.rev skipped
+
+    let private reservedStepKeys = Set.ofList [ "type"; "id"; "when" ]
+
+    /// Set (or add) a single param `key = value` on the `stepIndex`-th
+    /// `[[flow.steps]]` of the named flow. Surgical: only that line changes
+    /// (a trailing inline comment is preserved); a missing key is inserted
+    /// right after the step header. Returns the new text and whether the edit
+    /// landed (false = flow/step not found, or a reserved key). Reserved keys
+    /// (type/id/when) are refused — they're not task params.
+    let setStepParam (text: string) (flowId: string) (stepIndex: int) (key: string) (value: TomlValue) : string * bool =
+        if Set.contains key reservedStepKeys then text, false
+        else
+        let lines = text.Split('\n')
+        let trimmed i = lines.[i].Trim()
+        let headers = [ for i in 0 .. lines.Length - 1 do if (trimmed i).StartsWith("[[flow]]") then yield i ]
+        let targetBlock =
+            headers |> List.tryPick (fun h ->
+                let next = headers |> List.tryFind (fun x -> x > h) |> Option.defaultValue lines.Length
+                let hasId =
+                    seq { h + 1 .. next - 1 } |> Seq.exists (fun i ->
+                        let m = Regex.Match(trimmed i, "^id\\s*=\\s*\"(.*)\"")
+                        m.Success && m.Groups.[1].Value = flowId)
+                if hasId then Some (h, next) else None)
+        match targetBlock with
+        | None -> text, false
+        | Some (bStart, bEnd) ->
+            let stepHeaders =
+                [ for i in bStart .. bEnd - 1 do if (trimmed i).StartsWith("[[flow.steps]]") then yield i ]
+            match List.tryItem stepIndex stepHeaders with
+            | None -> text, false
+            | Some sh ->
+                // The step's lines run until the next table header (any "[") or block end.
+                let stepEnd =
+                    seq { sh + 1 .. bEnd - 1 }
+                    |> Seq.tryFind (fun i -> (trimmed i).StartsWith("["))
+                    |> Option.defaultValue bEnd
+                let valStr = tomlLit value
+                let pat = Regex(sprintf "^(\\s*)%s\\s*=\\s*(.*)$" (Regex.Escape key))
+                match seq { sh + 1 .. stepEnd - 1 } |> Seq.tryFind (fun i -> pat.IsMatch lines.[i]) with
+                | Some i ->
+                    let m = pat.Match lines.[i]
+                    let indent = m.Groups.[1].Value
+                    let rest = m.Groups.[2].Value
+                    let cr = if rest.EndsWith("\r") then "\r" else ""
+                    // Preserve a trailing inline comment ( # …), if any.
+                    let comment =
+                        let cm = Regex.Match(rest.TrimEnd('\r'), "\\s+#.*$")
+                        if cm.Success then cm.Value else ""
+                    let lines2 = Array.copy lines
+                    lines2.[i] <- sprintf "%s%s = %s%s%s" indent key valStr comment cr
+                    String.concat "\n" lines2, true
+                | None ->
+                    // Insert a fresh line right after the step header.
+                    let cr = if lines.[sh].EndsWith("\r") then "\r" else ""
+                    let newLine = sprintf "%s = %s%s" key valStr cr
+                    let asList = List.ofArray lines
+                    let before = asList |> List.truncate (sh + 1)
+                    let after = asList |> List.skip (sh + 1)
+                    String.concat "\n" (before @ [ newLine ] @ after), true

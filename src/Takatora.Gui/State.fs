@@ -274,6 +274,8 @@ type Msg =
     | CloseInspector
     /// A step's describe schema finished loading (cache key + result).
     | StepSchemaLoaded of key:string * Result<DescribeSchema, string>
+    /// Write a step param back to flows.toml (Inspector edit).
+    | SetStepParam of ProjectId * flowId:string * stepIndex:int * key:string * value:TomlValue
     /// RunDetail log search query for a run (a find, not a filter).
     | SetRunLogFilter of ProjectId * RunId * string
     /// Move to the next / previous match of the current log search.
@@ -1405,6 +1407,23 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         { model with IdeCommandDraft = command }, Cmd.none
     | CloseInspector ->
         { model with SelectedStep = None }, Cmd.none
+    | SetStepParam (pid, flowId, idx, key, value) ->
+        // Surgically write the param into flows.toml, then reload the flows
+        // cache so the Inspector reflects the change. No-op on any failure.
+        match projectRoot pid model.Projects with
+        | None -> model, Cmd.none
+        | Some root ->
+            let flowsPath = Path.Combine(root, ".ci", "flows.toml")
+            try
+                let text = File.ReadAllText flowsPath
+                let newText, ok = FlowsEdit.setStepParam text flowId idx key value
+                if ok then
+                    File.WriteAllText(flowsPath, newText)
+                    { model with
+                        ProjectFlows = Map.add pid (loadFlowsFor pid model.Projects) model.ProjectFlows },
+                    Cmd.none
+                else model, Cmd.none
+            with _ -> model, Cmd.none
     | StepSchemaLoaded (key, res) ->
         { model with
             StepSchemas = Map.add key res model.StepSchemas

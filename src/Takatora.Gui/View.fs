@@ -779,35 +779,115 @@ let private taskSourceBadge (src: TaskSource) : IView =
             ])
     ] :> IView
 
-/// One param row in the Inspector's auto-generated (read-only) form.
-let private schemaParamRow (p: DescribeParam) : IView =
+/// Display text for a step param's current value.
+let private tomlDisplay (v: TomlValue) : string =
+    let rec go v =
+        match v with
+        | TString s -> s
+        | TInt i -> string i
+        | TFloat f -> string f
+        | TBool b -> if b then "true" else "false"
+        | TArray xs -> "[" + (xs |> List.map go |> String.concat ", ") + "]"
+        | TTable _ -> ""
+    go v
+
+/// Parse Inspector-entered text into a TomlValue per the describe kind.
+let private parseStepValue (kind: string) (text: string) : TomlValue =
+    match kind with
+    | "int" ->
+        match System.Int64.TryParse text with
+        | true, i -> TInt i
+        | _ -> TString text
+    | "float" ->
+        match System.Double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+        | true, f -> TFloat f
+        | _ -> TString text
+    | "bool" -> TBool (text = "true")
+    | _ -> TString text
+
+/// One editable param row in the Inspector. Scalar/enum/bool kinds write
+/// back to flows.toml on commit; secret + list are read-only (a secret must
+/// never be written to flows.toml; list editing is a later slice).
+let private editableParamRow
+        (pid: ProjectId) (flowId: string) (idx: int)
+        (step: Step) (p: DescribeParam) (dispatch: Msg -> unit)
+        : IView =
+    let current = Map.tryFind p.Name step.Params
+    let curText = current |> Option.map tomlDisplay |> Option.defaultValue ""
+    let commit (text: string) =
+        dispatch (SetStepParam (pid, flowId, idx, p.Name, parseStepValue p.Kind text))
+    // A `${vars.X}` / `${steps...}` binding must NOT be silently clobbered by a
+    // value picker — show it as editable text so the binding stays visible.
+    let isTemplate = curText.Contains("${")
+    let effectiveKind = if isTemplate then "string" else p.Kind
+    let label =
+        TextBlock.create [
+            DockPanel.dock Dock.Left
+            TextBlock.text p.Name
+            TextBlock.width 130.0
+            TextBlock.fontFamily (FontFamily "Consolas, Menlo, monospace")
+            TextBlock.fontSize 12.0
+            TextBlock.verticalAlignment VerticalAlignment.Center
+        ] :> IView
+    let widget : IView =
+        match effectiveKind, p.Values with
+        | "enum", Some values ->
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 6.0
+                StackPanel.children [
+                    for vv in values -> engineChoiceButton vv (curText = vv) (fun () -> commit vv)
+                ]
+            ] :> IView
+        | "bool", _ ->
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 6.0
+                StackPanel.children [
+                    engineChoiceButton "true"  (curText = "true")  (fun () -> commit "true")
+                    engineChoiceButton "false" (curText = "false") (fun () -> commit "false")
+                ]
+            ] :> IView
+        | "secret", _ ->
+            TextBlock.create [
+                TextBlock.text (if curText = "" then "(secret — set in flows.toml)" else "•••• (set in flows.toml)")
+                TextBlock.foreground mutedBrush
+                TextBlock.fontSize 12.0
+                TextBlock.verticalAlignment VerticalAlignment.Center
+            ] :> IView
+        | k, _ when k.StartsWith("list") ->
+            TextBlock.create [
+                TextBlock.text (if curText = "" then "(list — edit in flows.toml)" else curText)
+                TextBlock.foreground dimBrush
+                TextBlock.fontSize 12.0
+                TextBlock.textWrapping TextWrapping.Wrap
+                TextBlock.verticalAlignment VerticalAlignment.Center
+            ] :> IView
+        | _ ->
+            TextBox.create [
+                yield TextBox.text curText
+                yield TextBox.fontSize 12.0
+                yield TextBox.watermark (match current with Some _ -> "" | None -> defaultArg p.Default "")
+                if p.Kind = "multiline" then
+                    yield TextBox.acceptsReturn true
+                    yield TextBox.textWrapping TextWrapping.Wrap
+                    yield TextBox.minHeight 52.0
+                // Commit on blur — only when the text actually changed (so we
+                // don't materialize an unchanged default into flows.toml). A
+                // repeat fire writes the same value, which is harmless.
+                yield TextBox.onLostFocus
+                        ((fun e ->
+                            match e.Source with
+                            | :? TextBox as tb when tb.Text <> curText -> commit tb.Text
+                            | _ -> ()), SubPatchOptions.Always)
+            ] :> IView
     DockPanel.create [
-        yield DockPanel.margin (Thickness(0.0, 2.0))
-        // Transparent background → the whole row is hover-sensitive for the tooltip.
+        yield DockPanel.margin (Thickness(0.0, 3.0))
         yield DockPanel.background transparentBrush
-        // Embedded description (task's `Param.note`) → hover tooltip.
         match p.Description with
         | Some d -> yield ToolTip.tip d
         | None -> ()
-        yield DockPanel.children [
-            TextBlock.create [
-                DockPanel.dock Dock.Left
-                TextBlock.text p.Name
-                TextBlock.width 130.0
-                TextBlock.fontFamily (FontFamily "Consolas, Menlo, monospace")
-                TextBlock.fontSize 12.0
-            ]
-            TextBlock.create [
-                TextBlock.text (
-                    let kind = if p.Required then sprintf "%s (required)" p.Kind else p.Kind
-                    match p.Default with
-                    | Some d when d <> "" -> sprintf "%s · default: %s" kind d
-                    | _ -> kind)
-                TextBlock.foreground mutedBrush
-                TextBlock.fontSize 12.0
-                TextBlock.textWrapping TextWrapping.Wrap
-            ]
-        ]
+        yield DockPanel.children [ label; widget ]
     ] :> IView
 
 /// The describe-driven, read-only Inspector for a selected flow step.
@@ -855,7 +935,7 @@ let private stepInspector
                                     (if List.isEmpty schema.Params then
                                         TextBlock.create [ TextBlock.text "(no params)"; TextBlock.foreground mutedBrush; TextBlock.fontSize 12.0 ] :> IView
                                      else
-                                        StackPanel.create [ StackPanel.children [ for p in schema.Params -> schemaParamRow p ] ] :> IView)
+                                        StackPanel.create [ StackPanel.children [ for p in schema.Params -> editableParamRow pid flowId idx step p dispatch ] ] :> IView)
                                     sectionHeader "Outputs"
                                     (if List.isEmpty schema.Outputs then
                                         TextBlock.create [ TextBlock.text "(none declared at top level)"; TextBlock.foreground mutedBrush; TextBlock.fontSize 12.0 ] :> IView

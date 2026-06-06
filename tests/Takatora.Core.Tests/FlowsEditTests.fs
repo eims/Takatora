@@ -68,3 +68,46 @@ clean = { type = "bool", default = true }
                 [ mkVar "clean" VarKind.Bool None, TBool true ]
         Assert.Equal(sample, newText)
         Assert.Equal<string list>([ "clean" ], skipped)
+
+    // ─── setStepParam ──────────────────────────────────────────────
+
+    let private stepsSample = """[[flow]]
+id = "release"
+
+[[flow.steps]]
+type = "ue.build_cook_run"
+platform = "Win64"
+target = "Game"  # ← your target
+
+[[flow.steps]]
+type = "ue.clean"
+preset = "safe"
+"""
+
+    [<Fact>]
+    let ``setStepParam replaces an existing param, keeping its inline comment`` () =
+        let newText, ok = FlowsEdit.setStepParam stepsSample "release" 0 "target" (TString "MyGame")
+        Assert.True(ok)
+        Assert.Contains("target = \"MyGame\"  # ← your target", newText)
+        // Other step untouched + re-parses.
+        let steps = (TomlConfig.parseFlows newText).[0].Steps
+        Assert.Equal(Some (TString "MyGame"), Map.tryFind "target" steps.[0].Params)
+        Assert.Equal(Some (TString "safe"), Map.tryFind "preset" steps.[1].Params)
+
+    [<Fact>]
+    let ``setStepParam inserts a param that wasn't present`` () =
+        let newText, ok = FlowsEdit.setStepParam stepsSample "release" 1 "build_output" (TString "Build")
+        Assert.True(ok)
+        let steps = (TomlConfig.parseFlows newText).[0].Steps
+        Assert.Equal(Some (TString "Build"), Map.tryFind "build_output" steps.[1].Params)
+        // Step 0 still has its params.
+        Assert.Equal(Some (TString "Win64"), Map.tryFind "platform" steps.[0].Params)
+
+    [<Fact>]
+    let ``setStepParam refuses reserved keys and bad indices`` () =
+        let _, okType = FlowsEdit.setStepParam stepsSample "release" 0 "type" (TString "x")
+        Assert.False(okType)
+        let _, okIdx = FlowsEdit.setStepParam stepsSample "release" 9 "platform" (TString "Mac")
+        Assert.False(okIdx)
+        let _, okFlow = FlowsEdit.setStepParam stepsSample "nope" 0 "platform" (TString "Mac")
+        Assert.False(okFlow)
