@@ -1,24 +1,31 @@
 # Takatora
 
-A lightweight local CI for Windows, specialized for game development.
+**CI without the CI server** — local-first build automation for game projects on Windows.
 
-Named after Tōdō Takatora (藤堂高虎, 1556–1630), a Sengoku-period master castle builder who designed roughly twenty castles and codified the methods of Japanese castle construction. Takatora is positioned along a different axis from heavyweight hosted CIs (Jenkins, GitHub Actions, etc.): **local, single-machine, small-team, game-engine focused**.
+Takatora is for developers who want repeatable, automated builds (Unreal / Unity / Godot) but for whom a hosted or self-hosted CI — Jenkins, TeamCity, GitHub Actions runners — is more weight than the job needs: a server to stand up, agents to wire, YAML to maintain. Takatora is a single app you run on your own machine. Define flows in TOML, run them from the CLI or a desktop GUI, and have it watch a repo to auto-run on new commits. No server, no agents, no infrastructure.
+
+Named after Tōdō Takatora (藤堂高虎, 1556–1630), a Sengoku-period master castle builder who designed roughly twenty castles and codified the methods of Japanese castle construction.
 
 ## Positioning
 
-| Aspect | Hosted CI | Takatora |
-|---|---|---|
-| Environment | Remote, many runners | Local, single machine |
-| Scale | Cross-team, large | Solo to small team, indie |
-| Focus | General-purpose | Game builds |
-| Config | YAML, code-driven | TOML + F# scripts |
-| GUI | Web | Desktop (Avalonia) |
+Takatora sits on a different axis from hosted CIs:
 
-Target audience: developers who want to drive UE / Unity / Godot builds, packaging, and distribution from a local machine via explicit flow definitions.
+| Aspect | Hosted CI (Jenkins, Actions, …) | Takatora |
+|---|---|---|
+| Environment | Remote server + runners | Local, single machine |
+| Setup | Server, agents, plugins | One exe, no services |
+| Scale | Cross-team, large | Solo to small team, indie |
+| Focus | General-purpose | Game builds (UE / Unity / Godot) |
+| Config | YAML, code-driven | TOML + F# (`.fsx`) scripts |
+| Interface | Web | CLI + desktop GUI (Avalonia) |
+
+Because it runs **where you work** rather than on a remote server, Takatora can do things a hosted CI structurally can't: detect your installed engines, open a project in your editor / IDE, and show run history inline. That local integration is the point — it's a build runner and a project workspace in one, not a server you have to visit.
+
+Target audience: solo to small game teams who want to drive UE / Unity / Godot builds, packaging, and distribution from their own machine via explicit flow definitions — without the overhead of a CI server.
 
 ## Status
 
-Pre-release and under active development. The CLI and GUI run flows end to end — engine detection, builds/packaging, artifacts, and run history all work (verified against a real Unreal project) — but APIs and config may still change before v0.1.
+Pre-release and under active development. The CLI and GUI run flows end to end — engine detection, builds/packaging, artifacts, run history, open-in-editor/IDE, and watch-and-auto-run-on-commit all work (verified against a real Unreal project) — but APIs and config may still change before v0.1.
 
 ## Documentation
 
@@ -31,7 +38,7 @@ Pre-release and under active development. The CLI and GUI run flows end to end �
 - Engines: Unreal Engine, Unity, Godot
 - VCS: git + git-lfs
 - Single-machine operation; distributed runners are out of scope
-- Windows service mode is planned but not in the MVP
+- On-demand automation: you start/stop watching a repo from the GUI (tray-resident), rather than running an always-on service
 
 ## Stack
 
