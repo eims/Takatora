@@ -8,9 +8,9 @@
          from BCL nullable annotations, which TreatWarningsAsErrors then turns
          into build breaks on a clean (uncached) Release/publish. -->
     <Nullable>disable</Nullable>
-    <Authors>Takatora contributors</Authors>
+    <Authors>eims</Authors>
     <Product>Takatora</Product>
-    <Copyright>Copyright (c) 2026 Takatora contributors</Copyright>
+    <Copyright>Copyright (c) 2026 eims</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryType>git</RepositoryType>
     <NeutralLanguage>en</NeutralLanguage>
