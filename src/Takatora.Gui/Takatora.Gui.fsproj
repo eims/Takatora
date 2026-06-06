@@ -44,4 +44,18 @@
     <PackageReference Include="Avalonia.FuncUI.Elmish" Version="1.5.1" />
   </ItemGroup>
 
+  <!--
+    Keep the Tasks SDK assembly loose next to a single-file exe (same reason
+    as the CLI): the GUI runs flows in-process via Run.execute, whose .fsx
+    wrappers `#r` Takatora.Tasks.dll by physical path. Embedding it in the
+    bundle makes FSI fail with FS0078 the moment a flow runs.
+  -->
+  <Target Name="KeepTasksSdkLooseInSingleFile" BeforeTargets="_ComputeFilesToBundle">
+    <ItemGroup>
+      <ResolvedFileToPublish Condition="'%(Filename)%(Extension)' == 'Takatora.Tasks.dll'">
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
 </Project>
