@@ -10,6 +10,11 @@ parse rather than scrape.
 The CLI is `takatora` (the published exe) or, from a source checkout,
 `dotnet run --project src/Takatora.Cli --`. Examples below use `takatora`.
 
+> **Using Claude Code?** This guide also ships as a self-contained skill at
+> `.claude/skills/takatora-run/` — active automatically inside the Takatora
+> repo. To use it elsewhere, copy that folder into your project's
+> `.claude/skills/` (or `~/.claude/skills/` for all your projects).
+
 ## Project resolution
 
 Anywhere a command takes a `<project>` / `<path>`, you can pass **either**:
