@@ -18,7 +18,12 @@ Target audience: developers who want to drive UE / Unity / Godot builds, packagi
 
 ## Status
 
-Early scaffolding. Solution skeleton and design are in place; nothing runs as a CI yet. Not usable for real builds until v0.1.
+Pre-release and under active development. The CLI and GUI run flows end to end — engine detection, builds/packaging, artifacts, and run history all work (verified against a real Unreal project) — but APIs and config may still change before v0.1.
+
+## Documentation
+
+- [Documentation index](docs/README.md) — getting started, commands, concepts
+- Per-engine guides: [Unreal Engine](docs/unreal.md) · [Unity](docs/unity.md) · [Godot](docs/godot.md)
 
 ## Scope
 
