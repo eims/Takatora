@@ -14,6 +14,10 @@ type MainWindow() as this =
         base.Title  <- Version.Product
         base.Width  <- 1024.0
         base.Height <- 700.0
+        // NOTE: custom window chrome (ExtendClientAreaToDecorationsHint + a
+        // self-drawn title bar) was attempted but BeginMoveDrag doesn't track
+        // reliably on the pinned Avalonia 11.2.0-beta1 (the window snaps back
+        // on drag). Reverted to the OS title bar; revisit after an Avalonia bump.
         Program.mkProgram State.init State.update View.view
         |> Program.withHost this
         |> Program.run

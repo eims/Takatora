@@ -212,11 +212,31 @@ let private tabChip
 /// eating the next click on the tab chips.
 let private projectPill
         (pid: ProjectId)
+        (engineKind: EngineKind option)
         (isCurrent: bool)
         (dispatch: Msg -> unit)
         : IView =
     Button.create [
-        Button.content ("\U0001F4C1  " + pid)
+        // A small engine-colored dot (matches the engine color used elsewhere)
+        // + the project name — clearer than a generic folder glyph.
+        Button.content (
+            StackPanel.create [
+                StackPanel.orientation Orientation.Horizontal
+                StackPanel.spacing 6.0
+                StackPanel.children [
+                    TextBlock.create [
+                        TextBlock.text "●"
+                        TextBlock.fontSize 11.0
+                        TextBlock.verticalAlignment VerticalAlignment.Center
+                        TextBlock.foreground
+                            (match engineKind with Some k -> engineColor k | None -> mutedBrush)
+                    ]
+                    TextBlock.create [
+                        TextBlock.text pid
+                        TextBlock.verticalAlignment VerticalAlignment.Center
+                    ]
+                ]
+            ])
         Button.margin (Thickness(2.0, 0.0))
         Button.padding (Thickness(10.0, 4.0))
         Button.background (if isCurrent then activeBg else (Brushes.Transparent :> IBrush))
@@ -246,7 +266,8 @@ let private projectSelector (model: Model) (dispatch: Msg -> unit) : IView =
             StackPanel.verticalAlignment VerticalAlignment.Center
             StackPanel.margin (Thickness(6.0, 0.0))
             StackPanel.children [
-                for p in projects -> projectPill p (current = Some p) dispatch
+                for p in projects ->
+                    projectPill p (Map.tryFind p model.ProjectEngines) (current = Some p) dispatch
             ]
         ] :> _
 
