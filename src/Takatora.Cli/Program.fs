@@ -10,7 +10,10 @@ let main argv =
 
     // ─── version ──────────────────────────────────────────────────
     let versionCmd = Command("version", "Print Takatora version and exit")
-    versionCmd.SetAction(fun _ -> printfn $"{Version.Product} {Version.Version}")
+    versionCmd.SetAction(fun _ ->
+        printfn $"{Version.Product} {Version.Version}"
+        printfn $"{Version.License} License · {Version.Copyright}"
+        printfn $"{Version.Repository}")
     root.Subcommands.Add(versionCmd)
 
     // ─── init ─────────────────────────────────────────────────────

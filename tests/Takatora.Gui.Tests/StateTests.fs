@@ -77,7 +77,8 @@ type StateTests() =
           LiveRuns       = Map.empty
           AddProject     = None
           CurrentProject = None
-          RunDialog      = None }
+          RunDialog      = None
+          ShowingAbout   = false }
 
     let modelWithTabs (active: RootTab) (tabs: RootTab list) : Model =
         { baseModel with OpenTabs = tabs; ActiveTab = active }

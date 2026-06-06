@@ -702,7 +702,17 @@ let private homeView (model: Model) (dispatch: Msg -> unit) : IView =
                 DockPanel.dock Dock.Top
                 DockPanel.margin (Thickness(16.0, 12.0))
                 DockPanel.children [
-                    // Right-edge link: open the Takatora data folder in Explorer.
+                    // Right-edge: About, then the data-folder link.
+                    Button.create [
+                        DockPanel.dock Dock.Right
+                        Button.content "About"
+                        Button.background transparentBrush
+                        Button.borderThickness (Thickness 0.0)
+                        Button.foreground dimBrush
+                        Button.verticalAlignment VerticalAlignment.Center
+                        Button.cursor handCursor
+                        Button.onClick ((fun _ -> dispatch ShowAbout), SubPatchOptions.Always)
+                    ]
                     Button.create [
                         DockPanel.dock Dock.Right
                         Button.content "Data folder ↗"
@@ -3154,6 +3164,51 @@ let private runParamsDialog (d: RunDialogState) (dispatch: Msg -> unit) : IView 
 
 // ─── Top-level ──────────────────────────────────────────────────────────
 
+/// About overlay: product, version, license, copyright, repo. Click the
+/// scrim or Close to dismiss.
+let private aboutDialog (dispatch: Msg -> unit) : IView =
+    let line (text: string) (fg: IBrush) (size: float) =
+        TextBlock.create [
+            TextBlock.text text
+            TextBlock.foreground fg
+            TextBlock.fontSize size
+            TextBlock.horizontalAlignment HorizontalAlignment.Center
+        ] :> IView
+    Border.create [
+        Border.background overlayBg
+        Border.onPointerPressed ((fun _ -> dispatch HideAbout), SubPatchOptions.Always)
+        Border.child (
+            Border.create [
+                Border.background cardBg
+                Border.cornerRadius 6.0
+                Border.padding (Thickness(28.0, 24.0))
+                Border.horizontalAlignment HorizontalAlignment.Center
+                Border.verticalAlignment VerticalAlignment.Center
+                Border.maxWidth 420.0
+                // Swallow clicks on the card so they don't hit the scrim.
+                Border.onPointerPressed ((fun e -> e.Handled <- true), SubPatchOptions.Always)
+                Border.child (
+                    StackPanel.create [
+                        StackPanel.spacing 10.0
+                        StackPanel.children [
+                            line Version.Product (Brushes.White :> IBrush) 22.0
+                            line (sprintf "v%s" Version.Version) dimBrush 13.0
+                            line "Local CI for game builds — CI without the CI server." mutedBrush 12.0
+                            line (sprintf "%s License · %s" Version.License Version.Copyright) dimBrush 12.0
+                            line Version.Repository accent 12.0
+                            Button.create [
+                                Button.content "Close"
+                                Button.horizontalAlignment HorizontalAlignment.Center
+                                Button.margin (Thickness(0.0, 8.0, 0.0, 0.0))
+                                Button.onClick ((fun _ -> dispatch HideAbout), SubPatchOptions.Always)
+                            ]
+                        ]
+                    ]
+                )
+            ]
+        )
+    ] :> _
+
 let view (model: Model) (dispatch: Msg -> unit) : IView =
     let content =
         DockPanel.create [
@@ -3173,5 +3228,6 @@ let view (model: Model) (dispatch: Msg -> unit) : IView =
             match model.RunDialog with
             | Some d -> yield runParamsDialog d dispatch
             | None   -> ()
+            if model.ShowingAbout then yield aboutDialog dispatch
         ]
     ] :> _

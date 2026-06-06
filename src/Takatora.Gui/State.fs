@@ -258,6 +258,8 @@ type Model = {
     /// "Run with parameters" modal state. None = closed. Opened by
     /// RequestRun when the chosen flow declares scalar vars.
     RunDialog: RunDialogState option
+    /// True while the About overlay is open.
+    ShowingAbout: bool
 }
 
 type Msg =
@@ -364,6 +366,9 @@ type Msg =
     | AddProjectSetName   of string
     | AddProjectSetEngine of EngineKind
     | SubmitAddProject
+    // About overlay
+    | ShowAbout
+    | HideAbout
 
 /// Engine kind per project (project.toml [engine].type), for tinting the
 /// Home project list. Best-effort: projects whose toml is missing/broken
@@ -411,7 +416,8 @@ let init () : Model * Cmd<Msg> =
       LiveRuns       = Map.empty
       AddProject     = None
       CurrentProject = None
-      RunDialog      = None },
+      RunDialog      = None
+      ShowingAbout   = false },
     // A always-on poll timer for watch mode. It's a no-op when nothing is
     // watched; when a project is watched, WatchPoll samples its git HEAD.
     [ (fun dispatch ->
@@ -1786,6 +1792,8 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         Cmd.none
     | HideAddProject ->
         { model with AddProject = None }, Cmd.none
+    | ShowAbout -> { model with ShowingAbout = true }, Cmd.none
+    | HideAbout -> { model with ShowingAbout = false }, Cmd.none
     | AddProjectSetDir dir ->
         match model.AddProject with
         | None -> model, Cmd.none
