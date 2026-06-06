@@ -18,6 +18,7 @@
     <Compile Include="Scaffold.fs" />
     <Compile Include="History.fs" />
     <Compile Include="Describe.fs" />
+    <Compile Include="Watch.fs" />
     <Compile Include="Run.fs" />
     <Compile Include="Library.fs" />
   </ItemGroup>

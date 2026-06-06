@@ -769,6 +769,7 @@ let private flowCard
         (selectedStep: (ProjectId * string * int) option)
         (expanded: bool)
         (editing: bool)
+        (isWatched: bool)
         (addStepDraft: string)
         (dispatch: Msg -> unit)
         : IView =
@@ -784,6 +785,15 @@ let private flowCard
                         Button.content "Run"
                         Button.verticalAlignment VerticalAlignment.Center
                         Button.onClick ((fun _ -> dispatch (RequestRun (pid, f.Id))), SubPatchOptions.Always)
+                    ]
+                    // Watch toggle: auto-run this flow on new git commits.
+                    Button.create [
+                        DockPanel.dock Dock.Right
+                        Button.content (if isWatched then "● Watching" else "Watch")
+                        Button.margin (Thickness(0.0, 0.0, 8.0, 0.0))
+                        Button.verticalAlignment VerticalAlignment.Center
+                        Button.foreground (if isWatched then accent else dimBrush)
+                        Button.onClick ((fun _ -> dispatch (ToggleWatch (pid, f.Id))), SubPatchOptions.Always)
                     ]
                     // Edit toggle only once expanded.
                     (if expanded then
@@ -1205,7 +1215,9 @@ let private flowsBody
                                 let draft = Map.tryFind (pid, f.Id) model.AddStepDraft |> Option.defaultValue ""
                                 let expanded = Set.contains (pid, f.Id) model.ExpandedFlows
                                 let editing  = Set.contains (pid, f.Id) model.EditingFlows
-                                flowCard pid f selectedStep expanded editing draft dispatch
+                                let isWatched =
+                                    (Map.tryFind pid model.Watches |> Option.map (fun w -> w.FlowId)) = Some f.Id
+                                flowCard pid f selectedStep expanded editing isWatched draft dispatch
                             ]
                         ]
                     )

@@ -76,6 +76,13 @@ type LiveRunState = {
     CancelRequested: bool
 }
 
+/// A project's active "watch": auto-run FlowId when the git HEAD moves.
+/// LastHead is the commit we last acted on (the poll fires when HEAD differs).
+type WatchInfo = {
+    FlowId: string
+    LastHead: string option
+}
+
 /// Root tab variants. Home + Project + RunDetail + LiveRun are wired;
 /// Settings (the app-wide one from gui.md) will land later.
 type RootTab =
@@ -225,6 +232,9 @@ type Model = {
     EditingFlows: Set<ProjectId * string>
     /// Settings sub-tab search query (filters setting rows/sections by text).
     SettingsFilter: string
+    /// Projects being watched (auto-run a flow on new commits), keyed by
+    /// project id. One watched flow per project. Runtime-only (not persisted).
+    Watches: Map<ProjectId, WatchInfo>
     /// Live state of every LiveRun tab the user has kicked off. Entries
     /// are added by RunFlow and removed by LiveRunCompleted (which also
     /// drops the entry if its tab has been closed).
@@ -306,6 +316,9 @@ type Msg =
     | ToggleFlowEditing of ProjectId * flowId:string
     /// Settings search query.
     | SetSettingsFilter of string
+    /// Watch mode: toggle a project's watched flow; timer tick polls git HEAD.
+    | ToggleWatch of ProjectId * flowId:string
+    | WatchPoll
     /// RunDetail log search query for a run (a find, not a filter).
     | SetRunLogFilter of ProjectId * RunId * string
     /// Move to the next / previous match of the current log search.
@@ -382,11 +395,21 @@ let init () : Model * Cmd<Msg> =
       ExpandedFlows  = Set.empty
       EditingFlows   = Set.empty
       SettingsFilter = ""
+      Watches        = Map.empty
       LiveRuns       = Map.empty
       AddProject     = None
       CurrentProject = None
       RunDialog      = None },
-    Cmd.none
+    // A always-on poll timer for watch mode. It's a no-op when nothing is
+    // watched; when a project is watched, WatchPoll samples its git HEAD.
+    [ fun dispatch ->
+        async {
+            do! Async.SwitchToThreadPool ()
+            while true do
+                do! Async.Sleep 5000
+                Dispatcher.UIThread.Post(fun () -> dispatch WatchPoll)
+        }
+        |> Async.Start ]
 
 let private moveOrAppend (tab: RootTab) (tabs: RootTab list) : RootTab list =
     if List.contains tab tabs then tabs else tabs @ [ tab ]
@@ -1047,6 +1070,12 @@ let private editFlowsFile
                 if clearSelection then { m with SelectedStep = None } else m
         with _ -> model
 
+/// Is a run for this project still in flight? Watch mode coalesces on this
+/// (it won't kick off a second watched run while one is going).
+let private hasActiveWatchRun (pid: ProjectId) (model: Model) : bool =
+    model.LiveRuns
+    |> Map.exists (fun _ s -> s.ProjectId = pid && (match s.Phase with LivePending -> true | _ -> false))
+
 let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | RefreshProjects ->
@@ -1560,6 +1589,39 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 ExpandedFlows = Set.add key model.ExpandedFlows }, Cmd.none
     | SetSettingsFilter text ->
         { model with SettingsFilter = text }, Cmd.none
+    | ToggleWatch (pid, flowId) ->
+        match Map.tryFind pid model.Watches with
+        | Some w when w.FlowId = flowId ->
+            { model with Watches = Map.remove pid model.Watches }, Cmd.none
+        | _ ->
+            // Start from the current commit so we only fire on NEW commits.
+            let head = projectRoot pid model.Projects |> Option.bind Watch.gitHead
+            { model with Watches = Map.add pid { FlowId = flowId; LastHead = head } model.Watches }, Cmd.none
+    | WatchPoll ->
+        if Map.isEmpty model.Watches then model, Cmd.none
+        else
+            // Fire at most one watched run per tick (serialize). Per project:
+            // sample HEAD; seed LastHead if unset; if it moved and no run is in
+            // flight, run + advance LastHead. A busy project keeps its old
+            // LastHead and re-fires next tick once free (coalesce).
+            let mutable model' = model
+            let mutable toRun = None
+            for (pid, info) in Map.toList model.Watches do
+                if Option.isNone toRun then
+                    match projectRoot pid model'.Projects with
+                    | None -> ()
+                    | Some root ->
+                        match info.LastHead, Watch.gitHead root with
+                        | None, Some h ->
+                            model' <- { model' with Watches = Map.add pid { info with LastHead = Some h } model'.Watches }
+                        | Some last, Some h when h <> last ->
+                            if not (hasActiveWatchRun pid model') then
+                                model' <- { model' with Watches = Map.add pid { info with LastHead = Some h } model'.Watches }
+                                toRun <- Some (pid, info.FlowId)
+                        | _ -> ()
+            match toRun with
+            | Some (pid, flowId) -> startRun pid flowId Map.empty model'
+            | None -> model', Cmd.none
     | StepSchemaLoaded (key, res) ->
         { model with
             StepSchemas = Map.add key res model.StepSchemas

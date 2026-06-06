@@ -72,6 +72,7 @@ type StateTests() =
           ExpandedFlows  = Set.empty
           EditingFlows   = Set.empty
           SettingsFilter = ""
+          Watches        = Map.empty
           LiveRuns       = Map.empty
           AddProject     = None
           CurrentProject = None
@@ -177,6 +178,21 @@ type StateTests() =
         let m = apply (OpenProject "p1") baseModel
         Assert.Equal<RootTab list>([Home; Project "p1"], m.OpenTabs)
         Assert.Equal(Project "p1", m.ActiveTab)
+
+    // ─── watch toggle ───────────────────────────────────────────────
+
+    [<Fact>]
+    member _.``ToggleWatch starts, replaces, and stops a project's watch`` () =
+        // p1 isn't a registered project here, so seeding the HEAD is a no-op
+        // (no git spawn) — LastHead stays None; we only assert the bookkeeping.
+        let m1 = apply (ToggleWatch ("p1", "build")) baseModel
+        Assert.Equal<string option>(Some "build", Map.tryFind "p1" m1.Watches |> Option.map (fun w -> w.FlowId))
+        // Toggling a different flow replaces the watched flow.
+        let m2 = apply (ToggleWatch ("p1", "package")) m1
+        Assert.Equal<string option>(Some "package", Map.tryFind "p1" m2.Watches |> Option.map (fun w -> w.FlowId))
+        // Toggling the watched flow again stops the watch.
+        let m3 = apply (ToggleWatch ("p1", "package")) m2
+        Assert.False(Map.containsKey "p1" m3.Watches)
 
     [<Fact>]
     member _.``OpenProject on an already-open tab refocuses without duplicating`` () =
