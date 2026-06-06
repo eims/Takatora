@@ -692,27 +692,47 @@ let private homeBody (model: Model) (dispatch: Msg -> unit) : IView =
     ] :> _
 
 let private homeView (model: Model) (dispatch: Msg -> unit) : IView =
+    // The machine-local data dir (settings.toml + projects.toml + tasks/),
+    // i.e. %APPDATA%\Takatora — surfaced as a link so it's discoverable.
+    let dataDir =
+        try System.IO.Path.GetDirectoryName(ProjectRegistry.registryPath ()) with _ -> ""
     DockPanel.create [
         DockPanel.children [
-            StackPanel.create [
+            DockPanel.create [
                 DockPanel.dock Dock.Top
-                StackPanel.orientation Orientation.Horizontal
-                StackPanel.margin (Thickness(16.0, 12.0))
-                StackPanel.spacing 12.0
-                StackPanel.children [
-                    TextBlock.create [
-                        TextBlock.text "Projects"
-                        TextBlock.fontSize 20.0
-                        TextBlock.verticalAlignment VerticalAlignment.Center
-                    ]
+                DockPanel.margin (Thickness(16.0, 12.0))
+                DockPanel.children [
+                    // Right-edge link: open the Takatora data folder in Explorer.
                     Button.create [
-                        Button.content (if model.AddProject.IsSome then "Close" else "Add Project")
-                        Button.onClick (fun _ ->
-                            dispatch (if model.AddProject.IsSome then HideAddProject else ShowAddProject))
+                        DockPanel.dock Dock.Right
+                        Button.content "Data folder ↗"
+                        Button.background transparentBrush
+                        Button.borderThickness (Thickness 0.0)
+                        Button.foreground dimBrush
+                        Button.verticalAlignment VerticalAlignment.Center
+                        Button.cursor handCursor
+                        ToolTip.tip (sprintf "Open %s\n(settings.toml, projects.toml, tasks/)" dataDir)
+                        Button.onClick ((fun _ -> dispatch (OpenInExplorer dataDir)), SubPatchOptions.Always)
                     ]
-                    Button.create [
-                        Button.content "Refresh"
-                        Button.onClick (fun _ -> dispatch RefreshProjects)
+                    StackPanel.create [
+                        StackPanel.orientation Orientation.Horizontal
+                        StackPanel.spacing 12.0
+                        StackPanel.children [
+                            TextBlock.create [
+                                TextBlock.text "Projects"
+                                TextBlock.fontSize 20.0
+                                TextBlock.verticalAlignment VerticalAlignment.Center
+                            ]
+                            Button.create [
+                                Button.content (if model.AddProject.IsSome then "Close" else "Add Project")
+                                Button.onClick (fun _ ->
+                                    dispatch (if model.AddProject.IsSome then HideAddProject else ShowAddProject))
+                            ]
+                            Button.create [
+                                Button.content "Refresh"
+                                Button.onClick (fun _ -> dispatch RefreshProjects)
+                            ]
+                        ]
                     ]
                 ]
             ]
