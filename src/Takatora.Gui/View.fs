@@ -2703,6 +2703,31 @@ let private liveLogSection (logTail: string list) : IView =
                 Border.borderThickness (Thickness 1.0)
                 Border.cornerRadius 4.0
                 Border.padding (Thickness 8.0)
+                // Click in the empty area of the log panel (past the text — incl.
+                // the ragged space to the right of a short line, or below the
+                // last line — but still inside the box) → clear the selection.
+                // A press that actually lands on a glyph is left alone so normal
+                // selection still works. The control's Bounds is the full
+                // rectangle covering every line, so test real glyph hits via the
+                // text layout rather than the bounding box.
+                Border.onPointerPressed ((fun e ->
+                    let tbOpt =
+                        match e.Source with
+                        | :? SelectableTextBlock as tb -> Some tb
+                        | :? Visual as v ->
+                            match v.FindDescendantOfType<SelectableTextBlock>() with
+                            | null -> None
+                            | tb -> Some tb
+                        | _ -> None
+                    match tbOpt with
+                    | Some tb ->
+                        let onGlyph =
+                            try
+                                let pt = e.GetPosition(tb)
+                                tb.TextLayout.HitTestPoint(&pt).IsInside
+                            with _ -> false
+                        if not onGlyph then tb.ClearSelection()
+                    | None -> ()), SubPatchOptions.Always)
                 Border.child (
                     ScrollViewer.create [
                         ScrollViewer.horizontalScrollBarVisibility ScrollBarVisibility.Auto
