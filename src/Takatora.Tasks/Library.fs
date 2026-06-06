@@ -53,6 +53,9 @@ module internal Io =
         /// exit so the runner can read it back.
         DescribeMode: bool
         DescribePath: string option
+        /// The task type being described (TAKATORA_TASK_TYPE), so the schema
+        /// JSON carries a top-level "type" even via the process-exit flush.
+        TaskType: string option
     }
 
     /// Captured schema entry for one Param.* call in describe mode.
@@ -62,6 +65,8 @@ module internal Io =
         Required: bool
         Default: JsonNode option
         EnumValues: string list option
+        /// File-picker filters for kind="file" (e.g. ["*.uproject"]); None otherwise.
+        Filter: string list option
     }
 
     let private syncRoot = obj ()
@@ -97,7 +102,8 @@ module internal Io =
           OutputPath = optPath "TAKATORA_OUTPUT_FILE"
           EventsPath = optPath "TAKATORA_EVENTS_FILE"
           DescribeMode = describeMode
-          DescribePath = optPath "TAKATORA_DESCRIBE_OUTPUT" }
+          DescribePath = optPath "TAKATORA_DESCRIBE_OUTPUT"
+          TaskType = optPath "TAKATORA_TASK_TYPE" }
 
     let private get () : Channel =
         match channelOpt with
@@ -220,7 +226,7 @@ module internal Io =
                     | None -> ()
                     | Some path ->
                         let root = JsonObject()
-                        match taskTypeHint with
+                        match taskTypeHint |> Option.orElse chan.TaskType with
                         | Some t -> root.["type"] <- JsonValue.Create(t)
                         | None -> ()
                         let paramsArr = JsonArray()
@@ -237,6 +243,12 @@ module internal Io =
                                 let arr = JsonArray()
                                 for v in vs do arr.Add(JsonValue.Create(v))
                                 entry.["values"] <- arr
+                            | None -> ()
+                            match p.Filter with
+                            | Some fs ->
+                                let arr = JsonArray()
+                                for f in fs do arr.Add(JsonValue.Create(f))
+                                entry.["filter"] <- arr
                             | None -> ()
                             paramsArr.Add(entry)
                         root.["params"] <- paramsArr
@@ -327,6 +339,7 @@ module Param =
                 Required = true
                 Default = None
                 EnumValues = None
+                Filter = None
             }
             safeDefault<'T> ()
         else
@@ -343,6 +356,7 @@ module Param =
                 Required = false
                 Default = defaultToNode defaultValue
                 EnumValues = None
+                Filter = None
             }
             defaultValue
         else
@@ -361,6 +375,7 @@ module Param =
                 Required = false
                 Default = None
                 EnumValues = None
+                Filter = None
             }
             false
         else
@@ -378,6 +393,7 @@ module Param =
                 Required = true
                 Default = None
                 EnumValues = Some values
+                Filter = None
             }
             match values with
             | v :: _ -> v
@@ -388,6 +404,70 @@ module Param =
             else
                 let allowed = String.concat ", " values
                 taskFail $"Param '{name}' must be one of [{allowed}], got '{v}'"
+
+    // ─── kind-hinted string params ─────────────────────────────────
+    //
+    // Value behaviour is identical to required/optional<string>; the only
+    // difference is the `kind` registered in describe mode, so a GUI renders
+    // the right widget (picker / mask / textarea). Per task-sdk.md.
+
+    let private requiredOfKind (kind: string) (filter: string list option) (name: string) : string =
+        if Io.isDescribeMode () then
+            Io.registerParam {
+                Name = name; Kind = kind; Required = true
+                Default = None; EnumValues = None; Filter = filter
+            }
+            ""
+        else
+            match Io.tryParam name with
+            | Some node when not (isNull node) -> convert<string> name node
+            | _ -> taskFail $"Required param '{name}' is missing from task input"
+
+    let private optionalOfKind (kind: string) (filter: string list option) (name: string) (defaultValue: string) : string =
+        if Io.isDescribeMode () then
+            Io.registerParam {
+                Name = name; Kind = kind; Required = false
+                Default = defaultToNode defaultValue; EnumValues = None; Filter = filter
+            }
+            defaultValue
+        else
+            match Io.tryParam name with
+            | Some node when not (isNull node) -> convert<string> name node
+            | _ -> defaultValue
+
+    /// A filesystem path (GUI: a path picker).
+    let requiredPath (name: string) : string = requiredOfKind "path" None name
+    let optionalPath (name: string) (def: string) : string = optionalOfKind "path" None name def
+    /// A directory (GUI: a folder picker).
+    let requiredDir (name: string) : string = requiredOfKind "dir" None name
+    let optionalDir (name: string) (def: string) : string = optionalOfKind "dir" None name def
+    /// An existing file, optionally constrained by filters like ["*.uproject"].
+    let requiredFile (name: string) (filter: string list option) : string = requiredOfKind "file" filter name
+    let optionalFile (name: string) (filter: string list option) (def: string) : string = optionalOfKind "file" filter name def
+    /// A secret (GUI: a masked field; the runner keeps it out of manifests/logs).
+    let requiredSecret (name: string) : string = requiredOfKind "secret" None name
+    let optionalSecret (name: string) (def: string) : string = optionalOfKind "secret" None name def
+    /// Multi-line text (GUI: a text area).
+    let requiredMultiline (name: string) : string = requiredOfKind "multiline" None name
+    let optionalMultiline (name: string) (def: string) : string = optionalOfKind "multiline" None name def
+
+    /// Optional list param. Value behaves like `optional<'T[]>` but is typed
+    /// as an F# list and registers kind `list<elem>` in describe mode.
+    let optionalList<'T> (name: string) (defaultValue: 'T list) : 'T list =
+        if Io.isDescribeMode () then
+            Io.registerParam {
+                Name = name
+                Kind = kindOfType typeof<'T[]>          // → "list<elem>"
+                Required = false
+                Default = defaultToNode (List.toArray defaultValue)
+                EnumValues = None
+                Filter = None
+            }
+            defaultValue
+        else
+            match Io.tryParam name with
+            | Some node when not (isNull node) -> convert<'T[]> name node |> List.ofArray
+            | _ -> defaultValue
 
 /// Surface step outputs to subsequent steps via NDJSON appended to
 /// `TAKATORA_OUTPUT_FILE`. Visible as `${steps.<id>.outputs.<name>}` in

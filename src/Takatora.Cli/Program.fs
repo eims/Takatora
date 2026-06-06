@@ -266,11 +266,18 @@ let main argv =
     // ─── describe ─────────────────────────────────────────────────
     let describeTypeArg = Argument<string>("task-type")
     describeTypeArg.Description <- "Task type (e.g. ue.build_cook_run, shell, notify.console)"
+    let describeProjectOpt = Option<string>("--project")
+    describeProjectOpt.Description <- "Resolve project-local (.ci/tasks) + user task overrides against this project (name or path)"
     let describeCmd =
         Command("describe", "Print the param + output schema for a built-in task as JSON")
     describeCmd.Arguments.Add(describeTypeArg)
+    describeCmd.Options.Add(describeProjectOpt)
     describeCmd.SetAction(fun (pr: ParseResult) ->
-        Describe.invoke (pr.GetValue(describeTypeArg)))
+        let project =
+            match pr.GetValue(describeProjectOpt) with
+            | null | "" -> None
+            | p -> Some p
+        Describe.invoke (pr.GetValue(describeTypeArg)) project)
     root.Subcommands.Add(describeCmd)
 
     root.Parse(argv).Invoke()

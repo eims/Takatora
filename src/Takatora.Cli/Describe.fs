@@ -17,6 +17,7 @@ open Takatora.Core
 let private spawnAndCapture
         (sdkAssemblyPath: string)
         (taskPath: string)
+        (taskType: string)
         : Result<string, string> =
     let tempDir =
         Path.Combine(
@@ -40,6 +41,7 @@ let private spawnAndCapture
         psi.RedirectStandardError <- true
         psi.Environment.["TAKATORA_MODE"]            <- "describe"
         psi.Environment.["TAKATORA_DESCRIBE_OUTPUT"] <- outputPath
+        psi.Environment.["TAKATORA_TASK_TYPE"]       <- taskType
         use proc = Process.Start(psi)
         let stdoutTask = proc.StandardOutput.ReadToEndAsync()
         let stderrTask = proc.StandardError.ReadToEndAsync()
@@ -56,13 +58,23 @@ let private spawnAndCapture
     finally
         try Directory.Delete(tempDir, recursive = true) with _ -> ()
 
-let invoke (taskType: string) : int =
+let invoke (taskType: string) (project: string option) : int =
     let builtinDir = Run.defaultBuiltinTasksDir ()
     let sdkPath    = Run.defaultSdkAssemblyPath ()
-    // Project-local + user-level lookups need a project context, which
-    // describe doesn't take. Future enhancement: accept `--project` to
-    // resolve project-local task overrides. For now, builtin-only.
-    match TaskResolver.resolve "." None builtinDir taskType with
+    // With --project, resolve project-local (.ci/tasks) + user-level
+    // overrides against that root; otherwise builtin-only (cwd).
+    let resolvedRoot =
+        match project with
+        | None -> Ok "."
+        | Some p ->
+            match Run.resolveProject p with
+            | Some root -> Ok root
+            | None -> Error (sprintf "describe: project '%s' not found (registered name or a dir with .ci/)" p)
+    match resolvedRoot with
+    | Error msg -> Console.Error.WriteLine msg; 2
+    | Ok projectRoot ->
+    let userTasksDir = if Option.isSome project then Some (Run.defaultUserTasksDir ()) else None
+    match TaskResolver.resolve projectRoot userTasksDir builtinDir taskType with
     | None ->
         Console.Error.WriteLine(
             sprintf "describe: no task .fsx found for type '%s' under %s" taskType builtinDir)
@@ -71,7 +83,7 @@ let invoke (taskType: string) : int =
         // Absolute path: the describe wrapper is written to (and #loads from)
         // a temp dir, so a project-local task resolved as ".\.ci\tasks\…"
         // wouldn't be found relative to that temp dir.
-        match spawnAndCapture sdkPath (Path.GetFullPath resolved.Path) with
+        match spawnAndCapture sdkPath (Path.GetFullPath resolved.Path) taskType with
         | Error msg ->
             Console.Error.WriteLine(sprintf "describe: %s" msg)
             5

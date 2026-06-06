@@ -67,6 +67,12 @@ let defaultSdkAssemblyPath () =
 let defaultBuiltinTasksDir () =
     Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
 
+/// User-level task overrides: `%APPDATA%\Takatora\tasks`.
+let defaultUserTasksDir () =
+    Path.Combine(
+        Environment.GetFolderPath Environment.SpecialFolder.ApplicationData,
+        "Takatora", "tasks")
+
 /// Accept a CLI `<project>` argument as either a registered name (see
 /// `takatora project add`) or a filesystem path to a working dir
 /// containing `.ci/`. Returns the project root or None on miss.

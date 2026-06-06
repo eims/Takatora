@@ -323,6 +323,48 @@ type TasksSdkTests() =
             Assert.Equal(Some [ "Development"; "Shipping" ], pars.[0].EnumValues))
 
     [<Fact>]
+    member _.``kind-hint params register their kind in describe mode`` () =
+        runInDescribeMode (fun () ->
+            Param.requiredPath "src"            |> ignore
+            Param.optionalDir "outdir" "Build"  |> ignore
+            Param.requiredSecret "token"        |> ignore
+            Param.optionalMultiline "notes" ""  |> ignore
+            let pars, _ = Io.describeSnapshot ()
+            let kindOf n = pars |> List.find (fun p -> p.Name = n) |> fun p -> p.Kind
+            Assert.Equal("path", kindOf "src")
+            Assert.Equal("dir", kindOf "outdir")
+            Assert.Equal("secret", kindOf "token")
+            Assert.Equal("multiline", kindOf "notes"))
+
+    [<Fact>]
+    member _.``requiredFile in describe mode captures the filter`` () =
+        runInDescribeMode (fun () ->
+            Param.requiredFile "cfg" (Some [ "*.ini"; "*.cfg" ]) |> ignore
+            let pars, _ = Io.describeSnapshot ()
+            Assert.Equal("file", pars.[0].Kind)
+            Assert.Equal(Some [ "*.ini"; "*.cfg" ], pars.[0].Filter))
+
+    [<Fact>]
+    member _.``optionalList in describe mode registers list kind + default`` () =
+        runInDescribeMode (fun () ->
+            let v = Param.optionalList<string> "tags" [ "a"; "b" ]
+            Assert.Equal<string list>([ "a"; "b" ], v)
+            let pars, _ = Io.describeSnapshot ()
+            Assert.Equal("list<string>", pars.[0].Kind))
+
+    [<Fact>]
+    member _.``requiredPath returns the input value at run time`` () =
+        setupInput """{"params":{"src":"C:\\work\\game"}}"""
+        Assert.Equal("C:\\work\\game", Param.requiredPath "src")
+
+    [<Fact>]
+    member _.``optionalList returns the input list, or the default when absent`` () =
+        setupInput """{"params":{"tags":["x","y","z"]}}"""
+        Assert.Equal<string list>([ "x"; "y"; "z" ], Param.optionalList<string> "tags" [])
+        setupInput """{"params":{}}"""
+        Assert.Equal<string list>([ "d" ], Param.optionalList<string> "tags" [ "d" ])
+
+    [<Fact>]
     member _.``Output.set in describe mode registers names only`` () =
         runInDescribeMode (fun () ->
             Output.set "exe_path" "irrelevant"
