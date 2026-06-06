@@ -436,6 +436,47 @@ archive = true
         let outputs = outcome.Steps.[0].Outputs
         Assert.Equal(Some (TString zip), Map.tryFind "artifact_path" outputs)
 
+    // ─── builtin: fs.write ─────────────────────────────────────────
+
+    [<Fact>]
+    member _.``builtin fs.write writes content, interpolating a prior step output`` () =
+        writeFile ".ci/project.toml" projectToml
+        // First step records an output; fs.write interpolates it into content.
+        writeFile ".ci/tasks/emit.fsx" """
+open Takatora.Tasks
+Step.run "emit" (fun () -> Output.set "tag" "v1")
+"""
+        writeFile ".ci/flows.toml" """
+[[flow]]
+id = "w"
+
+[[flow.steps]]
+id = "e"
+type = "emit"
+
+[[flow.steps]]
+id = "write"
+type = "fs.write"
+path = "out/stamp.txt"
+content = "tag=${steps.e.outputs.tag}"
+"""
+        let opts : Run.Options = {
+            WorkingDir = dir
+            FlowId = "w"
+            VarOverrides = Map.empty
+            SdkAssemblyPath = sdkAssemblyPath
+            BuiltinTasksDir = Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+            UserTasksDir = None
+        }
+        let outcome =
+            match Run.execute opts with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        let written = Path.Combine(dir, "out", "stamp.txt")
+        Assert.True(File.Exists written, "fs.write should create the file")
+        Assert.Equal("tag=v1", File.ReadAllText written)
+
     // ─── builtin: shell ───────────────────────────────────────────
 
     [<Fact>]
