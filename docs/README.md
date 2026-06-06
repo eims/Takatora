@@ -1,9 +1,9 @@
 # Takatora documentation
 
-Takatora is a local, single-machine CI for game development. You define
-**flows** (ordered steps) in `.ci/flows.toml`, and run them from the CLI
-(`takatora`) or the desktop GUI. TOML is the source of truth; the GUI is an
-editor/runner on top of it.
+Takatora is local-first build automation for game development — CI without a
+CI server. You define **flows** (ordered steps) in `.ci/flows.toml`, and run
+them from the CLI (`takatora`) or the desktop GUI. TOML is the source of
+truth; the GUI is an editor/runner on top of it.
 
 ## Getting started (any engine)
 
