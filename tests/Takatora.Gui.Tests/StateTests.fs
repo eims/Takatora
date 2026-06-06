@@ -71,6 +71,7 @@ type StateTests() =
           AddStepDraft   = Map.empty
           ExpandedFlows  = Set.empty
           EditingFlows   = Set.empty
+          SettingsFilter = ""
           LiveRuns       = Map.empty
           AddProject     = None
           CurrentProject = None

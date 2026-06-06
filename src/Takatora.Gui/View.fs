@@ -1258,65 +1258,57 @@ let private settingsFieldColored (label: string) (value: string) (fg: IBrush) : 
         ]
     ] :> _
 
-let private projectInfoBlock (proj: Project) (projectRoot: string) (appSettings: AppSettings) : IView =
-    // The *resolved* engine — what this project will actually run on,
-    // behind the (often auto-detected, hence blank above) config. Surfaces
-    // the detection result so "which version am I on" is answerable.
-    // effectiveEngine injects the machine-level Godot path when the project
-    // doesn't set engine_path.
-    let resolvedEngine : IView =
-        match Engines.resolveProjectEngine (State.effectiveEngine appSettings proj.Engine) projectRoot with
-        | Ok d ->
-            StackPanel.create [
-                StackPanel.spacing 2.0
-                StackPanel.children [
-                    yield settingsFieldColored "version" (sprintf "%s %s" (engineKindLabel d.Kind) d.Version) (engineColor d.Kind)
-                    yield settingsField "install path" d.Path
-                    match d.Executable with
-                    | Some exe -> yield settingsField "executable" exe
-                    | None -> ()
-                    match d.Association with
-                    | Some assoc -> yield settingsField "association" assoc
-                    | None -> ()
-                ]
-            ] :> IView
-        | Error msg ->
-            settingsField "resolved" (sprintf "⚠ not resolved — %s" msg)
-    StackPanel.create [
-        StackPanel.spacing 2.0
-        StackPanel.children [
-            sectionHeader "Engine"
-            settingsFieldColored "type"    (engineKindLabel proj.Engine.Kind) (engineColor proj.Engine.Kind)
-            optStr        "project_file"   proj.Engine.ProjectFile
-            optStr        "engine_path"    proj.Engine.EnginePath
-            optStr        "engine_version" proj.Engine.EngineVersion
-            optStr        "executable"     proj.Engine.Executable
+/// One read-only setting, as data so the Settings search can filter it.
+type private SettingRow =
+    { Section: string; Label: string; Value: string; Color: IBrush option }
 
-            sectionHeader "Resolved engine"
-            resolvedEngine
+/// The project's read-only settings (engine config + resolved engine + VCS +
+/// history + working dir), flattened to filterable rows.
+let private buildSettingRows (proj: Project) (projectRoot: string) (appSettings: AppSettings) : SettingRow list =
+    let row s l v   = { Section = s; Label = l; Value = v; Color = None }
+    let rowC s l v c = { Section = s; Label = l; Value = v; Color = Some c }
+    let opt = function Some x -> x | None -> "(autodetect)"
+    [ yield rowC "Engine" "type" (engineKindLabel proj.Engine.Kind) (engineColor proj.Engine.Kind)
+      yield row "Engine" "project_file"   (opt proj.Engine.ProjectFile)
+      yield row "Engine" "engine_path"    (opt proj.Engine.EnginePath)
+      yield row "Engine" "engine_version" (opt proj.Engine.EngineVersion)
+      yield row "Engine" "executable"     (opt proj.Engine.Executable)
+      // Resolved engine (effectiveEngine injects the machine-level Godot path).
+      match Engines.resolveProjectEngine (State.effectiveEngine appSettings proj.Engine) projectRoot with
+      | Ok d ->
+          yield rowC "Resolved engine" "version" (sprintf "%s %s" (engineKindLabel d.Kind) d.Version) (engineColor d.Kind)
+          yield row "Resolved engine" "install path" d.Path
+          match d.Executable with Some e -> yield row "Resolved engine" "executable" e | None -> ()
+          match d.Association with Some a -> yield row "Resolved engine" "association" a | None -> ()
+      | Error msg -> yield row "Resolved engine" "resolved" (sprintf "⚠ not resolved — %s" msg)
+      // VCS.
+      match proj.Vcs with
+      | Some vcs ->
+          yield row "VCS" "type" (vcsKindLabel vcs.Kind)
+          yield row "VCS" "lfs"  (if vcs.Lfs then "enabled" else "disabled")
+      | None -> yield row "VCS" "vcs" "(not configured)"
+      yield row "History retention" "keep_last_n_runs" (string proj.History.KeepLastNRuns)
+      yield row "Working dir" "working_dir" proj.WorkingDir ]
 
-            sectionHeader "VCS"
-            (match proj.Vcs with
-             | Some vcs ->
-                 StackPanel.create [
-                     StackPanel.children [
-                         settingsField "type" (vcsKindLabel vcs.Kind)
-                         settingsField "lfs"  (if vcs.Lfs then "enabled" else "disabled")
-                     ]
-                 ] :> IView
-             | None ->
-                 TextBlock.create [
-                     TextBlock.text "(not configured)"
-                     TextBlock.foreground mutedBrush
-                 ] :> IView)
-
-            sectionHeader "History retention"
-            settingsField "keep_last_n_runs" (string proj.History.KeepLastNRuns)
-
-            sectionHeader "Working dir"
-            settingsField "working_dir" proj.WorkingDir
-        ]
-    ] :> _
+/// Render filtered setting rows, grouped under their section headers (a
+/// header shows only when the section has a visible row).
+let private renderSettingRows (query: string) (rows: SettingRow list) : IView list =
+    let q = query.Trim().ToLowerInvariant()
+    let matches (r: SettingRow) =
+        q = ""
+        || r.Section.ToLowerInvariant().Contains q
+        || r.Label.ToLowerInvariant().Contains q
+        || r.Value.ToLowerInvariant().Contains q
+    let views = System.Collections.Generic.List<IView>()
+    let mutable lastSection = ""
+    for r in rows |> List.filter matches do
+        if r.Section <> lastSection then
+            views.Add(sectionHeader r.Section)
+            lastSection <- r.Section
+        match r.Color with
+        | Some c -> views.Add(settingsFieldColored r.Label r.Value c)
+        | None   -> views.Add(settingsField r.Label r.Value)
+    List.ofSeq views
 
 /// Keychain-backed secrets for this project, with per-entry delete. The
 /// names come from the model cache (State.ProjectSecrets), refreshed when
@@ -1547,6 +1539,13 @@ let private settingsBody
                     Button.content "Refresh"
                     Button.onClick (fun _ -> dispatch (RefreshProjectInfo pid))
                 ]
+                TextBox.create [
+                    TextBox.watermark "search settings…"
+                    TextBox.width 220.0
+                    TextBox.text model.SettingsFilter
+                    TextBox.verticalAlignment VerticalAlignment.Center
+                    TextBox.onTextChanged ((fun s -> dispatch (SetSettingsFilter s)), SubPatchOptions.Always)
+                ]
             ]
         ]
     let body : IView =
@@ -1575,18 +1574,36 @@ let private settingsBody
                 ]
             ] :> _
         | ProjectInfoOk proj ->
+            // Read-only rows filter per-row; the interactive blocks (IDE /
+            // Godot / Secrets) filter as whole sections by keyword match.
+            let q = model.SettingsFilter.Trim().ToLowerInvariant()
+            let blockMatches (keywords: string) = q = "" || keywords.ToLowerInvariant().Contains q
+            let rowViews = renderSettingRows model.SettingsFilter (buildSettingRows proj projectRoot model.AppSettings)
+            let isGodot = proj.Engine.Kind = EngineKind.Godot
+            let anyVisible =
+                not (List.isEmpty rowViews)
+                || blockMatches "open in ide command launch editor rider visual studio code"
+                || (isGodot && blockMatches "godot search path engine executable")
+                || blockMatches "secrets keychain credentials"
             ScrollViewer.create [
                 ScrollViewer.content (
                     StackPanel.create [
                         StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
                         StackPanel.spacing 8.0
                         StackPanel.children [
-                            projectInfoBlock proj projectRoot model.AppSettings
-                            ideCommandBlock ideCommandDraft ideCandidates dispatch
-                            (if proj.Engine.Kind = EngineKind.Godot then
-                                godotBlock model.GodotSearchPathsDraft model.GodotCandidates model.AppSettings.GodotPath dispatch
-                             else TextBlock.create [ TextBlock.text "" ] :> IView)
-                            secretsBlock pid secrets dispatch
+                            yield! rowViews
+                            if blockMatches "open in ide command launch editor rider visual studio code" then
+                                yield ideCommandBlock ideCommandDraft ideCandidates dispatch
+                            if isGodot && blockMatches "godot search path engine executable" then
+                                yield godotBlock model.GodotSearchPathsDraft model.GodotCandidates model.AppSettings.GodotPath dispatch
+                            if blockMatches "secrets keychain credentials" then
+                                yield secretsBlock pid secrets dispatch
+                            if not anyVisible then
+                                yield TextBlock.create [
+                                    TextBlock.text (sprintf "No settings match \"%s\"." (model.SettingsFilter.Trim()))
+                                    TextBlock.foreground mutedBrush
+                                    TextBlock.margin (Thickness(0.0, 8.0, 0.0, 0.0))
+                                ] :> IView
                         ]
                     ]
                 )

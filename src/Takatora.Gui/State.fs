@@ -223,6 +223,8 @@ type Model = {
     ExpandedFlows: Set<ProjectId * string>
     /// Expanded flows currently in edit mode (step move/delete/add controls).
     EditingFlows: Set<ProjectId * string>
+    /// Settings sub-tab search query (filters setting rows/sections by text).
+    SettingsFilter: string
     /// Live state of every LiveRun tab the user has kicked off. Entries
     /// are added by RunFlow and removed by LiveRunCompleted (which also
     /// drops the entry if its tab has been closed).
@@ -302,6 +304,8 @@ type Msg =
     /// Flow card expand / edit-mode toggles.
     | ToggleFlowExpanded of ProjectId * flowId:string
     | ToggleFlowEditing of ProjectId * flowId:string
+    /// Settings search query.
+    | SetSettingsFilter of string
     /// RunDetail log search query for a run (a find, not a filter).
     | SetRunLogFilter of ProjectId * RunId * string
     /// Move to the next / previous match of the current log search.
@@ -377,6 +381,7 @@ let init () : Model * Cmd<Msg> =
       AddStepDraft   = Map.empty
       ExpandedFlows  = Set.empty
       EditingFlows   = Set.empty
+      SettingsFilter = ""
       LiveRuns       = Map.empty
       AddProject     = None
       CurrentProject = None
@@ -1553,6 +1558,8 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             { model with
                 EditingFlows  = Set.add key model.EditingFlows
                 ExpandedFlows = Set.add key model.ExpandedFlows }, Cmd.none
+    | SetSettingsFilter text ->
+        { model with SettingsFilter = text }, Cmd.none
     | StepSchemaLoaded (key, res) ->
         { model with
             StepSchemas = Map.add key res model.StepSchemas
