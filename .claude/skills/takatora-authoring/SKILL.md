@@ -96,7 +96,10 @@ abort. This is what keeps `takatora describe` able to harvest the schema.
 - **Step:** `Step.run "label" (fun () -> ..)`, `Step.runResult`, `Step.skip`.
 - **Log:** `Log.info|warn|error|debug`, `Log.section`.
 - **Progress:** `Progress.during "label" everySec (fun () -> ..)` — heartbeat
-  around a long blocking op (e.g. a big zip) so the log doesn't go silent.
+  around a long blocking op so the log doesn't go silent.
+- **Zip:** `Zip.createFromDirectory src dst` — zip a dir's contents (files at
+  the archive root) with start/finish + %-progress logs; prefer over
+  `ZipFile.CreateFromDirectory` for large outputs.
 - **Task:** `Task.fail<'T> "reason"`.
 - **Project/Engine:** `Project.workingDir|name`;
   `Engine.kind|path|version|projectFile|executable`.

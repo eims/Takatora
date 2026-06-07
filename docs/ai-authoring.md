@@ -137,8 +137,12 @@ Use `Task.fail "reason"` for clean user-facing aborts.
 **Log:** `Log.info|warn|error|debug "msg"`, `Log.section "heading"`.
 
 **Progress:** `Progress.during "label" everySec (fun () -> ...)` — run a long
-blocking op while emitting an info heartbeat every `everySec` seconds, so the
-log doesn't go silent (e.g. wrap a large zip).
+blocking op while emitting a heartbeat every `everySec` seconds, so the log
+doesn't go silent.
+
+**Zip:** `Zip.createFromDirectory src dst` — zip a directory's contents (files
+at the archive root) with visible start/finish + %-progress lines. Prefer over
+`System.IO.Compression.ZipFile.CreateFromDirectory` for large outputs.
 
 **Task:** `Task.fail<'T> "reason"` — abort cleanly (no F# stack dump).
 
