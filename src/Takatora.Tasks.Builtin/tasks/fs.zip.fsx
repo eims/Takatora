@@ -28,10 +28,9 @@ Step.run "fs.zip" (fun () ->
         Task.fail<unit> (sprintf "fs.zip: source dir '%s' does not exist" src)
     Directory.CreateDirectory(Path.GetDirectoryName dst) |> ignore
     if File.Exists dst then File.Delete dst
-    // Heartbeat: the zip call is blocking and a large package can take a
-    // while, so the log would otherwise go silent.
-    Progress.during (sprintf "  zipping → %s" (Path.GetFileName dst)) 3.0 (fun () ->
-        ZipFile.CreateFromDirectory(src, dst, CompressionLevel.Optimal, includeBaseDirectory = false))
+    // Zip with visible start/finish + %-progress (a big package zip is slow
+    // and the log would otherwise go silent).
+    Zip.createFromDirectory src dst
 )
 
 // Declared at top level (NOT inside Step.run) so `describe` — which skips

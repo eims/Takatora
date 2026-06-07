@@ -598,6 +598,46 @@ module Progress =
             t.Start()
             try action () finally running <- false
 
+/// Zip a directory's contents (files placed at the archive root, like
+/// ZipFile.CreateFromDirectory with includeBaseDirectory=false) with visible
+/// start/finish lines and periodic %-progress on stdout (→ log.txt → the GUI
+/// "Output (tail)"). Unlike ZipFile.CreateFromDirectory it adds entries one by
+/// one, so it can report real progress and you can tell where it stopped if
+/// the process is killed mid-zip.
+[<RequireQualifiedAccess>]
+module Zip =
+    open System
+    open System.IO
+    open System.IO.Compression
+
+    let private human (b: int64) =
+        if   b >= 1073741824L then sprintf "%.1f GB" (float b / 1073741824.0)
+        elif b >= 1048576L    then sprintf "%.0f MB" (float b / 1048576.0)
+        elif b >= 1024L       then sprintf "%.0f KB" (float b / 1024.0)
+        else sprintf "%d B" b
+
+    let createFromDirectory (src: string) (dst: string) : unit =
+        let out (s: string) = Console.Out.WriteLine s
+        let files = Directory.GetFiles(src, "*", SearchOption.AllDirectories)
+        let totalBytes = files |> Array.sumBy (fun f -> (FileInfo f).Length)
+        out (sprintf "zip: start — %d files, %s → %s" files.Length (human totalBytes) (Path.GetFileName dst))
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        (
+            use fs = new FileStream(dst, FileMode.Create)
+            use za = new ZipArchive(fs, ZipArchiveMode.Create)
+            let mutable doneBytes = 0L
+            let mutable lastReport = 0.0
+            files |> Array.iteri (fun i f ->
+                let rel = (Path.GetRelativePath(src, f)).Replace('\\', '/')
+                ZipFileExtensions.CreateEntryFromFile(za, f, rel, CompressionLevel.Optimal) |> ignore
+                doneBytes <- doneBytes + (FileInfo f).Length
+                if sw.Elapsed.TotalSeconds - lastReport >= 3.0 then
+                    lastReport <- sw.Elapsed.TotalSeconds
+                    let pct = if totalBytes > 0L then float doneBytes / float totalBytes * 100.0 else 100.0
+                    out (sprintf "zip: %d/%d files, %.0f%% (%.0fs)" (i + 1) files.Length pct sw.Elapsed.TotalSeconds))
+        )
+        out (sprintf "zip: done — %s (%s, %.0fs)" (Path.GetFileName dst) (human (FileInfo dst).Length) sw.Elapsed.TotalSeconds)
+
 /// Read-only project metadata as supplied by the runner.
 /// Members are properties (not let-bound values) so they re-read the
 /// input on each access; otherwise tests + GUI re-init scenarios would

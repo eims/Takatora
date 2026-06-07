@@ -149,9 +149,8 @@ Step.run "artifact.collect" (fun () ->
     if archive then
         let zipPath = Path.Combine(destAbs, folderName + ".zip")
         if File.Exists zipPath then File.Delete zipPath
-        // Heartbeat so a large drop doesn't make the log go silent.
-        Progress.during (sprintf "  archiving → %s" (Path.GetFileName zipPath)) 3.0 (fun () ->
-            ZipFile.CreateFromDirectory(targetDir, zipPath, CompressionLevel.Optimal, includeBaseDirectory = false))
+        // Zip with visible start/finish + %-progress.
+        Zip.createFromDirectory targetDir zipPath
         Directory.Delete(targetDir, true)
         Output.set "artifact_path" zipPath
         Output.set "size"          (FileInfo zipPath).Length
