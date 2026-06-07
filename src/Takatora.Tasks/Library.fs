@@ -575,9 +575,12 @@ module Log =
         ]
 
 /// Heartbeat for long, blocking operations so the run log doesn't go
-/// silent (e.g. a large zip). Runs `action`, emitting an info line
+/// silent (e.g. a large zip). Runs `action`, emitting a line
 /// "<label> … (Ns)" every `everySec` seconds on a background thread until
-/// it returns. No-op heartbeat in describe mode.
+/// it returns. Writes to stdout (NOT Log.info): the runner pumps the task's
+/// stdout into log.txt, which is what the GUI's "Output (tail)" shows — log
+/// events go to events.ndjson instead and wouldn't appear there. No-op in
+/// describe mode.
 [<RequireQualifiedAccess>]
 module Progress =
     let during (label: string) (everySec: float) (action: unit -> 'T) : 'T =
@@ -590,7 +593,7 @@ module Progress =
                     while running do
                         System.Threading.Thread.Sleep(max 250 (int (everySec * 1000.0)))
                         if running then
-                            Log.info (sprintf "%s … (%.0fs)" label sw.Elapsed.TotalSeconds))
+                            System.Console.Out.WriteLine(sprintf "%s … (%.0fs)" label sw.Elapsed.TotalSeconds))
             t.IsBackground <- true
             t.Start()
             try action () finally running <- false
