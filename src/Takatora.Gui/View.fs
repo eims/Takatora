@@ -2198,6 +2198,9 @@ let private logTextBlock (logTail: string list) : IView =
         SelectableTextBlock.fontSize 12.0
         SelectableTextBlock.foreground dimBrush
         SelectableTextBlock.textWrapping TextWrapping.NoWrap
+        // Bottom gap so the last line isn't hidden under the Fluent overlay
+        // horizontal scrollbar that floats over the bottom when lines overflow.
+        SelectableTextBlock.margin (Thickness(0.0, 0.0, 0.0, 16.0))
     ] :> IView
 
 /// Run step outputs (e.g. a UE package's archive_path). Path-valued outputs
