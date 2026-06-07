@@ -10,11 +10,15 @@
 // this stamps + names + manifests a release drop.
 //
 // Params:
-//   sources   string[]  — files/dirs to collect (required; ${steps...} ok)
-//   dest      string?   — output root dir (default "Artifacts")
-//   name      string?   — base name (default: the project name)
-//   stamp     string?   — none | timestamp | git | both (default "timestamp")
-//   archive   bool?     — zip the drop into <name>-<stamp>.zip (default false)
+//   sources    string[]  — files/dirs to collect (required; ${steps...} ok)
+//   use_zip    bool?      — collect `zip_source` instead of `sources` (default false).
+//                          Lets a flow collect the .zip when a zip step ran, or
+//                          the expanded dir otherwise, by wiring both to a bool var.
+//   zip_source string?    — the .zip to collect when use_zip=true (required then).
+//   dest       string?    — output root dir (default "Artifacts")
+//   name       string?    — base name (default: the project name)
+//   stamp      string?    — none | timestamp | git | both (default "timestamp")
+//   archive    bool?      — zip the drop into <name>-<stamp>.zip (default false)
 //
 // Outputs:
 //   artifact_path  string  — the produced folder (or the .zip when archived)
@@ -29,11 +33,15 @@ open System.Text.Json
 open System.Text.Json.Nodes
 open System.Text.Encodings.Web
 
-let sources  = Param.required<string[]> "sources"
-let destRoot = Param.optional<string>   "dest"    "Artifacts"
-let nameArg  = Param.optional<string>   "name"    ""
-let stampArg = Param.optional<string>   "stamp"   "timestamp"
-let archive  = Param.optional<bool>     "archive" false
+let sources   = Param.required<string[]> "sources"
+let useZip    = Param.optional<bool>     "use_zip"    false
+let zipSource = Param.optional<string>   "zip_source" ""
+let destRoot  = Param.optional<string>   "dest"    "Artifacts"
+let nameArg   = Param.optional<string>   "name"    ""
+let stampArg  = Param.optional<string>   "stamp"   "timestamp"
+let archive   = Param.optional<bool>     "archive" false
+Param.note "use_zip"    "Collect zip_source instead of sources (e.g. wire to a `zip` toggle)."
+Param.note "zip_source" "The .zip to collect when use_zip=true."
 
 let resolve (p: string) =
     if Path.IsPathRooted p then p else Path.Combine(Project.workingDir, p)
@@ -87,9 +95,19 @@ Step.run "artifact.collect" (fun () ->
     if Directory.Exists targetDir then Directory.Delete(targetDir, true)
     Directory.CreateDirectory targetDir |> ignore
 
+    // When use_zip, collect the zip instead of the (expanded-dir) sources —
+    // so a flow can wire both to a `zip` toggle and naturally collect the .zip
+    // when it was produced, the expanded dir otherwise.
+    let selectedSources =
+        if useZip then
+            if String.IsNullOrWhiteSpace zipSource then
+                Task.fail<string[]> "artifact.collect: zip_source is required when use_zip is true"
+            else [| zipSource |]
+        else sources
+
     // Copy each source into the drop; build manifest entries as we go.
     let entries = JsonArray()
-    for src in sources do
+    for src in selectedSources do
         // GetFullPath canonicalises separators (no mixed `/`+`\` in the
         // manifest) and collapses any `.`/`..`.
         let s = Path.GetFullPath(resolve src)
