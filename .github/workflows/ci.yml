@@ -1,0 +1,25 @@
+name: ci
+
+# Build + test on every push to main and on pull requests. Windows-hosted
+# runner (no self-hosted agent): the GUI/Avalonia + the Windows Credential
+# Manager P/Invoke in the secrets tests want Windows.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        run: dotnet build Takatora.sln -c Release
+
+      - name: Test
+        run: dotnet test Takatora.sln -c Release --no-build

@@ -1,0 +1,46 @@
+name: release
+
+# Tag-driven release. Push a tag like `v0.1.0-alpha` and this builds the
+# single-file bundle and attaches it to a GitHub Release. Runs on a
+# GitHub-hosted Windows runner — no self-hosted agent: building the bundle
+# is just `dotnet publish` and needs no game engine installed.
+#
+# Before tagging, bump Version.Version in src/Takatora.Core/Library.fs to match
+# the tag (it drives `takatora version` and the GUI About). Tags with a
+# hyphen (-alpha/-beta/-rc) are marked as pre-releases.
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write   # create the GitHub Release + upload assets
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # CLI + GUI in one shared folder (publish/Takatora): Takatora.Cli.exe +
+      # Takatora.Gui.exe + Takatora.Tasks.dll + builtin-tasks/ + the bundled
+      # THIRD-PARTY-NOTICES.txt. Framework-dependent (needs .NET 8 at runtime).
+      - name: Publish bundle
+        shell: pwsh
+        run: ./publish.ps1 -Target Both
+
+      - name: Stage release zip
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE publish/Takatora/
+          Compress-Archive -Path publish/Takatora/* -DestinationPath Takatora-win-x64.zip -Force
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Takatora-win-x64.zip
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
