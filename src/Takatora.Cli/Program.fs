@@ -1,6 +1,7 @@
 module Takatora.Cli.Program
 
 open System
+open System.IO
 open System.CommandLine
 open Takatora.Core
 
@@ -10,10 +11,22 @@ let main argv =
 
     // ─── version ──────────────────────────────────────────────────
     let versionCmd = Command("version", "Print Takatora version and exit")
-    versionCmd.SetAction(fun _ ->
-        printfn $"{Version.Product} {Version.Version}"
-        printfn $"{Version.License} License · {Version.Copyright}"
-        printfn $"{Version.Repository}")
+    let versionLicensesOpt = Option<bool>("--licenses")
+    versionLicensesOpt.Description <- "Print the bundled third-party license notices and exit"
+    versionCmd.Options.Add(versionLicensesOpt)
+    versionCmd.SetAction(fun (pr: ParseResult) ->
+        // The notices file ships next to the executable (Content in the fsproj).
+        let notices = Path.Combine(AppContext.BaseDirectory, "THIRD-PARTY-NOTICES.txt")
+        if pr.GetValue(versionLicensesOpt) then
+            if File.Exists notices then Console.Out.Write(File.ReadAllText notices)
+            else Console.Error.WriteLine($"THIRD-PARTY-NOTICES.txt not found next to the executable. See {Version.Repository}")
+        else
+            printfn $"{Version.Product} {Version.Version}"
+            printfn $"{Version.License} License · {Version.Copyright}"
+            printfn $"{Version.Repository}"
+            if File.Exists notices then
+                printfn $"Third-party notices: {notices}"
+                printfn "  (full text: `takatora version --licenses`)")
     root.Subcommands.Add(versionCmd)
 
     // ─── init ─────────────────────────────────────────────────────
