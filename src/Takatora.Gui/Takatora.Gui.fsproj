@@ -50,6 +50,13 @@
     wrappers `#r` Takatora.Tasks.dll by physical path. Embedding it in the
     bundle makes FSI fail with FS0078 the moment a flow runs.
   -->
+  <!-- Ship the third-party notices next to the exe (About opens it). -->
+  <ItemGroup>
+    <Content Include="..\..\THIRD-PARTY-NOTICES.txt" Link="THIRD-PARTY-NOTICES.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
   <Target Name="KeepTasksSdkLooseInSingleFile" BeforeTargets="_ComputeFilesToBundle">
     <ItemGroup>
       <ResolvedFileToPublish Condition="'%(Filename)%(Extension)' == 'Takatora.Tasks.dll'">

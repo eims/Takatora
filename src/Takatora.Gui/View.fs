@@ -3202,9 +3202,23 @@ let private aboutDialog (dispatch: Msg -> unit) : IView =
             TextBlock.fontSize size
             TextBlock.horizontalAlignment HorizontalAlignment.Center
         ] :> IView
+    // A link-style button (used for the repo URL and the notices link).
+    let linkButton (text: string) (onClick: unit -> unit) =
+        Button.create [
+            Button.content text
+            Button.horizontalAlignment HorizontalAlignment.Center
+            Button.background transparentBrush
+            Button.borderThickness (Thickness 0.0)
+            Button.foreground accent
+            Button.fontSize 12.0
+            Button.cursor handCursor
+            Button.onClick ((fun _ -> onClick ()), SubPatchOptions.Always)
+        ] :> IView
+    // NOTE: no click-the-scrim-to-dismiss — pressing inside the card would
+    // close About on pointer-down before an inner button's onClick fired
+    // (the THIRD-PARTY NOTICES / repo links did nothing). Use the Close button.
     Border.create [
         Border.background overlayBg
-        Border.onPointerPressed ((fun _ -> dispatch HideAbout), SubPatchOptions.Always)
         Border.child (
             Border.create [
                 Border.background cardBg
@@ -3213,8 +3227,6 @@ let private aboutDialog (dispatch: Msg -> unit) : IView =
                 Border.horizontalAlignment HorizontalAlignment.Center
                 Border.verticalAlignment VerticalAlignment.Center
                 Border.maxWidth 420.0
-                // Swallow clicks on the card so they don't hit the scrim.
-                Border.onPointerPressed ((fun e -> e.Handled <- true), SubPatchOptions.Always)
                 Border.child (
                     StackPanel.create [
                         StackPanel.spacing 10.0
@@ -3223,7 +3235,11 @@ let private aboutDialog (dispatch: Msg -> unit) : IView =
                             line (sprintf "v%s" Version.Version) dimBrush 13.0
                             line "Local CI for game builds — CI without the CI server." mutedBrush 12.0
                             line (sprintf "%s License · %s" Version.License Version.Copyright) dimBrush 12.0
-                            line Version.Repository accent 12.0
+                            // Clickable repo link → opens in the default browser.
+                            linkButton Version.Repository (fun () -> dispatch (OpenUrl Version.Repository))
+                            // Opens the bundled THIRD-PARTY-NOTICES.txt next to the exe.
+                            linkButton "THIRD-PARTY NOTICES" (fun () ->
+                                dispatch (OpenFile (System.IO.Path.Combine(System.AppContext.BaseDirectory, "THIRD-PARTY-NOTICES.txt"))))
                             Button.create [
                                 Button.content "Close"
                                 Button.horizontalAlignment HorizontalAlignment.Center

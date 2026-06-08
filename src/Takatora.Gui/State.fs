@@ -286,6 +286,8 @@ type Msg =
     | OpenInExplorer of path:string
     /// Open a file in the OS default app (e.g. log.txt in a text editor).
     | OpenFile of path:string
+    /// Open a URL in the OS default browser.
+    | OpenUrl of url:string
     /// Open a project in its engine's editor (UE/Unity/Godot).
     | OpenInEditor of ProjectId
     /// Clear the in-flight "Open in editor" flag for a project (timed).
@@ -1455,6 +1457,15 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 let psi = System.Diagnostics.ProcessStartInfo(normalized)
                 psi.UseShellExecute <- true
                 System.Diagnostics.Process.Start(psi) |> ignore
+         with _ -> ())
+        model, Cmd.none
+    | OpenUrl url ->
+        // Open a URL in the default browser (UseShellExecute delegates to the
+        // shell). Best-effort.
+        (try
+            let psi = System.Diagnostics.ProcessStartInfo(url)
+            psi.UseShellExecute <- true
+            System.Diagnostics.Process.Start(psi) |> ignore
          with _ -> ())
         model, Cmd.none
     | OpenInEditor pid when Set.contains pid model.OpeningEditors ->
