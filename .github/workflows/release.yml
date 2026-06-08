@@ -44,3 +44,7 @@ jobs:
           files: Takatora-win-x64.zip
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
+          # Create as a DRAFT: the build + asset upload happen automatically,
+          # but nothing is public until you review and click "Publish release".
+          # A safety gate to catch mistakes before they ship.
+          draft: true
