@@ -3,6 +3,9 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
+    <!-- The shipped CLI is `takatora` (matches the docs / the `takatora`
+         command), not Takatora.Cli. -->
+    <AssemblyName>takatora</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>

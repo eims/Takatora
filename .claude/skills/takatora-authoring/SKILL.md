@@ -8,7 +8,7 @@ description: Write or edit Takatora CI config — define flows in .takatora/flow
 After any change: `takatora validate <path>`, then `takatora run <path>
 <flow> --dry-run`. For a custom task also `takatora describe <type>
 --project <path>`. (`takatora` may be a vendored exe, e.g.
-`Tools/Takatora/Takatora.Cli.exe`, or `dotnet run --project src/Takatora.Cli
+`Tools/Takatora/takatora.exe`, or `dotnet run --project src/Takatora.Cli
 --` from source.)
 
 ## Flows — `<project>/.takatora/flows.toml`

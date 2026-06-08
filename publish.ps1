@@ -9,7 +9,7 @@
 # Output is framework-dependent single-file (needs .NET 8 runtime on the box).
 # Both exes resolve Takatora.Tasks.dll + builtin-tasks/ from their own folder,
 # so when shipping both they share ONE copy in a single folder:
-#   Takatora.Cli.exe + Takatora.Gui.exe + Takatora.Tasks.dll + builtin-tasks/
+#   takatora.exe + Takatora.Gui.exe + Takatora.Tasks.dll + builtin-tasks/
 # Takatora.Tasks.dll is kept loose (the .fsx task wrappers `#r` it by path);
 # the GUI also self-extracts its Avalonia/Skia native libs from the exe.
 param(
@@ -27,7 +27,7 @@ if (-not [System.IO.Path]::IsPathRooted($OutputRoot)) { $OutputRoot = Join-Path 
 # its files, so the clean step (Remove-Item) below fails and the publish can't
 # complete. Stop ONLY copies launched from under $OutputRoot — leave dev builds
 # (bin/) and vendored copies elsewhere alone.
-Get-Process -Name Takatora.Cli, Takatora.Gui -ErrorAction SilentlyContinue |
+Get-Process -Name takatora, Takatora.Gui -ErrorAction SilentlyContinue |
     Where-Object {
         try { $_.MainModule.FileName.StartsWith($OutputRoot, [StringComparison]::OrdinalIgnoreCase) }
         catch { $false }
@@ -91,7 +91,7 @@ switch ($Target) {
         Remove-Item -Recurse -Force $guiTmp
         Show-Dir $mainOut
         Write-Host "Launch the GUI:  $mainOut\Takatora.Gui.exe" -ForegroundColor Green
-        Write-Host "Run a flow:      $mainOut\Takatora.Cli.exe run <project> <flow>" -ForegroundColor Green
+        Write-Host "Run a flow:      $mainOut\takatora.exe run <project> <flow>" -ForegroundColor Green
     }
 }
 

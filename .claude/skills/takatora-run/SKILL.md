@@ -10,7 +10,7 @@ You are driving an existing Takatora project. Prefer machine-readable output
 rather than scrape.
 
 The CLI is `takatora`. If it's vendored into a project it may be at e.g.
-`Tools/Takatora/Takatora.Cli.exe`; from a Takatora source checkout use
+`Tools/Takatora/takatora.exe`; from a Takatora source checkout use
 `dotnet run --project src/Takatora.Cli --`. Substitute accordingly.
 
 A `<project>` argument is **either** a registered name (`takatora project list`)

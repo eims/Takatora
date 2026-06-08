@@ -25,7 +25,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      # CLI + GUI in one shared folder (publish/Takatora): Takatora.Cli.exe +
+      # CLI + GUI in one shared folder (publish/Takatora): takatora.exe +
       # Takatora.Gui.exe + Takatora.Tasks.dll + builtin-tasks/ + the bundled
       # THIRD-PARTY-NOTICES.txt. Framework-dependent (needs .NET 8 at runtime).
       - name: Publish bundle
