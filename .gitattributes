@@ -1,0 +1,14 @@
+# Normalize line endings: store LF in the repo and check out LF on every
+# platform. Without this, GitHub's Windows runners (core.autocrlf=true) check
+# out CRLF, and the flows.toml line-surgery tests — which embed a text fixture
+# via a triple-quoted string that then carries the file's line endings —
+# parse-fail on the stray \r. eol=lf overrides core.autocrlf per path.
+* text=auto eol=lf
+
+# Keep common binaries untouched (none are committed today, but be explicit).
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.zip  binary
+*.exe  binary
+*.dll  binary
