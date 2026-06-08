@@ -145,6 +145,29 @@ preset = "safe"
         Assert.Equal<string list>([ "ue.clean"; "ue.build_cook_run" ], stepTypes newText)
 
     [<Fact>]
+    let ``structural edits keep a CRLF flows.toml valid CRLF (no stray \r)`` () =
+        // Build a CRLF fixture explicitly so this doesn't depend on the source
+        // file's checked-out line endings. Regression: the GUI Flow Editor used
+        // to corrupt a hand-CRLF flows.toml — split('\n') left a trailing \r and
+        // the reorder produced a lone \r that Tomlyn rejects.
+        let crlf = stepsSample.Replace("\r\n", "\n").Replace("\n", "\r\n")
+        let assertCrlfOk (newText: string) (expected: string list) =
+            Assert.Equal<string list>(expected, stepTypes newText)   // parses → no stray \r
+            Assert.True(newText.Contains("\r\n"))                    // still CRLF
+            let stripped = newText.Replace("\r\n", "")
+            Assert.DoesNotContain("\r", stripped)                    // no lone \r
+            Assert.DoesNotContain("\n", stripped)                    // no bare \n
+        let moved, ok1 = FlowsEdit.moveStep crlf "release" 0 1
+        Assert.True(ok1)
+        assertCrlfOk moved [ "ue.clean"; "ue.build_cook_run" ]
+        let added, ok2 = FlowsEdit.addStep crlf "release" "git.pull"
+        Assert.True(ok2)
+        assertCrlfOk added [ "ue.build_cook_run"; "ue.clean"; "git.pull" ]
+        let removed, ok3 = FlowsEdit.removeStep crlf "release" 0
+        Assert.True(ok3)
+        assertCrlfOk removed [ "ue.clean" ]
+
+    [<Fact>]
     let ``moveStep refuses out-of-range moves`` () =
         let _, okUp = FlowsEdit.moveStep stepsSample "release" 0 -1
         Assert.False(okUp)

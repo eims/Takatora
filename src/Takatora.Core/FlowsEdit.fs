@@ -44,6 +44,18 @@ module FlowsEdit =
         parts.Add(sprintf "default = %s" (tomlLit def))
         "{ " + String.concat ", " parts + " }"
 
+    /// Split into lines with NO trailing '\r', and report the file's newline
+    /// (CRLF if any '\r\n' is present, else LF). Rejoin the result with that
+    /// `eol` so the file's line endings are preserved exactly — a CRLF
+    /// flows.toml stays valid CRLF after a structural edit, instead of the
+    /// reorder/concat leaving a stray lone '\r' (which Tomlyn rejects).
+    let private splitLines (text: string) : string[] * string =
+        let eol = if text.Contains("\r\n") then "\r\n" else "\n"
+        let lines =
+            text.Split('\n')
+            |> Array.map (fun l -> if l.EndsWith("\r") then l.Substring(0, l.Length - 1) else l)
+        lines, eol
+
     /// Rewrite the `default` of each `changed` var within the named flow's
     /// `[flow.vars]` block. Returns the new text and the names of vars that
     /// could NOT be edited (left untouched). On a missing flow/vars block,
@@ -51,7 +63,7 @@ module FlowsEdit =
     let setVarDefaults (text: string) (flowId: string) (changed: (FlowVar * TomlValue) list) : string * string list =
         if List.isEmpty changed then text, []
         else
-        let lines = text.Split('\n')   // each line keeps a trailing \r on CRLF files
+        let lines, eol = splitLines text
         let trimmed i = lines.[i].Trim()
         let headers = [ for i in 0 .. lines.Length - 1 do if (trimmed i).StartsWith("[[flow]]") then yield i ]
         let allSkipped () = changed |> List.map (fun (v, _) -> v.Name)
@@ -85,7 +97,7 @@ module FlowsEdit =
                         // Groups: 1 = indent, 2 = trailing (comment / \r) after the }.
                         lines2.[i] <- sprintf "%s%s = %s%s" m.Groups.[1].Value v.Name (renderVarInline v def) m.Groups.[2].Value
                     | None -> skipped <- v.Name :: skipped
-                String.concat "\n" lines2, List.rev skipped
+                String.concat eol lines2, List.rev skipped
 
     // ─── shared flow/step location helpers ─────────────────────────
 
@@ -111,13 +123,10 @@ module FlowsEdit =
         |> Seq.tryFind (fun i -> (lines.[i].Trim()).StartsWith("["))
         |> Option.defaultValue bEnd
 
-    let private crlf (lines: string[]) =
-        if lines.Length > 0 && lines.[0].EndsWith("\r") then "\r" else ""
-
     /// Remove the `stepIndex`-th step of a flow (its header + param lines, plus
     /// one trailing blank line). Returns the new text and whether it landed.
     let removeStep (text: string) (flowId: string) (stepIndex: int) : string * bool =
-        let lines = text.Split('\n')
+        let lines, eol = splitLines text
         match locateFlow lines flowId with
         | None -> text, false
         | Some (bStart, bEnd) ->
@@ -127,14 +136,14 @@ module FlowsEdit =
             | Some sh ->
                 let se = stepBlockEnd lines sh bEnd
                 let kept = [ for i in 0 .. lines.Length - 1 do if i < sh || i >= se then yield lines.[i] ]
-                String.concat "\n" kept, true
+                String.concat eol kept, true
 
     /// Move the `stepIndex`-th step by `delta` (-1 = up, +1 = down), swapping
     /// it with the adjacent step. Returns the new text and whether it landed.
     let moveStep (text: string) (flowId: string) (stepIndex: int) (delta: int) : string * bool =
         if delta <> -1 && delta <> 1 then text, false
         else
-        let lines = text.Split('\n')
+        let lines, eol = splitLines text
         match locateFlow lines flowId with
         | None -> text, false
         | Some (bStart, bEnd) ->
@@ -152,16 +161,15 @@ module FlowsEdit =
                 let aBlock = take aStart bStartIdx
                 let bBlock = take bStartIdx bEndIdx
                 let after  = take bEndIdx lines.Length
-                String.concat "\n" (before @ bBlock @ aBlock @ after), true
+                String.concat eol (before @ bBlock @ aBlock @ after), true
 
     /// Append a new step (`[[flow.steps]]` + `type = "<taskType>"`) at the end
     /// of a flow's steps. Returns the new text and whether it landed.
     let addStep (text: string) (flowId: string) (taskType: string) : string * bool =
-        let lines = text.Split('\n')
+        let lines, eol = splitLines text
         match locateFlow lines flowId with
         | None -> text, false
         | Some (bStart, bEnd) ->
-            let cr = crlf lines
             let shs = stepHeadersIn lines bStart bEnd
             // The region end to insert before: end of the last step block, or
             // the flow's end if there are no steps yet.
@@ -177,13 +185,13 @@ module FlowsEdit =
                   && (let t = lines.[insertAt - 1].Trim() in t = "" || t.StartsWith("#")) do
                 insertAt <- insertAt - 1
             let block =
-                [ "" + cr
-                  "[[flow.steps]]" + cr
-                  sprintf "type = \"%s\"%s" (taskType.Replace("\\", "\\\\").Replace("\"", "\\\"")) cr ]
+                [ ""
+                  "[[flow.steps]]"
+                  sprintf "type = \"%s\"" (taskType.Replace("\\", "\\\\").Replace("\"", "\\\"")) ]
             let asList = List.ofArray lines
             let before = asList |> List.truncate insertAt
             let after = asList |> List.skip insertAt
-            String.concat "\n" (before @ block @ after), true
+            String.concat eol (before @ block @ after), true
 
     let private reservedStepKeys = Set.ofList [ "type"; "id"; "when" ]
 
@@ -196,7 +204,7 @@ module FlowsEdit =
     let setStepParam (text: string) (flowId: string) (stepIndex: int) (key: string) (value: TomlValue) : string * bool =
         if Set.contains key reservedStepKeys then text, false
         else
-        let lines = text.Split('\n')
+        let lines, eol = splitLines text
         let trimmed i = lines.[i].Trim()
         let headers = [ for i in 0 .. lines.Length - 1 do if (trimmed i).StartsWith("[[flow]]") then yield i ]
         let targetBlock =
@@ -227,19 +235,17 @@ module FlowsEdit =
                     let m = pat.Match lines.[i]
                     let indent = m.Groups.[1].Value
                     let rest = m.Groups.[2].Value
-                    let cr = if rest.EndsWith("\r") then "\r" else ""
                     // Preserve a trailing inline comment ( # …), if any.
                     let comment =
-                        let cm = Regex.Match(rest.TrimEnd('\r'), "\\s+#.*$")
+                        let cm = Regex.Match(rest, "\\s+#.*$")
                         if cm.Success then cm.Value else ""
                     let lines2 = Array.copy lines
-                    lines2.[i] <- sprintf "%s%s = %s%s%s" indent key valStr comment cr
-                    String.concat "\n" lines2, true
+                    lines2.[i] <- sprintf "%s%s = %s%s" indent key valStr comment
+                    String.concat eol lines2, true
                 | None ->
                     // Insert a fresh line right after the step header.
-                    let cr = if lines.[sh].EndsWith("\r") then "\r" else ""
-                    let newLine = sprintf "%s = %s%s" key valStr cr
+                    let newLine = sprintf "%s = %s" key valStr
                     let asList = List.ofArray lines
                     let before = asList |> List.truncate (sh + 1)
                     let after = asList |> List.skip (sh + 1)
-                    String.concat "\n" (before @ [ newLine ] @ after), true
+                    String.concat eol (before @ [ newLine ] @ after), true
