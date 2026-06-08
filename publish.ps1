@@ -23,13 +23,13 @@ $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 if (-not [System.IO.Path]::IsPathRooted($OutputRoot)) { $OutputRoot = Join-Path $root $OutputRoot }
 
-# A previously-published Takatora.exe running from the output dir would lock
-# its files, so the clean step (Remove-Item) below fails and the publish can't
-# complete. Stop ONLY copies launched from under $OutputRoot — leave dev builds
-# (bin/) and vendored copies elsewhere alone.
-Get-Process -Name takatora, Takatora.Gui -ErrorAction SilentlyContinue |
+# Any exe still running from under the output dir would lock its files and
+# break the clean below. Stop ONLY processes launched from under $OutputRoot
+# (by path, so it catches takatora.exe / Takatora.Gui.exe / older names alike)
+# — dev builds (bin/) and vendored copies elsewhere are left alone.
+Get-Process -ErrorAction SilentlyContinue |
     Where-Object {
-        try { $_.MainModule.FileName.StartsWith($OutputRoot, [StringComparison]::OrdinalIgnoreCase) }
+        try { $_.Path -and $_.Path.StartsWith($OutputRoot, [StringComparison]::OrdinalIgnoreCase) }
         catch { $false }
     } |
     ForEach-Object {
@@ -38,9 +38,20 @@ Get-Process -Name takatora, Takatora.Gui -ErrorAction SilentlyContinue |
     }
 Start-Sleep -Milliseconds 400  # let Windows release the file handles
 
+# Empty a directory by deleting its CONTENTS (not the folder itself), so an
+# Explorer window open on the folder — which locks the directory handle — does
+# not break the clean. The folder is created if absent.
+function Clear-OutDir([string]$Out) {
+    if (Test-Path $Out) {
+        Get-ChildItem -LiteralPath $Out -Force | Remove-Item -Recurse -Force
+    } else {
+        New-Item -ItemType Directory -Force $Out | Out-Null
+    }
+}
+
 function Publish-Bundle([string]$Proj, [string]$Out, [string[]]$Extra) {
     Write-Host "Publishing $Proj ($Configuration / $Rid, single-file) -> $Out ..." -ForegroundColor Cyan
-    if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
+    Clear-OutDir $Out
     # Pipe to Out-Host so dotnet's build chatter doesn't leak into the return.
     # NB: use -p:SelfContained=false, NOT --self-contained false. The CLI flag
     # form isn't honored alongside -p:PublishSingleFile=true (the bundle ends
