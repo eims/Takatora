@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="Library.fs" />
     <Compile Include="Domain.fs" />
     <Compile Include="TomlConfig.fs" />
     <Compile Include="FlowsEdit.fs" />
@@ -20,7 +21,6 @@
     <Compile Include="Describe.fs" />
     <Compile Include="Watch.fs" />
     <Compile Include="Run.fs" />
-    <Compile Include="Library.fs" />
   </ItemGroup>
 
   <ItemGroup>

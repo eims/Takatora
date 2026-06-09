@@ -11,6 +11,9 @@ open Tomlyn.Model
 /// Captures enough for listing + replay; full details still live in the
 /// run dir for show-run to render.
 type RunHistoryEntry = {
+    /// On-disk run-record schema version (`manifest.toml`'s `schema_version`).
+    /// Runs written before the field existed report `1` (the original layout).
+    SchemaVersion: int
     RunId: string
     FlowId: string
     StartedAt: DateTimeOffset
@@ -46,6 +49,12 @@ module RunHistory =
         match tbl.TryGetValue(key) with
         | true, (:? double as d) -> Some d
         | true, (:? int64 as i)  -> Some (float i)
+        | _ -> None
+
+    let private tryInt (tbl: TomlTable) (key: string) =
+        match tbl.TryGetValue(key) with
+        | true, (:? int64 as i)  -> Some (int i)
+        | true, (:? double as d) -> Some (int d)
         | _ -> None
 
     let private parseDate (s: string) : DateTimeOffset option =
@@ -85,7 +94,10 @@ module RunHistory =
                             |> Seq.map (fun kv -> kv.Key, convertValue kv.Value)
                             |> Map.ofSeq
                         | _ -> Map.empty
+                    // Missing field → a pre-versioning run, which is v1-shaped.
+                    let schemaVersion = tryInt table "schema_version" |> Option.defaultValue 1
                     Some {
+                        SchemaVersion = schemaVersion
                         RunId = runId
                         FlowId = flowId
                         StartedAt = started

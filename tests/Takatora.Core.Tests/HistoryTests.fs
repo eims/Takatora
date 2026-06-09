@@ -104,6 +104,38 @@ let ``findRun returns None for unknown id`` () =
     withProjectTree (fun root ->
         Assert.Equal(None, RunHistory.findRun root "r-nope"))
 
+// ─── schema_version tolerance ──────────────────────────────────────
+// The reader must treat a manifest with NO schema_version (every run
+// written before the field existed) as v1 — losing those from history
+// would be a worse regression than any format change.
+
+[<Fact>]
+let ``manifest without schema_version is read as v1`` () =
+    withProjectTree (fun root ->
+        let runs = Path.Combine(root, ".takatora", "runs")
+        // writeManifest deliberately emits NO schema_version line.
+        writeManifest (Path.Combine(runs, "r-legacy")) "r-legacy" "smoke"
+                      "2026-05-10T10:00:00+00:00" "success"
+        match RunHistory.findRun root "r-legacy" with
+        | Some (entry, _) -> Assert.Equal(1, entry.SchemaVersion)
+        | None -> Assert.Fail("expected findRun to return Some"))
+
+[<Fact>]
+let ``manifest with an explicit schema_version is preserved`` () =
+    withProjectTree (fun root ->
+        let runDir = Path.Combine(root, ".takatora", "runs", "r-v2")
+        Directory.CreateDirectory(runDir) |> ignore
+        let manifest =
+            "schema_version = 2\n" +
+            "flow_id = \"smoke\"\n" +
+            "run_id = \"r-v2\"\n" +
+            "started_at = \"2026-05-10T10:00:00+00:00\"\n" +
+            "result = \"success\"\n"
+        File.WriteAllText(Path.Combine(runDir, "manifest.toml"), manifest)
+        match RunHistory.findRun root "r-v2" with
+        | Some (entry, _) -> Assert.Equal(2, entry.SchemaVersion)
+        | None -> Assert.Fail("expected findRun to return Some"))
+
 // ─── runOutputs ────────────────────────────────────────────────────
 
 [<Fact>]

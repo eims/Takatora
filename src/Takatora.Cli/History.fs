@@ -49,6 +49,7 @@ let private historyToJson (entries: RunHistoryEntry list) : string =
     let arr = JsonArray()
     for e in entries do
         let item = JsonObject()
+        item.["schema_version"] <- JsonValue.Create(e.SchemaVersion)
         item.["run_id"]       <- JsonValue.Create(e.RunId)
         item.["flow_id"]      <- JsonValue.Create(e.FlowId)
         item.["started_at"]   <- JsonValue.Create(e.StartedAt.ToString("o", CultureInfo.InvariantCulture))
@@ -133,6 +134,7 @@ let private showToHuman (entry: RunHistoryEntry) (steps: StepSummary list) : str
 
 let private showToJson (entry: RunHistoryEntry) (steps: StepSummary list) : string =
     let root = JsonObject()
+    root.["schema_version"] <- JsonValue.Create(entry.SchemaVersion)
     root.["run_id"]       <- JsonValue.Create(entry.RunId)
     root.["flow_id"]      <- JsonValue.Create(entry.FlowId)
     root.["result"]       <- JsonValue.Create(entry.Result)

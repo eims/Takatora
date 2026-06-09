@@ -38,6 +38,7 @@ truth; the GUI is an editor/runner on top of it.
 ## Reference
 
 - [Built-in tasks](builtin-tasks.md) — every bundled task type with its params + outputs
+- [Run record schema](run-record-schema.md) — the on-disk run history format + CLI JSON shapes (frozen contract)
 
 ## Per-engine guides
 

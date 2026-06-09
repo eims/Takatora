@@ -97,7 +97,8 @@ type StateTests() =
             with CurrentProject = Some "p1" }
 
     let fakeEntry (runId: string) : RunHistoryEntry =
-        { RunId       = runId
+        { SchemaVersion = 1
+          RunId       = runId
           FlowId      = "smoke"
           StartedAt   = DateTimeOffset.UtcNow
           FinishedAt  = Some DateTimeOffset.UtcNow

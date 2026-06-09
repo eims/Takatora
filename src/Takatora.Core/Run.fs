@@ -621,6 +621,11 @@ module Run =
             sb.AppendFormat("{0} = \"{1}\"\n", key, tomlEsc v) |> ignore
         let writeRaw key (v: string) =
             sb.AppendFormat("{0} = {1}\n", key, v) |> ignore
+        // Stamp the schema version FIRST so a future reader can branch on the
+        // on-disk format before trusting any other field. Runs written before
+        // this field existed have no `schema_version`; the reader treats those
+        // as v1 (this layout). See docs/run-record-schema.md.
+        writeRaw "schema_version" (string Takatora.Core.Version.RunSchemaVersion)
         writeStr "flow_id" flow.Id
         writeStr "run_id" outcome.RunId
         writeStr "started_at" (outcome.StartedAt.ToString("o", CultureInfo.InvariantCulture))
@@ -843,6 +848,7 @@ module Run =
 
             let started = DateTimeOffset.UtcNow
             writeEvent eventsPath "run.start" [
+                "schema_version", box Takatora.Core.Version.RunSchemaVersion
                 "run_id", box runId
                 "flow_id", box flow.Id
                 "project", box project.Name

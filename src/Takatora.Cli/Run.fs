@@ -129,6 +129,7 @@ let rec private tomlValueToJson (v: TomlValue) : JsonNode =
 
 let private outcomeToJson (outcome: RunOutcome) : string =
     let root = JsonObject()
+    root.["schema_version"] <- JsonValue.Create(Takatora.Core.Version.RunSchemaVersion)
     root.["run_id"]   <- JsonValue.Create(outcome.RunId)
     root.["flow_id"]  <- JsonValue.Create(outcome.FlowId)
     root.["result"]   <-
