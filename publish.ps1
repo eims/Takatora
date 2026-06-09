@@ -17,7 +17,12 @@ param(
     [string]$Rid = "win-x64",
     [string]$Configuration = "Release",
     [string]$OutputRoot = "publish",
-    [string]$Dest
+    [string]$Dest,
+    # Bundle the .NET runtime into each exe (no .NET install needed to run),
+    # at the cost of size — the runtime is embedded in BOTH single-file exes
+    # (it is not shared between them). Output lands in a `*-with-runtime`
+    # folder so it can sit alongside the framework-dependent build.
+    [switch]$SelfContained
 )
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
@@ -50,15 +55,18 @@ function Clear-OutDir([string]$Out) {
 }
 
 function Publish-Bundle([string]$Proj, [string]$Out, [string[]]$Extra) {
-    Write-Host "Publishing $Proj ($Configuration / $Rid, single-file) -> $Out ..." -ForegroundColor Cyan
+    $sc = if ($SelfContained) { 'true' } else { 'false' }
+    $kind = if ($SelfContained) { 'self-contained' } else { 'framework-dependent' }
+    Write-Host "Publishing $Proj ($Configuration / $Rid, single-file, $kind) -> $Out ..." -ForegroundColor Cyan
     Clear-OutDir $Out
     # Pipe to Out-Host so dotnet's build chatter doesn't leak into the return.
-    # NB: use -p:SelfContained=false, NOT --self-contained false. The CLI flag
-    # form isn't honored alongside -p:PublishSingleFile=true (the bundle ends
-    # up including the whole .NET runtime, ~95MB); the -p: form is respected
-    # and yields a proper framework-dependent single file (~27MB).
+    # NB: always set self-containment via -p:SelfContained=<bool>, NOT the CLI
+    # flag --self-contained. The CLI flag form isn't honored alongside
+    # -p:PublishSingleFile=true (a framework-dependent build wrongly bundles
+    # the whole runtime, ~95MB); the -p: form is respected — false yields a
+    # ~27MB framework-dependent single file, true a runtime-embedded one.
     dotnet publish (Join-Path $root $Proj) `
-        -c $Configuration -r $Rid -p:SelfContained=false -p:PublishSingleFile=true @Extra `
+        -c $Configuration -r $Rid -p:SelfContained=$sc -p:PublishSingleFile=true @Extra `
         -o $Out | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $Proj (exit $LASTEXITCODE)" }
 }
@@ -75,15 +83,18 @@ $guiExtra = @('-p:IncludeNativeLibrariesForSelfExtract=true')  # fold native lib
 
 # The folder we hand to -Dest (and announce). Set per target below.
 $mainOut = $null
+# Self-contained builds land in `*-with-runtime` folders so they can coexist
+# with the framework-dependent ones under the same OutputRoot.
+$suffix = if ($SelfContained) { "-with-runtime" } else { "" }
 
 switch ($Target) {
     'Cli' {
-        $mainOut = Join-Path $OutputRoot "Takatora"
+        $mainOut = Join-Path $OutputRoot "Takatora$suffix"
         Publish-Bundle $cliProj $mainOut @()
         Show-Dir $mainOut
     }
     'Gui' {
-        $mainOut = Join-Path $OutputRoot "Takatora-Gui"
+        $mainOut = Join-Path $OutputRoot "Takatora-Gui$suffix"
         Publish-Bundle $guiProj $mainOut $guiExtra
         Show-Dir $mainOut
         Write-Host "Launch the GUI:  $mainOut\Takatora.Gui.exe" -ForegroundColor Green
@@ -92,9 +103,9 @@ switch ($Target) {
         # One shared folder. Publish the CLI (gives Takatora.Tasks.dll +
         # builtin-tasks/), then publish the GUI to a temp and drop just its exe
         # alongside — both share the CLI's loose Tasks.dll + builtin-tasks/.
-        $mainOut = Join-Path $OutputRoot "Takatora"
+        $mainOut = Join-Path $OutputRoot "Takatora$suffix"
         Publish-Bundle $cliProj $mainOut @()
-        $guiTmp = Join-Path $OutputRoot ".gui-tmp"
+        $guiTmp = Join-Path $OutputRoot ".gui-tmp$suffix"
         Publish-Bundle $guiProj $guiTmp $guiExtra
         # Explicit file destination (NOT the dir): copying a file onto a
         # non-existent dir path would otherwise create a FILE named "Takatora".

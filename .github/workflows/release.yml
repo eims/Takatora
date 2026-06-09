@@ -25,23 +25,31 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      # CLI + GUI in one shared folder (publish/Takatora): takatora.exe +
-      # Takatora.Gui.exe + Takatora.Tasks.dll + builtin-tasks/ + the bundled
-      # THIRD-PARTY-NOTICES.txt. Framework-dependent (needs .NET 8 at runtime).
-      - name: Publish bundle
+      # Two variants of the same CLI + GUI bundle (takatora.exe +
+      # Takatora.Gui.exe + Takatora.Tasks.dll + builtin-tasks/ +
+      # THIRD-PARTY-NOTICES.txt), each in its own shared folder:
+      #   publish/Takatora               framework-dependent (~13MB zip, needs .NET 8)
+      #   publish/Takatora-with-runtime  self-contained      (~70MB zip, no install)
+      - name: Publish bundles
         shell: pwsh
-        run: ./publish.ps1 -Target Both
+        run: |
+          ./publish.ps1 -Target Both
+          ./publish.ps1 -Target Both -SelfContained
 
-      - name: Stage release zip
+      - name: Stage release zips
         shell: pwsh
         run: |
           Copy-Item LICENSE publish/Takatora/
+          Copy-Item LICENSE publish/Takatora-with-runtime/
           Compress-Archive -Path publish/Takatora/* -DestinationPath Takatora-win-x64.zip -Force
+          Compress-Archive -Path publish/Takatora-with-runtime/* -DestinationPath Takatora-win-x64-with-runtime.zip -Force
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: Takatora-win-x64.zip
+          files: |
+            Takatora-win-x64.zip
+            Takatora-win-x64-with-runtime.zip
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           # Create as a DRAFT: the build + asset upload happen automatically,
