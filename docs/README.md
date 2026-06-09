@@ -35,6 +35,10 @@ truth; the GUI is an editor/runner on top of it.
 4. Open the **GUI** to browse flows, run them with parameters, watch live
    logs, and review past runs.
 
+## Reference
+
+- [Built-in tasks](builtin-tasks.md) — every bundled task type with its params + outputs
+
 ## Per-engine guides
 
 - [Unreal Engine](unreal.md)
