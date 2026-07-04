@@ -6,7 +6,7 @@ module Version =
     let Product = "Takatora"
 
     [<Literal>]
-    let Version = "0.1.0-alpha"
+    let Version = "0.1.1-alpha"
 
     /// SPDX license id — surfaced in About / `takatora version`.
     [<Literal>]

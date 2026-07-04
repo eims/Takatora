@@ -1472,7 +1472,7 @@ type private SettingRow =
 
 /// The project's read-only settings (engine config + resolved engine + VCS +
 /// history + working dir), flattened to filterable rows.
-let private buildSettingRows (proj: Project) (projectRoot: string) (appSettings: AppSettings) : SettingRow list =
+let private buildSettingRows (proj: Project) (projectRoot: string) : SettingRow list =
     let row s l v   = { Section = s; Label = l; Value = v; Color = None }
     let rowC s l v c = { Section = s; Label = l; Value = v; Color = Some c }
     let opt = function Some x -> x | None -> "(autodetect)"
@@ -1481,8 +1481,8 @@ let private buildSettingRows (proj: Project) (projectRoot: string) (appSettings:
       yield row "Engine" "engine_path"    (opt proj.Engine.EnginePath)
       yield row "Engine" "engine_version" (opt proj.Engine.EngineVersion)
       yield row "Engine" "executable"     (opt proj.Engine.Executable)
-      // Resolved engine (effectiveEngine injects the machine-level Godot path).
-      match Engines.resolveProjectEngine (State.effectiveEngine appSettings proj.Engine) projectRoot with
+      // Resolved engine — reads engine_path (project-local) then detection.
+      match Engines.resolveProjectEngine proj.Engine projectRoot with
       | Ok d ->
           yield rowC "Resolved engine" "version" (sprintf "%s %s" (engineKindLabel d.Kind) d.Version) (engineColor d.Kind)
           yield row "Resolved engine" "install path" d.Path
@@ -1634,11 +1634,13 @@ let private ideCommandBlock
         ]
     ] :> IView
 
-/// Editor for the machine-level Godot location. Godot has no canonical
-/// install path, so the user configures search dirs, Detects candidates
-/// (PATH + those dirs), and picks one; the chosen exe is used as the Godot
-/// engine for any project that doesn't set its own engine_path.
+/// Editor for the Godot engine. Godot has no canonical install path, so the
+/// search dirs are machine-level (global) — where to *look*. The engine
+/// itself is project-local: Detect lists candidates (PATH + search dirs) and
+/// picking one writes it to THIS project's `[engine].engine_path`. Godot-fork
+/// users (GDStudio, …) can also just hand-edit `engine_path` in project.toml.
 let private godotBlock
+        (pid: ProjectId)
         (searchPathsDraft: string)
         (candidates: DetectedEngine list)
         (chosen: string option)
@@ -1647,19 +1649,19 @@ let private godotBlock
     StackPanel.create [
         StackPanel.spacing 6.0
         StackPanel.children [
-            sectionHeader "Godot (global)"
+            sectionHeader "Godot"
             TextBlock.create [
-                TextBlock.text "Where to look for Godot (one directory per line). Detect scans PATH + these, then pick one as this machine's Godot — used for any Godot project without its own engine_path."
+                TextBlock.text "Search dirs (one per line) are machine-level — where to look for Godot. Detect scans PATH + these; picking a result sets this project's engine_path (a Godot fork can be hand-set there too)."
                 TextBlock.foreground mutedBrush
                 TextBlock.fontSize 12.0
                 TextBlock.textWrapping TextWrapping.Wrap
             ]
             (match chosen with
-             | Some p ->
-                 settingsFieldColored "chosen" p (engineColor EngineKind.Godot)
-             | None ->
+             | Some p when not (System.String.IsNullOrWhiteSpace p) ->
+                 settingsFieldColored "engine_path" p (engineColor EngineKind.Godot)
+             | _ ->
                  TextBlock.create [
-                     TextBlock.text "(none chosen — using PATH detection)"
+                     TextBlock.text "(no engine_path — using PATH / search-path detection)"
                      TextBlock.foreground mutedBrush
                      TextBlock.fontSize 11.0
                  ] :> IView)
@@ -1709,7 +1711,7 @@ let private godotBlock
                                 Button.create [
                                     Button.content (sprintf "%s (%s)" c.Version (System.IO.Path.GetFileName exe))
                                     Button.margin (Thickness(0.0, 0.0, 6.0, 6.0))
-                                    Button.onClick ((fun _ -> dispatch (PickGodot exe)), SubPatchOptions.Always)
+                                    Button.onClick ((fun _ -> dispatch (PickGodot (pid, exe))), SubPatchOptions.Always)
                                 ] :> IView
                             | None -> TextBlock.create [ TextBlock.text "" ] :> IView
                     ]
@@ -1786,7 +1788,7 @@ let private settingsBody
             // Godot / Secrets) filter as whole sections by keyword match.
             let q = model.SettingsFilter.Trim().ToLowerInvariant()
             let blockMatches (keywords: string) = q = "" || keywords.ToLowerInvariant().Contains q
-            let rowViews = renderSettingRows model.SettingsFilter (buildSettingRows proj projectRoot model.AppSettings)
+            let rowViews = renderSettingRows model.SettingsFilter (buildSettingRows proj projectRoot)
             let isGodot = proj.Engine.Kind = EngineKind.Godot
             let anyVisible =
                 not (List.isEmpty rowViews)
@@ -1803,7 +1805,7 @@ let private settingsBody
                             if blockMatches "open in ide command launch editor rider visual studio code" then
                                 yield ideCommandBlock ideCommandDraft ideCandidates dispatch
                             if isGodot && blockMatches "godot search path engine executable" then
-                                yield godotBlock model.GodotSearchPathsDraft model.GodotCandidates model.AppSettings.GodotPath dispatch
+                                yield godotBlock pid model.GodotSearchPathsDraft model.GodotCandidates proj.Engine.EnginePath dispatch
                             if blockMatches "secrets keychain credentials" then
                                 yield secretsBlock pid secrets dispatch
                             if not anyVisible then
@@ -2027,10 +2029,9 @@ let private projectView
         let editorLaunch =
             match Map.tryFind pid model.ProjectInfo with
             | Some (ProjectInfoOk proj)  ->
-                // effectiveEngine injects the chosen Godot path so the button
-                // enables once a machine-level Godot is picked (matches the
-                // OpenInEditor handler).
-                Engines.resolveEditorLaunch (State.effectiveEngine model.AppSettings proj.Engine) p.Path
+                // Godot resolves from the project-local engine_path (else PATH);
+                // matches the OpenInEditor handler and the runner.
+                Engines.resolveEditorLaunch proj.Engine p.Path
             | Some ProjectInfoMissing    -> Error "project.toml is missing"
             | Some (ProjectInfoError e)  -> Error e
             | None                       -> Error "project not loaded"

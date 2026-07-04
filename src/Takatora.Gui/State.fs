@@ -309,7 +309,7 @@ type Msg =
     | SaveGodotSearchPaths
     | DetectGodot
     | GodotDetected of DetectedEngine list
-    | PickGodot of path:string
+    | PickGodot of pid:ProjectId * path:string
     /// Open the describe-schema Inspector for a flow step (project, flow, idx).
     | SelectStep of ProjectId * flowId:string * stepIndex:int
     | CloseInspector
@@ -782,18 +782,6 @@ let resolveStepTask (projectRoot: string) (taskType: string) : ResolvedTask opti
 let stepSchemaKey (path: string) : string =
     let ticks = try (File.GetLastWriteTimeUtc path).Ticks with _ -> 0L
     sprintf "%s|%d" path ticks
-
-/// Apply machine-level engine settings to a project's [engine]. For Godot
-/// (which has no canonical install), inject the chosen GodotPath as
-/// engine_path when the project doesn't set one — so engine resolution /
-/// "Open in editor" work without a per-project, committed path.
-let effectiveEngine (settings: AppSettings) (engine: Engine) : Engine =
-    match engine.Kind with
-    | EngineKind.Godot when (engine.EnginePath |> Option.forall System.String.IsNullOrWhiteSpace) ->
-        match settings.GodotPath with
-        | Some p when not (System.String.IsNullOrWhiteSpace p) -> { engine with EnginePath = Some p }
-        | _ -> engine
-    | _ -> engine
 
 /// Split a command line into (exe, args): a leading quoted path, else the
 /// first whitespace-delimited token, is the exe; the rest is the args string.
@@ -1478,7 +1466,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         let launched =
             match projectRoot pid model.Projects, Map.tryFind pid model.ProjectInfo with
             | Some root, Some (ProjectInfoOk project) ->
-                match Engines.resolveEditorLaunch (effectiveEngine model.AppSettings project.Engine) root with
+                match Engines.resolveEditorLaunch project.Engine root with
                 | Ok launch ->
                     try
                         let psi =
@@ -1606,11 +1594,21 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         model, cmd
     | GodotDetected candidates ->
         { model with GodotCandidates = candidates }, Cmd.none
-    | PickGodot path ->
-        // Persist the chosen Godot as the machine-level engine.
-        let settings = { model.AppSettings with GodotPath = Some path }
-        (try AppSettings.save settings with _ -> ())
-        { model with AppSettings = settings }, Cmd.none
+    | PickGodot (pid, path) ->
+        // The engine designation is project-local: write the chosen Godot
+        // binary into this project's [engine].engine_path, then reload so the
+        // settings view + "Open in editor" + runs all see it.
+        (match projectRoot pid model.Projects with
+         | Some root ->
+             let tomlPath = Path.Combine(root, ".takatora", "project.toml")
+             try
+                 let text = File.ReadAllText tomlPath
+                 File.WriteAllText(tomlPath, ProjectEdit.setEnginePath text path)
+             with _ -> ()
+         | None -> ())
+        { model with
+            ProjectInfo = Map.add pid (loadProjectInfoFor pid model.Projects) model.ProjectInfo },
+        Cmd.none
     | CloseInspector ->
         { model with SelectedStep = None }, Cmd.none
     | SetStepParam (pid, flowId, idx, key, value) ->

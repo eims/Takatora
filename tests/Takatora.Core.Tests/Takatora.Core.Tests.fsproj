@@ -11,6 +11,7 @@
   <ItemGroup>
     <Compile Include="TomlConfigTests.fs" />
     <Compile Include="FlowsEditTests.fs" />
+    <Compile Include="ProjectEditTests.fs" />
     <Compile Include="ValidateTests.fs" />
     <Compile Include="VarsTests.fs" />
     <Compile Include="EnginesTests.fs" />

@@ -693,6 +693,49 @@ module Run =
                 Engines.engineAssociation path
             | _ -> None
 
+    /// Resolve the engine a run will use into the project's `[engine]` block.
+    /// The designation is project-local: an explicit `engine_path` in
+    /// project.toml wins. For Godot that path IS the editor binary, so it is
+    /// surfaced as `Executable` too (the `Godot.*` task helpers read
+    /// `engine.executable`) — without this a hand-set / GUI-set `engine_path`
+    /// leaves `executable` empty and `godot.export` fails. When no `engine_path`
+    /// is set, auto-detect: Godot scans PATH plus the machine-level (global)
+    /// search paths from AppSettings; UE/Unity resolve from their installs.
+    /// Detection failure is non-fatal — a pure git/fs flow needs no engine, and
+    /// engine tasks raise their own clear error.
+    let private resolveEngineForRun (project: Project) (projectRoot: string) : Project =
+        let abs (p: string) = if Path.IsPathRooted p then p else Path.Combine(projectRoot, p)
+        match project.Engine.EnginePath with
+        | Some p when not (String.IsNullOrWhiteSpace p) ->
+            match project.Engine.Kind with
+            | EngineKind.Godot ->
+                { project with Engine = { project.Engine with Executable = Some (abs p) } }
+            | _ -> project
+        | _ ->
+            let detected =
+                match project.Engine.Kind with
+                | EngineKind.Godot ->
+                    let searchPaths = (AppSettings.load ()).GodotSearchPaths
+                    Engines.pickGodot searchPaths (engineVersionHint project projectRoot)
+                | _ ->
+                    Engines.pick project.Engine.Kind (engineVersionHint project projectRoot)
+            match detected with
+            | Some d ->
+                // For Godot, engine_path is the exe (mirrors a user-set value);
+                // for UE/Unity it's the install root.
+                let enginePath =
+                    match project.Engine.Kind with
+                    | EngineKind.Godot -> d.Executable |> Option.defaultValue d.Path
+                    | _ -> d.Path
+                { project with
+                    Engine =
+                        { project.Engine with
+                            EnginePath = Some enginePath
+                            EngineVersion =
+                                project.Engine.EngineVersion |> Option.orElse (Some d.Version)
+                            Executable = d.Executable } }
+            | None -> project
+
     /// Resolve a flow into the same view `execute` would see at start
     /// of step execution, but stop short of actually spawning anything.
     /// Used by `takatora run --dry-run` to preview what would happen.
@@ -714,23 +757,9 @@ module Run =
             match flows |> List.tryFind (fun f -> f.Id = opts.FlowId) with
             | None -> Error (RunFailure.FlowNotFound opts.FlowId)
             | Some flow ->
-                // Same engine auto-detect path as `execute` so the
-                // plan reflects the runner's actual resolution.
-                let project =
-                    match project.Engine.EnginePath with
-                    | Some _ -> project
-                    | None ->
-                        match Engines.pick project.Engine.Kind (engineVersionHint project projectRoot) with
-                        | Some d ->
-                            { project with
-                                Engine =
-                                    { project.Engine with
-                                        EnginePath = Some d.Path
-                                        EngineVersion =
-                                            project.Engine.EngineVersion
-                                            |> Option.orElse (Some d.Version)
-                                        Executable = d.Executable } }
-                        | None -> project
+                // Same engine resolution as `execute` so the plan reflects
+                // the runner's actual resolution.
+                let project = resolveEngineForRun project projectRoot
 
                 let vars = effectiveVars flow opts.VarOverrides
                 let envReader name =
@@ -817,26 +846,7 @@ module Run =
             let effectiveWorkingDir =
                 Path.GetFullPath(Path.Combine(projectRoot, project.WorkingDir))
 
-            // Engine auto-detection: only fills in path/version/executable
-            // if the user didn't specify them in project.toml. Detection
-            // failure is non-fatal — the .fsx may still get by (e.g. a
-            // pure git/fs flow doesn't need engine info), and tasks
-            // that DO need it raise their own clear error.
-            let project =
-                match project.Engine.EnginePath with
-                | Some _ -> project
-                | None ->
-                    match Engines.pick project.Engine.Kind (engineVersionHint project projectRoot) with
-                    | Some detected ->
-                        { project with
-                            Engine =
-                                { project.Engine with
-                                    EnginePath = Some detected.Path
-                                    EngineVersion =
-                                        project.Engine.EngineVersion
-                                        |> Option.orElse (Some detected.Version)
-                                    Executable = detected.Executable } }
-                    | None -> project
+            let project = resolveEngineForRun project projectRoot
 
             let runId = RunId.generate DateTimeOffset.UtcNow
             let runDir = Path.Combine(projectRoot, ".takatora", "runs", runId)

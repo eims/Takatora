@@ -260,6 +260,22 @@ type = "no-such-task"
             Assert.True(Option.isSome reason)
             Assert.Contains("no-such-task", Option.defaultValue "" reason)
 
+    [<Fact>]
+    member _.``plan surfaces a project-local Godot engine_path as the executable`` () =
+        // Regression: a Godot engine_path must reach `engine.executable`
+        // (what `Godot.*` task helpers read) or `godot.export` fails with
+        // "runner did not detect Godot" despite a designated engine.
+        // A TOML literal string ('...') keeps the Windows backslashes intact.
+        let exe = sdkAssemblyPath  // any absolute, existing file
+        writeFile ".takatora/project.toml"
+            (sprintf "[project]\nname = \"g\"\nworking_dir = \".\"\n\n[engine]\ntype = \"godot\"\nengine_path = '%s'\n" exe)
+        writeFile ".takatora/flows.toml" "[[flow]]\nid = \"f\"\n[[flow.steps]]\nid = \"s\"\ntype = \"noop\"\n"
+        match Run.plan (buildOptions "f" Map.empty) with
+        | Error e -> Assert.Fail($"expected Ok, got %A{e}")
+        | Ok p ->
+            Assert.Equal<string option>(Some exe, p.Project.Engine.Executable)
+            Assert.Equal<string option>(Some exe, p.Project.Engine.EnginePath)
+
     // ─── flow not found ───────────────────────────────────────────
 
     [<Fact>]

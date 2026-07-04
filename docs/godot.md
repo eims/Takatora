@@ -43,6 +43,13 @@ engine_path = "C:/Tools/Godot/godot.exe"
 > Heads-up: `engine_path` lives in the committed `project.toml`. For a path
 > that differs per machine, prefer putting `godot` on `PATH`.
 
+The engine designation is **project-local** (`engine_path`); the only
+machine-level Godot setting is the *search paths* — where to look. In the GUI
+(**Settings → Godot**), add search dirs, click **Detect** (scans `PATH` + those
+dirs), and pick a result — that writes `engine_path` into this project's
+`project.toml`. Using a Godot fork (e.g. GDStudio)? Just point `engine_path` at
+its binary by hand.
+
 ## 3. Fill in the export preset
 
 Edit the `# ←` marked value in `.takatora/flows.toml` so `preset` matches a name

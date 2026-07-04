@@ -34,12 +34,10 @@ let ``save None clears the ide command`` () =
         Assert.Equal<string option>(None, (AppSettings.load ()).IdeCommand))
 
 [<Fact>]
-let ``save then load round-trips Godot search paths and chosen path`` () =
+let ``save then load round-trips Godot search paths`` () =
     withTempSettings (fun () ->
         AppSettings.save
             { AppSettings.empty with
-                GodotSearchPaths = [ @"C:\Tools\Godot"; @"D:\Godot" ]
-                GodotPath = Some @"C:\Tools\Godot\godot.exe" }
+                GodotSearchPaths = [ @"C:\Tools\Godot"; @"D:\Godot" ] }
         let s = AppSettings.load ()
-        Assert.Equal<string list>([ @"C:\Tools\Godot"; @"D:\Godot" ], s.GodotSearchPaths)
-        Assert.Equal<string option>(Some @"C:\Tools\Godot\godot.exe", s.GodotPath))
+        Assert.Equal<string list>([ @"C:\Tools\Godot"; @"D:\Godot" ], s.GodotSearchPaths))

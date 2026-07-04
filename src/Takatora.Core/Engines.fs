@@ -347,6 +347,14 @@ module Engines =
     let pick (kind: EngineKind) (versionHint: string option) : DetectedEngine option =
         pickFrom (detect kind) versionHint
 
+    /// Pick a Godot install from PATH plus the machine-level (global) search
+    /// dirs, honouring an optional version hint. The runner uses this to
+    /// auto-detect when a project doesn't designate its own `engine_path`;
+    /// unlike `pick`, it can see Godot binaries the user configured in
+    /// Settings but never put on PATH. None = nothing found.
+    let pickGodot (searchPaths: string list) (versionHint: string option) : DetectedEngine option =
+        pickFrom (godotCandidates searchPaths) versionHint
+
     // ─── Open project in its engine editor ─────────────────────────
     //
     // A resolved launch: the executable to start, its arguments, whether to

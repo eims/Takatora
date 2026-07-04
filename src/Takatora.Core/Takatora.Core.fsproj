@@ -10,6 +10,7 @@
     <Compile Include="Domain.fs" />
     <Compile Include="TomlConfig.fs" />
     <Compile Include="FlowsEdit.fs" />
+    <Compile Include="ProjectEdit.fs" />
     <Compile Include="Vars.fs" />
     <Compile Include="Engines.fs" />
     <Compile Include="ProjectRegistry.fs" />
