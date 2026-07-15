@@ -33,7 +33,8 @@ truth; the GUI is an editor/runner on top of it.
    ```
 
 4. Open the **GUI** to browse flows, run them with parameters, watch live
-   logs, and review past runs.
+   logs, and review past runs — see the [GUI tour](screenshots.md) for a
+   screen-by-screen walkthrough.
 
 ## Reference
 

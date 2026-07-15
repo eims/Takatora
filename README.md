@@ -6,6 +6,12 @@ Takatora is for developers who want repeatable, automated builds (Unreal / Unity
 
 Named after Tōdō Takatora (藤堂高虎, 1556–1630), a Sengoku-period master castle builder who designed roughly twenty castles and codified the methods of Japanese castle construction.
 
+## Screenshots
+
+![Takatora — project list](docs/images/home.png)
+
+Your projects in one place — engine-tinted, with run history a click away. The GUI runs flows with parameters, keeps per-project history, and includes a Toolbox for one-off scripts. See the **[full GUI tour](docs/screenshots.md)**.
+
 ## Positioning
 
 Takatora sits on a different axis from hosted CIs:
