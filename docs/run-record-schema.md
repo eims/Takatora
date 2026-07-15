@@ -181,10 +181,16 @@ guide and any automation depend on them). All carry `schema_version`.
   "params": { "name": value },
   "step_summary": [
     { "id": "…", "type": "…", "status": "success", "duration_sec": 1.2,
-      "message": "…", "reason": "…" }
+      "message": "…", "reason": "…", "outputs": { "name": value } }
   ]
 }
 ```
+
+`message`/`reason` appear only on failure/skip. `outputs` is always present
+(an empty object when the step recorded none), read back from
+`outputs/<step-id>.ndjson` with each value's JSON type preserved — the same
+shape the live `run` json exposes per step. Adding `outputs` here is additive
+(v1 readers ignore unknown fields), so `schema_version` stays **1**.
 
 ## Forward-look: test history (0.2.0)
 

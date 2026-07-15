@@ -146,9 +146,15 @@ takatora show-run <project> <run-id> [--output-format json]
   "run_id": "r-...", "flow_id": "smoke", "result": "success",
   "params": { "message": "hello from takatora" },
   "step_summary": [ { "id": "notify.console-1", "type": "notify.console",
-                      "status": "success", "duration_sec": 1.033 } ]
+                      "status": "success", "duration_sec": 1.033,
+                      "outputs": {} } ]
 }
 ```
+
+Each step carries an `outputs` object (empty when it recorded none) with the
+recorded values typed as written — e.g. a packaging step's
+`"outputs": { "archive_path": "…/Windows", "size": 12345 }`. This is the
+programmatic hook for grabbing a run's artifacts from automation.
 
 **Re-run with the exact params of a prior run** (secrets excluded — they're
 never stored):

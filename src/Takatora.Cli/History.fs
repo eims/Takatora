@@ -85,7 +85,19 @@ let invokeHistory (project: string) (flowFilter: string option) (limit: int) (fo
 
 // ─── show-run ─────────────────────────────────────────────────────
 
-let private showToHuman (entry: RunHistoryEntry) (steps: StepSummary list) : string =
+let private renderTomlLit (v: TomlValue) : string =
+    match v with
+    | TString s -> sprintf "\"%s\"" s
+    | TInt i    -> string i
+    | TFloat f  -> sprintf "%g" f
+    | TBool b   -> if b then "true" else "false"
+    | _         -> sprintf "%A" v
+
+let private showToHuman
+        (entry: RunHistoryEntry)
+        (steps: StepSummary list)
+        (outputs: Map<string, Map<string, TomlValue>>)
+        : string =
     let sb = StringBuilder()
     sb.AppendLine(sprintf "Run:        %s" entry.RunId) |> ignore
     sb.AppendLine(sprintf "Flow:       %s" entry.FlowId) |> ignore
@@ -130,9 +142,18 @@ let private showToHuman (entry: RunHistoryEntry) (steps: StepSummary list) : str
                 | "cancelled" -> sprintf "cancelled after %.2fs" s.DurationSec
                 | other       -> other
             sb.AppendLine(sprintf "  %s %s (%s) — %s" (resultMark s.Status) s.Id s.Type detail) |> ignore
+            match Map.tryFind s.Id outputs with
+            | Some m when not (Map.isEmpty m) ->
+                for KeyValue (name, v) in m do
+                    sb.AppendLine(sprintf "      → %s = %s" name (renderTomlLit v)) |> ignore
+            | _ -> ()
     sb.ToString()
 
-let private showToJson (entry: RunHistoryEntry) (steps: StepSummary list) : string =
+let internal showToJson
+        (entry: RunHistoryEntry)
+        (steps: StepSummary list)
+        (outputs: Map<string, Map<string, TomlValue>>)
+        : string =
     let root = JsonObject()
     root.["schema_version"] <- JsonValue.Create(entry.SchemaVersion)
     root.["run_id"]       <- JsonValue.Create(entry.RunId)
@@ -165,6 +186,13 @@ let private showToJson (entry: RunHistoryEntry) (steps: StepSummary list) : stri
         item.["duration_sec"] <- JsonValue.Create(s.DurationSec)
         s.Message |> Option.iter (fun m -> item.["message"] <- JsonValue.Create(m))
         s.Reason  |> Option.iter (fun r -> item.["reason"]  <- JsonValue.Create(r))
+        // Recorded step outputs, typed — same shape as the live `run` json's
+        // per-step `outputs`. Always present (empty object if none).
+        let outsObj = JsonObject()
+        match Map.tryFind s.Id outputs with
+        | Some m -> for KeyValue (name, v) in m do outsObj.[name] <- Run.tomlValueToJson v
+        | None   -> ()
+        item.["outputs"] <- outsObj
         stepsArr.Add(item)
     root.["step_summary"] <- stepsArr
     root.ToJsonString(System.Text.Json.JsonSerializerOptions(WriteIndented = true))
@@ -180,10 +208,11 @@ let invokeShowRun (project: string) (runId: string) (format: Format) : int =
             Console.Error.WriteLine(sprintf "show-run: run '%s' not found under %s" runId root)
             3
         | Some (entry, steps) ->
+            let outputs = RunHistory.runOutputsTyped root runId
             let text =
                 match format with
-                | Human -> showToHuman entry steps
-                | Json  -> showToJson  entry steps + Environment.NewLine
+                | Human -> showToHuman entry steps outputs
+                | Json  -> showToJson  entry steps outputs + Environment.NewLine
             Console.Out.Write(text)
             0
 

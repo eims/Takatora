@@ -32,6 +32,11 @@
     <PackageReference Include="System.CommandLine" Version="3.0.0-preview.3.26207.106" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- show-run JSON shaping (History.showToJson) is unit-tested. -->
+    <InternalsVisibleTo Include="Takatora.Core.Tests" />
+  </ItemGroup>
+
   <!-- Ship the third-party notices next to the exe (the GUI About opens it). -->
   <ItemGroup>
     <Content Include="..\..\THIRD-PARTY-NOTICES.txt" Link="THIRD-PARTY-NOTICES.txt">

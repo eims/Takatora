@@ -112,7 +112,7 @@ let private engineKindString = function
     | EngineKind.Unity  -> "unity"
     | EngineKind.Godot  -> "godot"
 
-let rec private tomlValueToJson (v: TomlValue) : JsonNode =
+let rec tomlValueToJson (v: TomlValue) : JsonNode =
     match v with
     | TString s -> JsonValue.Create(s)
     | TBool b   -> JsonValue.Create(b)

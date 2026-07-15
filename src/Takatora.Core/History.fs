@@ -209,3 +209,51 @@ module RunHistory =
                     |> Map.ofArray
                 if Map.isEmpty outs then None else Some (stepId, outs))
             |> Map.ofArray
+
+    let rec private jsonNodeToToml (node: JsonNode) : TomlValue =
+        match node with
+        | null -> TString ""
+        | _ ->
+            match node.GetValueKind() with
+            | JsonValueKind.String -> TString (node.GetValue<string>())
+            | JsonValueKind.True   -> TBool true
+            | JsonValueKind.False  -> TBool false
+            | JsonValueKind.Number ->
+                // Integral JSON numbers stay ints (int64 fidelity); a value
+                // written with a fractional part becomes a float.
+                match node.AsValue().TryGetValue<int64>() with
+                | true, i -> TInt i
+                | _       -> TFloat (node.GetValue<double>())
+            | JsonValueKind.Array  ->
+                node.AsArray() |> Seq.map jsonNodeToToml |> List.ofSeq |> TArray
+            | JsonValueKind.Object ->
+                node.AsObject() |> Seq.map (fun kv -> kv.Key, jsonNodeToToml kv.Value) |> Map.ofSeq |> TTable
+            | _ -> TString (node.ToJsonString())
+
+    /// Like `runOutputs`, but preserves each value's JSON type — a number
+    /// stays a number, an array an array — instead of flattening to strings.
+    /// For the `show-run --output-format json` contract, which mirrors the
+    /// live `run` json's typed `outputs`. Same map shape (step id → name →
+    /// value); missing/empty → empty map.
+    let runOutputsTyped (projectRoot: string) (runId: string) : Map<string, Map<string, TomlValue>> =
+        let outDir = Path.Combine(projectRoot, ".takatora", "runs", runId, "outputs")
+        if not (Directory.Exists outDir) then Map.empty
+        else
+            Directory.GetFiles(outDir, "*.ndjson")
+            |> Array.choose (fun f ->
+                let stepId = Path.GetFileNameWithoutExtension f
+                let outs =
+                    File.ReadAllLines f
+                    |> Array.choose (fun line ->
+                        if String.IsNullOrWhiteSpace line then None
+                        else
+                            try
+                                match JsonNode.Parse(line) with
+                                | null -> None
+                                | node ->
+                                    let name = node.["name"].GetValue<string>()
+                                    Some (name, jsonNodeToToml node.["value"])
+                            with _ -> None)
+                    |> Map.ofArray
+                if Map.isEmpty outs then None else Some (stepId, outs))
+            |> Map.ofArray

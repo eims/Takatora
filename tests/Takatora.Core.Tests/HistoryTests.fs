@@ -156,3 +156,66 @@ let ``runOutputs reads step outputs from the run dir`` () =
 let ``runOutputs is empty when there are no output files`` () =
     withProjectTree (fun dir ->
         Assert.True(Map.isEmpty (RunHistory.runOutputs dir "nope")))
+
+// ─── runOutputsTyped ───────────────────────────────────────────────
+
+[<Fact>]
+let ``runOutputsTyped preserves JSON value types`` () =
+    withProjectTree (fun dir ->
+        let runId = "r-typed"
+        let outDir = Path.Combine(dir, ".takatora", "runs", runId, "outputs")
+        Directory.CreateDirectory(outDir) |> ignore
+        File.WriteAllText(
+            Path.Combine(outDir, "pkg-1.ndjson"),
+            "{\"name\":\"archive_path\",\"value\":\"C:/Pkg/Win\"}\n\
+             {\"name\":\"count\",\"value\":3}\n\
+             {\"name\":\"ratio\",\"value\":1.5}\n\
+             {\"name\":\"ok\",\"value\":true}\n\
+             {\"name\":\"maps\",\"value\":[\"Main\",\"Boot\"]}\n")
+        let step = Map.find "pkg-1" (RunHistory.runOutputsTyped dir runId)
+        Assert.Equal<TomlValue>(TString "C:/Pkg/Win", Map.find "archive_path" step)
+        Assert.Equal<TomlValue>(TInt 3L, Map.find "count" step)
+        Assert.Equal<TomlValue>(TFloat 1.5, Map.find "ratio" step)
+        Assert.Equal<TomlValue>(TBool true, Map.find "ok" step)
+        Assert.Equal<TomlValue>(TArray [ TString "Main"; TString "Boot" ], Map.find "maps" step))
+
+[<Fact>]
+let ``runOutputsTyped is empty when there are no output files`` () =
+    withProjectTree (fun dir ->
+        Assert.True(Map.isEmpty (RunHistory.runOutputsTyped dir "nope")))
+
+// ─── show-run JSON surfaces step outputs (CLI, issue #2) ───────────
+
+[<Fact>]
+let ``show-run JSON includes typed step outputs`` () =
+    let entry : RunHistoryEntry =
+        { SchemaVersion = 1; RunId = "r1"; FlowId = "package"
+          StartedAt = DateTimeOffset(2026, 7, 15, 8, 0, 0, TimeSpan.Zero)
+          FinishedAt = Some (DateTimeOffset(2026, 7, 15, 8, 0, 2, TimeSpan.Zero))
+          DurationSec = 2.0; Result = "success"; Trigger = "cli"
+          Params = Map.empty; RunDir = "/runs/r1" }
+    let steps : StepSummary list =
+        [ { Id = "pkg"; Type = "ue.build_cook_run"; Status = "success"
+            DurationSec = 1.2; Message = None; Reason = None } ]
+    let outputs = Map.ofList [ "pkg", Map.ofList [ "archive_path", TString "C:/Pkg"; "size", TInt 42L ] ]
+    let json = Takatora.Cli.History.showToJson entry steps outputs
+    let root = System.Text.Json.Nodes.JsonNode.Parse(json)
+    let stepOutputs = root.["step_summary"].[0].["outputs"]
+    Assert.Equal("C:/Pkg", stepOutputs.["archive_path"].GetValue<string>())
+    Assert.Equal(42L, stepOutputs.["size"].GetValue<int64>())
+
+[<Fact>]
+let ``show-run JSON emits an empty outputs object for a step with none`` () =
+    let entry : RunHistoryEntry =
+        { SchemaVersion = 1; RunId = "r1"; FlowId = "smoke"
+          StartedAt = DateTimeOffset(2026, 7, 15, 8, 0, 0, TimeSpan.Zero)
+          FinishedAt = None; DurationSec = 0.1; Result = "success"; Trigger = "cli"
+          Params = Map.empty; RunDir = "/runs/r1" }
+    let steps : StepSummary list =
+        [ { Id = "notify"; Type = "notify.console"; Status = "success"
+            DurationSec = 0.0; Message = None; Reason = None } ]
+    let json = Takatora.Cli.History.showToJson entry steps Map.empty
+    let root = System.Text.Json.Nodes.JsonNode.Parse(json)
+    let outs = root.["step_summary"].[0].["outputs"]
+    Assert.NotNull(outs)
+    Assert.Equal(0, outs.AsObject().Count)
