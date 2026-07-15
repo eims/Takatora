@@ -17,6 +17,7 @@
     <Compile Include="EnginesTests.fs" />
     <Compile Include="ProjectRegistryTests.fs" />
     <Compile Include="AppSettingsTests.fs" />
+    <Compile Include="AppDataTests.fs" />
     <Compile Include="IdesTests.fs" />
     <Compile Include="SecretsTests.fs" />
     <Compile Include="ScaffoldTests.fs" />

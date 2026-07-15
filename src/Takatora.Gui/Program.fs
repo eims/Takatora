@@ -147,8 +147,17 @@ let main argv =
     // tray icons and two watchers (double-running watched flows). Instead,
     // detect a running instance via a named mutex and ask it to show, then
     // exit this one.
-    let instanceName = "Takatora.Gui.SingleInstance"
-    let activateName = "Takatora.Gui.Activate"
+    //
+    // The mutex is keyed by the resolved data dir so instances on DIFFERENT
+    // data dirs (a TAKATORA_DATA_DIR demo/portable instance vs. the real
+    // %APPDATA% one) coexist instead of blocking each other — they manage
+    // separate registries/watches, so they're genuinely independent.
+    let dataDirKey =
+        let h = System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes((AppData.baseDir ()).ToLowerInvariant()))
+        System.Convert.ToHexString(h).Substring(0, 12)
+    let instanceName = "Takatora.Gui.SingleInstance." + dataDirKey
+    let activateName = "Takatora.Gui.Activate." + dataDirKey
     let mutable createdNew = false
     let mutex = new Mutex(true, instanceName, &createdNew)
     if not createdNew then

@@ -33,11 +33,7 @@ module AppSettings =
     let settingsPath () : string =
         match pathOverride with
         | Some p -> p
-        | None ->
-            Path.Combine(
-                Environment.GetFolderPath Environment.SpecialFolder.ApplicationData,
-                "Takatora",
-                "settings.toml")
+        | None -> Path.Combine(AppData.baseDir (), "settings.toml")
 
     let empty : AppSettings = { IdeCommand = None; GodotSearchPaths = [] }
 

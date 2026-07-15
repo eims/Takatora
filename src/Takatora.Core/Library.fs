@@ -22,3 +22,25 @@ module Version =
     /// Bumped when the on-disk format changes in a breaking way.
     [<Literal>]
     let RunSchemaVersion = 1
+
+/// Base directory for Takatora's machine-local state — the project
+/// registry, app settings, and toolbox state all live under it. Normally
+/// `%APPDATA%/Takatora`, but the `TAKATORA_DATA_DIR` environment variable
+/// overrides it wholesale: for a portable install, or an isolated demo /
+/// test / CI instance that must not touch the developer's real config.
+module AppData =
+    open System
+    open System.IO
+
+    [<Literal>]
+    let EnvVar = "TAKATORA_DATA_DIR"
+
+    /// The resolved base dir. `TAKATORA_DATA_DIR` wins when set to a
+    /// non-empty value; otherwise `%APPDATA%/Takatora`.
+    let baseDir () : string =
+        match Environment.GetEnvironmentVariable EnvVar with
+        | null | "" ->
+            Path.Combine(
+                Environment.GetFolderPath Environment.SpecialFolder.ApplicationData,
+                "Takatora")
+        | dir -> dir

@@ -32,11 +32,7 @@ module ProjectRegistry =
     let registryPath () : string =
         match pathOverride with
         | Some p -> p
-        | None ->
-            Path.Combine(
-                Environment.GetFolderPath Environment.SpecialFolder.ApplicationData,
-                "Takatora",
-                "projects.toml")
+        | None -> Path.Combine(AppData.baseDir (), "projects.toml")
 
     let private parseRegistration (tbl: TomlTable) : ProjectRegistration option =
         let tryStr key =

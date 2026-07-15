@@ -116,10 +116,7 @@ module Toolbox =
     let private stateRoot () : string =
         match stateRootOverride with
         | Some p -> p
-        | None ->
-            Path.Combine(
-                Environment.GetFolderPath Environment.SpecialFolder.ApplicationData,
-                "Takatora", "toolbox")
+        | None -> Path.Combine(AppData.baseDir (), "toolbox")
 
     let private sanitizeFileName (s: string) : string =
         let invalid = Set.ofArray (Path.GetInvalidFileNameChars())
