@@ -25,6 +25,7 @@
     <Compile Include="WatchTests.fs" />
     <Compile Include="TasksTests.fs" />
     <Compile Include="RunTests.fs" />
+    <Compile Include="ToolboxTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

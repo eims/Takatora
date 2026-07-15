@@ -1,0 +1,3 @@
+# Takatora toolbox — directories scanned for runnable scripts.
+# Committed with the project; shared via VCS. Edit via the GUI Settings tab.
+script_dirs = ["tools"]

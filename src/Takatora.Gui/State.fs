@@ -100,8 +100,16 @@ type RootTab =
 /// position rather than resetting to Flows.
 type ProjectSubTab =
     | ProjectFlows
+    | ProjectToolboxTab
     | ProjectHistory
     | ProjectSettings
+
+/// Result of scanning a project's toolbox script dirs. `ToolboxLoading`
+/// while the (off-thread) scan is in flight; `ToolboxOk` holds the parsed
+/// config + discovered scripts. Mirrors FlowsLoad's role for the cache.
+type ToolboxLoad =
+    | ToolboxLoading
+    | ToolboxOk of ToolboxConfig * ToolEntry list
 
 /// Result of trying to read a project's `.takatora/flows.toml`. The three
 /// outcomes need distinct UX — missing file is a setup hint, parse
@@ -186,6 +194,27 @@ type Model = {
     /// manager). Refreshed when Settings is opened/refreshed and on
     /// delete, so the list stays a pure function of model state.
     ProjectSecrets: Map<ProjectId, string list>
+    /// Cached toolbox scan (config + discovered scripts) per project.
+    /// Loaded lazily when the Toolbox sub-tab is first opened; dropped on
+    /// tab close so a reopen rescans (picks up scripts added on disk).
+    ProjectToolbox: Map<ProjectId, ToolboxLoad>
+    /// Machine-local toolbox state (ON/OFF toggles + sort order) per
+    /// project. Loaded alongside the scan; edits persist to state.toml.
+    ToolboxStates: Map<ProjectId, ToolboxLocalState>
+    /// Recent toolbox run history per project (newest first, capped).
+    /// Kept separate from ProjectHistory so tool runs never mix into the
+    /// flow (Job) history.
+    ToolboxHistories: Map<ProjectId, ToolRunRecord list>
+    /// Tools with a run in flight (per project + tool key). Guards against
+    /// double-launch and drives the "Running…" affordance.
+    ToolRunsInFlight: Set<ProjectId * string>
+    /// Last run error per (project, tool key), shown inline on the row.
+    /// Cleared when that tool is run again.
+    ToolRunErrors: Map<ProjectId * string, string>
+    /// The Settings "add directory" textbox draft, per project.
+    ToolboxDirDraft: Map<ProjectId, string>
+    /// Projects whose Toolbox "Recent runs" section is expanded.
+    ToolboxRecentOpen: Set<ProjectId>
     /// Cached `RunHistory.findRun` results for open RunDetail tabs,
     /// keyed by (project, run id). Loaded on OpenRunDetail, dropped
     /// when the corresponding tab closes. Tuple: entry, step summaries,
@@ -277,6 +306,27 @@ type Msg =
     | RefreshHistory of ProjectId
     | RefreshFlows of ProjectId
     | RefreshProjectInfo of ProjectId
+    // ----- Toolbox -----
+    /// Rescan the project's toolbox script dirs (and reload state/history).
+    | RefreshToolbox of ProjectId
+    /// Off-thread scan finished with a result.
+    | ToolboxScanned of ProjectId * ToolboxLoad
+    /// Edit the Settings "add directory" textbox.
+    | SetToolboxDirDraft of ProjectId * string
+    /// Commit the draft directory into toolbox.toml, then rescan.
+    | AddToolboxDir of ProjectId
+    /// Remove a scan directory from toolbox.toml, then rescan.
+    | RemoveToolboxDir of ProjectId * string
+    /// Change and persist the toolbox sort order.
+    | SetToolboxSort of ProjectId * ToolSort
+    /// Flip a tool's ON/OFF toggle and persist.
+    | ToggleTool of ProjectId * string
+    /// Launch a tool (guarded against double-launch).
+    | RunTool of ProjectId * string
+    /// A tool run finished (off-thread) with success or an error message.
+    | ToolRunCompleted of ProjectId * string * Result<ToolRunRecord, string>
+    /// Toggle the "Recent runs" section.
+    | ToggleToolboxRecent of ProjectId
     | OpenRunDetail of ProjectId * RunId
     /// Re-run the flow of a past run using that run's recorded params
     /// (secrets excluded — they were never stored). "Current defaults" just
@@ -396,6 +446,13 @@ let init () : Model * Cmd<Msg> =
       ProjectInfo    = Map.empty
       ProjectEngines = engineKindsFor projects
       ProjectSecrets = Map.empty
+      ProjectToolbox = Map.empty
+      ToolboxStates  = Map.empty
+      ToolboxHistories = Map.empty
+      ToolRunsInFlight = Set.empty
+      ToolRunErrors  = Map.empty
+      ToolboxDirDraft = Map.empty
+      ToolboxRecentOpen = Set.empty
       RunDetails     = Map.empty
       RunLogFilter   = Map.empty
       RunLogMatchIdx = Map.empty
@@ -537,6 +594,15 @@ let private projectRoot
     projects
     |> List.tryFind (fun (p: ProjectRegistration) -> p.Name = pid)
     |> Option.map (fun p -> p.Path)
+
+/// The machine-local toolbox state dir for a project (state.toml,
+/// history.ndjson, logs/), or None if the project isn't registered.
+let private toolboxStateDirFor
+        (pid: ProjectId)
+        (model: Model)
+        : string option =
+    projectRoot pid model.Projects
+    |> Option.map (fun root -> Toolbox.stateDir pid root)
 
 let private loadHistoryFor
         (pid: ProjectId)
@@ -936,11 +1002,19 @@ let closeTabs (toClose: RootTab list) (model: Model) : Model * Cmd<Msg> =
         let cleanCaches (m: Model) (t: RootTab) : Model =
             match t with
             | Project pid ->
+                // ToolRunsInFlight is intentionally kept: a run that finishes
+                // after its tab closed must still find its in-flight flag to
+                // clear (ToolRunCompleted tolerates the dropped caches).
                 { m with
                     ProjectSubTabs = Map.remove pid m.ProjectSubTabs
                     ProjectHistory = Map.remove pid m.ProjectHistory
                     ProjectFlows   = Map.remove pid m.ProjectFlows
-                    ProjectInfo    = Map.remove pid m.ProjectInfo }
+                    ProjectInfo    = Map.remove pid m.ProjectInfo
+                    ProjectToolbox = Map.remove pid m.ProjectToolbox
+                    ToolboxStates  = Map.remove pid m.ToolboxStates
+                    ToolboxHistories = Map.remove pid m.ToolboxHistories
+                    ToolboxDirDraft = Map.remove pid m.ToolboxDirDraft
+                    ToolboxRecentOpen = Set.remove pid m.ToolboxRecentOpen }
             | RunDetail (pid, rid) -> { m with RunDetails = Map.remove (pid, rid) m.RunDetails }
             | LiveRun _ | Home     -> m
         // Pick the next active tab within the strip the user is looking at,
@@ -1185,10 +1259,16 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             match sub with
             | ProjectSettings -> Map.add pid (Secrets.listForProject pid) model.ProjectSecrets
             | _               -> model.ProjectSecrets
+        // First entry to the Toolbox tab triggers a lazy scan.
+        let cmd =
+            match sub with
+            | ProjectToolboxTab when not (Map.containsKey pid model.ProjectToolbox) ->
+                Cmd.ofMsg (RefreshToolbox pid)
+            | _ -> Cmd.none
         { model with
             ProjectSubTabs = Map.add pid sub model.ProjectSubTabs
             ProjectSecrets = secrets },
-        Cmd.none
+        cmd
     | RefreshHistory pid ->
         { model with
             ProjectHistory = Map.add pid (loadHistoryFor pid model.Projects) model.ProjectHistory },
@@ -1202,6 +1282,124 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             ProjectInfo    = Map.add pid (loadProjectInfoFor pid model.Projects) model.ProjectInfo
             ProjectSecrets = Map.add pid (Secrets.listForProject pid) model.ProjectSecrets },
         Cmd.none
+    | RefreshToolbox pid ->
+        match projectRoot pid model.Projects with
+        | None -> model, Cmd.none
+        | Some root ->
+            // state.toml + history.ndjson are tiny — load synchronously.
+            let stateDir = Toolbox.stateDir pid root
+            let localState = try Toolbox.loadState stateDir with _ -> { Disabled = Set.empty; Sort = ByName }
+            let history = try Toolbox.loadHistory stateDir 100 with _ -> []
+            // The scan may walk large trees — do it off the UI thread.
+            let cmd : Cmd<Msg> =
+                [ fun dispatch ->
+                    async {
+                        do! Async.SwitchToThreadPool ()
+                        let result =
+                            try
+                                let cfg = Toolbox.loadConfig root
+                                ToolboxOk (cfg, Toolbox.scan root cfg)
+                            with _ -> ToolboxOk ({ ScriptDirs = [] }, [])
+                        Dispatcher.UIThread.Post(fun () -> dispatch (ToolboxScanned (pid, result)))
+                    }
+                    |> Async.Start ]
+            { model with
+                ProjectToolbox   = Map.add pid ToolboxLoading model.ProjectToolbox
+                ToolboxStates    = Map.add pid localState model.ToolboxStates
+                ToolboxHistories = Map.add pid history model.ToolboxHistories },
+            cmd
+    | ToolboxScanned (pid, load) ->
+        { model with ProjectToolbox = Map.add pid load model.ProjectToolbox }, Cmd.none
+    | SetToolboxDirDraft (pid, text) ->
+        { model with ToolboxDirDraft = Map.add pid text model.ToolboxDirDraft }, Cmd.none
+    | AddToolboxDir pid ->
+        match projectRoot pid model.Projects with
+        | None -> model, Cmd.none
+        | Some root ->
+            let draft = Map.tryFind pid model.ToolboxDirDraft |> Option.defaultValue "" |> fun s -> s.Trim()
+            if draft = "" then model, Cmd.none
+            else
+                let cfg = Toolbox.loadConfig root
+                let exists =
+                    cfg.ScriptDirs |> List.exists (fun d -> String.Equals(d, draft, StringComparison.OrdinalIgnoreCase))
+                if not exists then
+                    (try Toolbox.saveConfig root { cfg with ScriptDirs = cfg.ScriptDirs @ [ draft ] } with _ -> ())
+                { model with ToolboxDirDraft = Map.add pid "" model.ToolboxDirDraft },
+                Cmd.ofMsg (RefreshToolbox pid)
+    | RemoveToolboxDir (pid, dir) ->
+        match projectRoot pid model.Projects with
+        | None -> model, Cmd.none
+        | Some root ->
+            let cfg = Toolbox.loadConfig root
+            let remaining = cfg.ScriptDirs |> List.filter (fun d -> d <> dir)
+            (try Toolbox.saveConfig root { cfg with ScriptDirs = remaining } with _ -> ())
+            model, Cmd.ofMsg (RefreshToolbox pid)
+    | SetToolboxSort (pid, sort) ->
+        let current =
+            Map.tryFind pid model.ToolboxStates
+            |> Option.defaultValue { Disabled = Set.empty; Sort = ByName }
+        let updated = { current with Sort = sort }
+        toolboxStateDirFor pid model |> Option.iter (fun d -> try Toolbox.saveState d updated with _ -> ())
+        { model with ToolboxStates = Map.add pid updated model.ToolboxStates }, Cmd.none
+    | ToggleTool (pid, key) ->
+        let current =
+            Map.tryFind pid model.ToolboxStates
+            |> Option.defaultValue { Disabled = Set.empty; Sort = ByName }
+        let disabled =
+            if current.Disabled.Contains key then Set.remove key current.Disabled
+            else Set.add key current.Disabled
+        let updated = { current with Disabled = disabled }
+        toolboxStateDirFor pid model |> Option.iter (fun d -> try Toolbox.saveState d updated with _ -> ())
+        { model with ToolboxStates = Map.add pid updated model.ToolboxStates }, Cmd.none
+    | RunTool (pid, key) ->
+        // Guards: already running, disabled, or not a known/found tool.
+        let disabled =
+            Map.tryFind pid model.ToolboxStates
+            |> Option.map (fun s -> s.Disabled.Contains key)
+            |> Option.defaultValue false
+        let tool =
+            match Map.tryFind pid model.ProjectToolbox with
+            | Some (ToolboxOk (_, tools)) -> tools |> List.tryFind (fun t -> t.Key = key)
+            | _ -> None
+        match toolboxStateDirFor pid model, tool with
+        | Some stateDir, Some t when
+                not disabled && not (model.ToolRunsInFlight.Contains (pid, key)) ->
+            let cmd : Cmd<Msg> =
+                [ fun dispatch ->
+                    async {
+                        do! Async.SwitchToThreadPool ()
+                        let result = try Toolbox.runTool stateDir t with ex -> Error ex.Message
+                        Dispatcher.UIThread.Post(fun () -> dispatch (ToolRunCompleted (pid, key, result)))
+                    }
+                    |> Async.Start ]
+            { model with
+                ToolRunsInFlight = Set.add (pid, key) model.ToolRunsInFlight
+                ToolRunErrors    = Map.remove (pid, key) model.ToolRunErrors },
+            cmd
+        | _ -> model, Cmd.none
+    | ToolRunCompleted (pid, key, result) ->
+        let inFlight = Set.remove (pid, key) model.ToolRunsInFlight
+        match result with
+        | Ok record ->
+            let hist =
+                Map.tryFind pid model.ToolboxHistories
+                |> Option.defaultValue []
+                |> fun h -> (record :: h) |> List.truncate 100
+            { model with
+                ToolRunsInFlight = inFlight
+                ToolboxHistories = Map.add pid hist model.ToolboxHistories
+                ToolRunErrors    = Map.remove (pid, key) model.ToolRunErrors },
+            Cmd.none
+        | Error msg ->
+            { model with
+                ToolRunsInFlight = inFlight
+                ToolRunErrors    = Map.add (pid, key) msg model.ToolRunErrors },
+            Cmd.none
+    | ToggleToolboxRecent pid ->
+        let open' =
+            if model.ToolboxRecentOpen.Contains pid then Set.remove pid model.ToolboxRecentOpen
+            else Set.add pid model.ToolboxRecentOpen
+        { model with ToolboxRecentOpen = open' }, Cmd.none
     | OpenRunDetail (pid, runId) ->
         let tab = RunDetail (pid, runId)
         let key = pid, runId

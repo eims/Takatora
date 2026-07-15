@@ -54,6 +54,13 @@ type StateTests() =
           ProjectFlows   = Map.empty
           ProjectInfo    = Map.empty
           ProjectSecrets = Map.empty
+          ProjectToolbox = Map.empty
+          ToolboxStates  = Map.empty
+          ToolboxHistories = Map.empty
+          ToolRunsInFlight = Set.empty
+          ToolRunErrors  = Map.empty
+          ToolboxDirDraft = Map.empty
+          ToolboxRecentOpen = Set.empty
           RunDetails     = Map.empty
           ProjectEngines = Map.empty
           RunLogFilter   = Map.empty
@@ -1035,6 +1042,63 @@ type StateTests() =
         Assert.Equal<string option>(None, Secrets.read "p1" "token")
         // Cache no longer lists the deleted entry (drives the re-render).
         Assert.Equal<string list>([ "keep" ], Map.find "p1" m.ProjectSecrets)
+
+    // ─── Toolbox ────────────────────────────────────────────────────
+
+    [<Fact>]
+    member _.``ToggleTool flips a tool's disabled membership`` () =
+        // p1 is unregistered here, so no state.toml is written (disk untouched);
+        // we only assert the in-model bookkeeping.
+        let m1 = apply (ToggleTool ("p1", "tools/a.bat")) baseModel
+        Assert.True((Map.find "p1" m1.ToolboxStates).Disabled.Contains "tools/a.bat")
+        let m2 = apply (ToggleTool ("p1", "tools/a.bat")) m1
+        Assert.False((Map.find "p1" m2.ToolboxStates).Disabled.Contains "tools/a.bat")
+
+    [<Fact>]
+    member _.``SetToolboxSort records the chosen order`` () =
+        let m = apply (SetToolboxSort ("p1", ByLastRun)) baseModel
+        Assert.Equal(ByLastRun, (Map.find "p1" m.ToolboxStates).Sort)
+
+    [<Fact>]
+    member _.``RunTool for an unknown tool is a no-op`` () =
+        let seeded = { baseModel with ToolRunsInFlight = Set.empty }
+        let m = apply (RunTool ("p1", "tools/ghost.bat")) seeded
+        Assert.True(Set.isEmpty m.ToolRunsInFlight)
+
+    [<Fact>]
+    member _.``ToolRunCompleted Ok prepends history and clears the in-flight flag`` () =
+        let record : ToolRunRecord =
+            { ToolKey = "tools/a.bat"; StartedAt = DateTimeOffset.UtcNow
+              DurationSec = 1.0; ExitCode = 0; LogPath = "x.log" }
+        let seeded = { baseModel with ToolRunsInFlight = Set.ofList [ ("p1", "tools/a.bat") ] }
+        let m = apply (ToolRunCompleted ("p1", "tools/a.bat", Ok record)) seeded
+        Assert.False(m.ToolRunsInFlight.Contains ("p1", "tools/a.bat"))
+        Assert.Equal("tools/a.bat", (Map.find "p1" m.ToolboxHistories |> List.head).ToolKey)
+
+    [<Fact>]
+    member _.``ToolRunCompleted Error records the message and clears the in-flight flag`` () =
+        let seeded = { baseModel with ToolRunsInFlight = Set.ofList [ ("p1", "tools/a.bat") ] }
+        let m = apply (ToolRunCompleted ("p1", "tools/a.bat", Error "boom")) seeded
+        Assert.False(m.ToolRunsInFlight.Contains ("p1", "tools/a.bat"))
+        Assert.Equal("boom", Map.find ("p1", "tools/a.bat") m.ToolRunErrors)
+
+    [<Fact>]
+    member _.``CloseTab Project drops the toolbox caches`` () =
+        let m0 =
+            { baseModel with
+                OpenTabs       = [ Home; Project "p1"; Project "p2" ]
+                ActiveTab      = Project "p1"
+                ProjectToolbox = Map.ofList [ "p1", ToolboxOk ({ ScriptDirs = [] }, []); "p2", ToolboxLoading ]
+                ToolboxStates  = Map.ofList [ "p1", { Disabled = Set.empty; Sort = ByName } ]
+                ToolboxHistories = Map.ofList [ "p1", [] ]
+                ToolboxRecentOpen = Set.ofList [ "p1" ] }
+        let m = apply (CloseTab (Project "p1")) m0
+        Assert.False(Map.containsKey "p1" m.ProjectToolbox)
+        Assert.False(Map.containsKey "p1" m.ToolboxStates)
+        Assert.False(Map.containsKey "p1" m.ToolboxHistories)
+        Assert.False(Set.contains "p1" m.ToolboxRecentOpen)
+        // p2 untouched
+        Assert.True(Map.containsKey "p2" m.ProjectToolbox)
 
     [<Fact>]
     member _.``RunDialogForget deletes the stored secret and clears the field`` () =

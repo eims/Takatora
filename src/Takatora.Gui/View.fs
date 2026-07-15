@@ -560,6 +560,32 @@ let private browseForRunValue
             |> Async.StartImmediate
     | _ -> ()
 
+/// Folder picker for a toolbox scan directory: writes the chosen path into
+/// the Settings "add directory" draft (mirrors browseForRunValue's flow).
+let private browseForToolboxDir
+        (pid: ProjectId)
+        (dispatch: Msg -> unit)
+        (e: RoutedEventArgs)
+        : unit =
+    match e.Source with
+    | :? Visual as v ->
+        match TopLevel.GetTopLevel v with
+        | null -> ()
+        | top ->
+            async {
+                let opts = FolderPickerOpenOptions(Title = "Select script directory", AllowMultiple = false)
+                let! folders = top.StorageProvider.OpenFolderPickerAsync opts |> Async.AwaitTask
+                match Seq.tryHead (folders |> Seq.cast<IStorageItem>) with
+                | Some item ->
+                    match item.TryGetLocalPath() with
+                    | null -> ()
+                    | path ->
+                        Dispatcher.UIThread.Post(fun () -> dispatch (SetToolboxDirDraft (pid, path)))
+                | None -> ()
+            }
+            |> Async.StartImmediate
+    | _ -> ()
+
 let private addProjectForm (form: AddProjectForm) (dispatch: Msg -> unit) : IView =
     let fieldLabel (text: string) : IView =
         TextBlock.create [
@@ -781,9 +807,10 @@ let private projectSubTabHeader
             StackPanel.create [
                 StackPanel.orientation Orientation.Horizontal
                 StackPanel.children [
-                    subTabButton "Flows"    (current = ProjectFlows)    (fun () -> dispatch (ActivateSubTab (pid, ProjectFlows)))
-                    subTabButton "History"  (current = ProjectHistory)  (fun () -> dispatch (ActivateSubTab (pid, ProjectHistory)))
-                    subTabButton "Settings" (current = ProjectSettings) (fun () -> dispatch (ActivateSubTab (pid, ProjectSettings)))
+                    subTabButton "Flows"    (current = ProjectFlows)      (fun () -> dispatch (ActivateSubTab (pid, ProjectFlows)))
+                    subTabButton "Toolbox"  (current = ProjectToolboxTab) (fun () -> dispatch (ActivateSubTab (pid, ProjectToolboxTab)))
+                    subTabButton "History"  (current = ProjectHistory)    (fun () -> dispatch (ActivateSubTab (pid, ProjectHistory)))
+                    subTabButton "Settings" (current = ProjectSettings)   (fun () -> dispatch (ActivateSubTab (pid, ProjectSettings)))
                 ]
             ]
         )
@@ -1564,6 +1591,94 @@ let private secretsBlock (pid: ProjectId) (names: string list) (dispatch: Msg ->
         ]
     ] :> _
 
+/// Settings editor for the toolbox scan directories. Unlike the rest of
+/// Settings (read-only project.toml), these persist to `.takatora/toolbox.toml`
+/// — committed and shared. Each row resolves against the project root and
+/// flags a directory that doesn't exist on disk.
+let private toolboxDirsBlock
+        (pid: ProjectId)
+        (projectRoot: string)
+        (cfg: ToolboxConfig)
+        (draft: string)
+        (dispatch: Msg -> unit)
+        : IView =
+    let resolves (d: string) =
+        let resolved = if System.IO.Path.IsPathRooted d then d else System.IO.Path.Combine(projectRoot, d)
+        System.IO.Directory.Exists resolved
+    let rows : IView =
+        if List.isEmpty cfg.ScriptDirs then
+            TextBlock.create [
+                TextBlock.text "No directories yet. Add one below to discover scripts in the Toolbox tab."
+                TextBlock.foreground mutedBrush
+            ] :> _
+        else
+            StackPanel.create [
+                StackPanel.spacing 4.0
+                StackPanel.children [
+                    for d in cfg.ScriptDirs ->
+                        DockPanel.create [
+                            DockPanel.children [
+                                Button.create [
+                                    DockPanel.dock Dock.Right
+                                    Button.content "Remove"
+                                    Button.onClick ((fun _ -> dispatch (RemoveToolboxDir (pid, d))), SubPatchOptions.Always)
+                                ] :> IView
+                                (if resolves d then
+                                    TextBlock.create [ TextBlock.text "" ] :> IView
+                                 else
+                                    TextBlock.create [
+                                        DockPanel.dock Dock.Right
+                                        TextBlock.text "⚠ not found"
+                                        TextBlock.foreground watchYellow
+                                        TextBlock.fontSize 11.0
+                                        TextBlock.margin (Thickness(0.0, 0.0, 10.0, 0.0))
+                                        TextBlock.verticalAlignment VerticalAlignment.Center
+                                    ] :> IView)
+                                TextBlock.create [
+                                    TextBlock.text d
+                                    TextBlock.fontFamily (FontFamily "Consolas, Menlo, monospace")
+                                    TextBlock.verticalAlignment VerticalAlignment.Center
+                                ] :> IView
+                            ]
+                        ] :> IView
+                ]
+            ] :> _
+    StackPanel.create [
+        StackPanel.spacing 6.0
+        StackPanel.children [
+            sectionHeader "Toolbox"
+            TextBlock.create [
+                TextBlock.text "Directories scanned for runnable scripts (.bat / .cmd / .ps1 / .sh). Relative paths resolve against the project root. Saved to .takatora/toolbox.toml — committed and shared via VCS."
+                TextBlock.foreground mutedBrush
+                TextBlock.fontSize 12.0
+                TextBlock.textWrapping TextWrapping.Wrap
+            ]
+            rows
+            DockPanel.create [
+                DockPanel.children [
+                    Button.create [
+                        DockPanel.dock Dock.Right
+                        Button.content "Add"
+                        Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                        Button.onClick ((fun _ -> dispatch (AddToolboxDir pid)), SubPatchOptions.Always)
+                    ]
+                    Button.create [
+                        DockPanel.dock Dock.Right
+                        Button.content "Browse…"
+                        Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                        Button.onClick ((fun e -> browseForToolboxDir pid dispatch e), SubPatchOptions.Always)
+                    ]
+                    TextBox.create [
+                        TextBox.text draft
+                        TextBox.watermark "tools  (or an absolute path)"
+                        TextBox.fontFamily (FontFamily "Consolas, Menlo, monospace")
+                        TextBox.onTextChanged ((fun s -> dispatch (SetToolboxDirDraft (pid, s))), SubPatchOptions.Always)
+                    ]
+                ]
+            ]
+        ]
+    ] :> IView
+
 /// Editor for the global "Open in IDE" command template. Machine-local
 /// (applies to every project), so it lives in app settings, not project.toml.
 /// "Detect" finds installed IDEs (VS via vswhere / Rider / VS Code) so the
@@ -1795,6 +1910,7 @@ let private settingsBody
                 || blockMatches "open in ide command launch editor rider visual studio code"
                 || (isGodot && blockMatches "godot search path engine executable")
                 || blockMatches "secrets keychain credentials"
+                || blockMatches "toolbox scripts tools directories scan bat cmd ps1 sh"
             ScrollViewer.create [
                 ScrollViewer.content (
                     StackPanel.create [
@@ -1808,6 +1924,9 @@ let private settingsBody
                                 yield godotBlock pid model.GodotSearchPathsDraft model.GodotCandidates proj.Engine.EnginePath dispatch
                             if blockMatches "secrets keychain credentials" then
                                 yield secretsBlock pid secrets dispatch
+                            if blockMatches "toolbox scripts tools directories scan bat cmd ps1 sh" then
+                                yield toolboxDirsBlock pid projectRoot (Toolbox.loadConfig projectRoot)
+                                          (Map.tryFind pid model.ToolboxDirDraft |> Option.defaultValue "") dispatch
                             if not anyVisible then
                                 yield TextBlock.create [
                                     TextBlock.text (sprintf "No settings match \"%s\"." (model.SettingsFilter.Trim()))
@@ -2004,6 +2123,362 @@ let private historyBody
         ]
     ] :> _
 
+// ─── Toolbox tab ────────────────────────────────────────────────────────
+
+let private relativeTime (t: DateTimeOffset) : string =
+    let span = DateTimeOffset.UtcNow - t.ToUniversalTime()
+    if span.TotalSeconds < 60.0 then "just now"
+    elif span.TotalMinutes < 60.0 then sprintf "%dm ago" (int span.TotalMinutes)
+    elif span.TotalHours < 24.0 then sprintf "%dh ago" (int span.TotalHours)
+    else sprintf "%dd ago" (int span.TotalDays)
+
+let private extensionColor (ext: string) : IBrush =
+    match ext with
+    | ".ps1"          -> brush "#5391FE"
+    | ".bat" | ".cmd" -> brush "#c1c1c1"
+    | ".sh"           -> brush "#89e051"
+    | _               -> mutedBrush
+
+/// A small toggle-style choice button for the sort selector (reuses the
+/// subTabButton look: active = filled + accent underline).
+let private sortChoiceButton (label: string) (isActive: bool) (onClick: unit -> unit) : IView =
+    Button.create [
+        Button.content label
+        Button.fontSize 12.0
+        Button.padding (Thickness(12.0, 4.0))
+        Button.background (if isActive then activeBg else transparentBrush)
+        Button.foreground (if isActive then (Brushes.White :> IBrush) else dimBrush)
+        Button.borderBrush (if isActive then accent else transparentBrush)
+        Button.borderThickness (Thickness(0.0, 0.0, 0.0, 2.0))
+        Button.cursor handCursor
+        Button.onClick ((fun _ -> onClick ()), SubPatchOptions.Always)
+    ] :> IView
+
+let private toolRow
+        (pid: ProjectId)
+        (tool: ToolEntry)
+        (isOn: bool)
+        (inFlight: bool)
+        (lastRun: ToolRunRecord option)
+        (error: string option)
+        (dispatch: Msg -> unit)
+        : IView =
+    // ON/OFF toggle: green dot when enabled, muted when off.
+    let toggle : IView =
+        Button.create [
+            DockPanel.dock Dock.Left
+            Button.background transparentBrush
+            Button.borderThickness (Thickness 0.0)
+            Button.padding (Thickness(4.0, 0.0, 10.0, 0.0))
+            Button.cursor handCursor
+            Button.verticalAlignment VerticalAlignment.Center
+            ToolTip.tip (if isOn then "Enabled — click to turn off" else "Disabled — click to turn on")
+            Button.content (
+                TextBlock.create [
+                    TextBlock.text "●"
+                    TextBlock.fontSize 14.0
+                    TextBlock.foreground (if isOn then watchGreen else mutedBrush)
+                ])
+            Button.onClick ((fun _ -> dispatch (ToggleTool (pid, tool.Key))), SubPatchOptions.Always)
+        ] :> IView
+    let runButton : IView =
+        Button.create [
+            DockPanel.dock Dock.Right
+            Button.content (if inFlight then "Running…" else "Run")
+            Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+            Button.verticalAlignment VerticalAlignment.Center
+            Button.isEnabled (isOn && not inFlight)
+            Button.onClick ((fun _ -> dispatch (RunTool (pid, tool.Key))), SubPatchOptions.Always)
+        ] :> IView
+    // Last-run summary (or the last error), Dock.Right of the name.
+    let statusInfo : IView =
+        match error with
+        | Some msg ->
+            TextBlock.create [
+                DockPanel.dock Dock.Right
+                TextBlock.text (sprintf "⚠ %s" msg)
+                TextBlock.foreground errorBrush
+                TextBlock.fontSize 11.0
+                TextBlock.maxWidth 260.0
+                TextBlock.textTrimming TextTrimming.CharacterEllipsis
+                TextBlock.verticalAlignment VerticalAlignment.Center
+                TextBlock.margin (Thickness(8.0, 0.0))
+            ] :> IView
+        | None ->
+            match lastRun with
+            | None ->
+                TextBlock.create [
+                    DockPanel.dock Dock.Right
+                    TextBlock.text "never run"
+                    TextBlock.foreground mutedBrush
+                    TextBlock.fontSize 11.0
+                    TextBlock.verticalAlignment VerticalAlignment.Center
+                    TextBlock.margin (Thickness(8.0, 0.0))
+                ] :> IView
+            | Some r ->
+                let statusKey = if r.ExitCode = 0 then "success" else "failure"
+                StackPanel.create [
+                    DockPanel.dock Dock.Right
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing 6.0
+                    StackPanel.verticalAlignment VerticalAlignment.Center
+                    StackPanel.margin (Thickness(8.0, 0.0))
+                    StackPanel.children [
+                        TextBlock.create [
+                            TextBlock.text (sprintf "%s %d" (statusIcon statusKey) r.ExitCode)
+                            TextBlock.foreground (statusBrush statusKey)
+                            TextBlock.fontSize 11.0
+                            TextBlock.verticalAlignment VerticalAlignment.Center
+                        ]
+                        TextBlock.create [
+                            TextBlock.text (sprintf "· %s · %s" (relativeTime r.StartedAt) (formatDuration r.DurationSec))
+                            TextBlock.foreground mutedBrush
+                            TextBlock.fontSize 11.0
+                            TextBlock.verticalAlignment VerticalAlignment.Center
+                        ]
+                        Button.create [
+                            Button.content "log"
+                            Button.fontSize 11.0
+                            Button.padding (Thickness(6.0, 0.0))
+                            Button.background transparentBrush
+                            Button.borderThickness (Thickness 0.0)
+                            Button.foreground accent
+                            Button.cursor handCursor
+                            Button.onClick ((fun _ -> dispatch (OpenFile r.LogPath)), SubPatchOptions.Always)
+                        ]
+                    ]
+                ] :> IView
+    let badge : IView =
+        Border.create [
+            DockPanel.dock Dock.Left
+            Border.background stripBg
+            Border.cornerRadius (CornerRadius 3.0)
+            Border.padding (Thickness(6.0, 1.0))
+            Border.margin (Thickness(0.0, 0.0, 10.0, 0.0))
+            Border.verticalAlignment VerticalAlignment.Center
+            Border.child (
+                TextBlock.create [
+                    TextBlock.text (tool.Extension.TrimStart('.'))
+                    TextBlock.fontSize 10.0
+                    TextBlock.foreground (extensionColor tool.Extension)
+                ])
+        ] :> IView
+    let nameStack : IView =
+        StackPanel.create [
+            StackPanel.verticalAlignment VerticalAlignment.Center
+            StackPanel.children [
+                TextBlock.create [
+                    TextBlock.text tool.Name
+                    TextBlock.fontWeight FontWeight.SemiBold
+                    TextBlock.foreground (if isOn then (Brushes.White :> IBrush) else mutedBrush)
+                ]
+                TextBlock.create [
+                    TextBlock.text tool.Key
+                    TextBlock.foreground mutedBrush
+                    TextBlock.fontSize 11.0
+                ]
+            ]
+        ] :> IView
+    Border.create [
+        Border.background cardBg
+        Border.cornerRadius (CornerRadius 4.0)
+        Border.padding (Thickness(10.0, 6.0))
+        Border.margin (Thickness(0.0, 0.0, 0.0, 4.0))
+        Border.child (
+            DockPanel.create [
+                DockPanel.children [
+                    toggle
+                    runButton
+                    statusInfo
+                    badge
+                    nameStack
+                ]
+            ])
+    ] :> IView
+
+let private toolboxRecentRow (e: ToolRunRecord) (dispatch: Msg -> unit) : IView =
+    let statusKey = if e.ExitCode = 0 then "success" else "failure"
+    DockPanel.create [
+        DockPanel.margin (Thickness(0.0, 2.0))
+        DockPanel.children [
+            Button.create [
+                DockPanel.dock Dock.Right
+                Button.content "log"
+                Button.fontSize 11.0
+                Button.padding (Thickness(6.0, 0.0))
+                Button.background transparentBrush
+                Button.borderThickness (Thickness 0.0)
+                Button.foreground accent
+                Button.cursor handCursor
+                Button.onClick ((fun _ -> dispatch (OpenFile e.LogPath)), SubPatchOptions.Always)
+            ] :> IView
+            TextBlock.create [
+                DockPanel.dock Dock.Left
+                TextBlock.width 70.0
+                TextBlock.text (sprintf "%s %d" (statusIcon statusKey) e.ExitCode)
+                TextBlock.foreground (statusBrush statusKey)
+                TextBlock.fontSize 12.0
+            ] :> IView
+            TextBlock.create [
+                DockPanel.dock Dock.Right
+                TextBlock.width 70.0
+                TextBlock.text (formatDuration e.DurationSec)
+                TextBlock.foreground mutedBrush
+                TextBlock.fontSize 12.0
+            ] :> IView
+            TextBlock.create [
+                DockPanel.dock Dock.Right
+                TextBlock.width 130.0
+                TextBlock.text (e.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm"))
+                TextBlock.foreground mutedBrush
+                TextBlock.fontSize 12.0
+            ] :> IView
+            TextBlock.create [
+                TextBlock.text e.ToolKey
+                TextBlock.textTrimming TextTrimming.CharacterEllipsis
+                TextBlock.fontSize 12.0
+            ] :> IView
+        ]
+    ] :> IView
+
+let private toolboxBody
+        (pid: ProjectId)
+        (projectRoot: string)
+        (model: Model)
+        (dispatch: Msg -> unit)
+        : IView =
+    let load = Map.tryFind pid model.ProjectToolbox
+    let state =
+        Map.tryFind pid model.ToolboxStates
+        |> Option.defaultValue { Disabled = Set.empty; Sort = ByName }
+    let history = Map.tryFind pid model.ToolboxHistories |> Option.defaultValue []
+    let lastRunsMap = Toolbox.lastRuns history
+    let recentOpen = model.ToolboxRecentOpen.Contains pid
+    let sortSelector : IView =
+        StackPanel.create [
+            StackPanel.orientation Orientation.Horizontal
+            StackPanel.spacing 2.0
+            StackPanel.verticalAlignment VerticalAlignment.Center
+            StackPanel.children [
+                TextBlock.create [
+                    TextBlock.text "sort:"
+                    TextBlock.foreground mutedBrush
+                    TextBlock.fontSize 12.0
+                    TextBlock.verticalAlignment VerticalAlignment.Center
+                    TextBlock.margin (Thickness(0.0, 0.0, 4.0, 0.0))
+                ]
+                sortChoiceButton "name"     (state.Sort = ByName)      (fun () -> dispatch (SetToolboxSort (pid, ByName)))
+                sortChoiceButton "last run" (state.Sort = ByLastRun)   (fun () -> dispatch (SetToolboxSort (pid, ByLastRun)))
+                sortChoiceButton "type"     (state.Sort = ByExtension) (fun () -> dispatch (SetToolboxSort (pid, ByExtension)))
+            ]
+        ] :> IView
+    let toolCount =
+        match load with
+        | Some (ToolboxOk (_, tools)) -> List.length tools
+        | _ -> 0
+    let header : IView =
+        DockPanel.create [
+            DockPanel.dock Dock.Top
+            DockPanel.margin (Thickness(16.0, 12.0))
+            DockPanel.children [
+                sortSelector
+                StackPanel.create [
+                    StackPanel.orientation Orientation.Horizontal
+                    StackPanel.spacing 12.0
+                    StackPanel.children [
+                        TextBlock.create [
+                            TextBlock.text (sprintf "%d tool(s)" toolCount)
+                            TextBlock.foreground mutedBrush
+                            TextBlock.verticalAlignment VerticalAlignment.Center
+                        ]
+                        Button.create [
+                            Button.content "Refresh"
+                            Button.onClick ((fun _ -> dispatch (RefreshToolbox pid)), SubPatchOptions.Always)
+                        ]
+                    ]
+                ]
+            ]
+        ] :> IView
+    let recentSection : IView =
+        if List.isEmpty history then TextBlock.create [ TextBlock.text "" ] :> IView
+        else
+            StackPanel.create [
+                StackPanel.margin (Thickness(0.0, 12.0, 0.0, 0.0))
+                StackPanel.children [
+                    Button.create [
+                        Button.content (sprintf "%s Recent runs (%d)" (if recentOpen then "▾" else "▸") (List.length history))
+                        Button.background transparentBrush
+                        Button.borderThickness (Thickness 0.0)
+                        Button.foreground dimBrush
+                        Button.padding (Thickness 0.0)
+                        Button.cursor handCursor
+                        Button.horizontalAlignment HorizontalAlignment.Left
+                        Button.onClick ((fun _ -> dispatch (ToggleToolboxRecent pid)), SubPatchOptions.Always)
+                    ]
+                    (if recentOpen then
+                        StackPanel.create [
+                            StackPanel.margin (Thickness(0.0, 6.0, 0.0, 0.0))
+                            StackPanel.children [
+                                for e in history |> List.truncate 20 -> toolboxRecentRow e dispatch
+                            ]
+                        ] :> IView
+                     else TextBlock.create [ TextBlock.text "" ] :> IView)
+                ]
+            ] :> IView
+    let body : IView =
+        match load with
+        | None | Some ToolboxLoading ->
+            TextBlock.create [
+                TextBlock.text "Scanning…"
+                TextBlock.margin (Thickness 16.0)
+                TextBlock.foreground mutedBrush
+            ] :> IView
+        | Some (ToolboxOk (cfg, tools)) ->
+            if List.isEmpty cfg.ScriptDirs then
+                TextBlock.create [
+                    TextBlock.text "No script directories configured. Add one in the Settings tab (Toolbox section) to discover scripts here."
+                    TextBlock.margin (Thickness 16.0)
+                    TextBlock.foreground mutedBrush
+                    TextBlock.textWrapping TextWrapping.Wrap
+                ] :> IView
+            elif List.isEmpty tools then
+                TextBlock.create [
+                    TextBlock.text (sprintf "No scripts (.bat / .cmd / .ps1 / .sh) found under: %s" (String.concat ", " cfg.ScriptDirs))
+                    TextBlock.margin (Thickness 16.0)
+                    TextBlock.foreground mutedBrush
+                    TextBlock.textWrapping TextWrapping.Wrap
+                ] :> IView
+            else
+                let ordered =
+                    Toolbox.sortTools
+                        state.Sort
+                        (fun k -> Map.tryFind k lastRunsMap |> Option.map (fun r -> r.StartedAt))
+                        state.Disabled
+                        tools
+                ScrollViewer.create [
+                    ScrollViewer.content (
+                        StackPanel.create [
+                            StackPanel.margin (Thickness(16.0, 0.0, 16.0, 16.0))
+                            StackPanel.children [
+                                for t in ordered do
+                                    yield toolRow pid t
+                                        (not (state.Disabled.Contains t.Key))
+                                        (model.ToolRunsInFlight.Contains (pid, t.Key))
+                                        (Map.tryFind t.Key lastRunsMap)
+                                        (Map.tryFind (pid, t.Key) model.ToolRunErrors)
+                                        dispatch
+                                yield recentSection
+                            ]
+                        ]
+                    )
+                ] :> IView
+    DockPanel.create [
+        DockPanel.children [
+            header
+            body
+        ]
+    ] :> _
+
 // ─── Project tab ────────────────────────────────────────────────────────
 
 let private projectView
@@ -2113,6 +2588,8 @@ let private projectView
                 (match active with
                  | ProjectFlows    ->
                      flowsBody pid p.Path model dispatch
+                 | ProjectToolboxTab ->
+                     toolboxBody pid p.Path model dispatch
                  | ProjectHistory  ->
                      let entries =
                          Map.tryFind pid model.ProjectHistory
