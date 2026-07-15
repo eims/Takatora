@@ -234,6 +234,9 @@ type Model = {
     OpeningEditors: Set<ProjectId>
     /// Same single-flight guard for "Open in IDE" launches.
     OpeningIde: Set<ProjectId>
+    /// Runs whose "Copy CLI command" button was just clicked, for transient
+    /// "Copied ✓" feedback. A timed ClearRunCommandCopied removes the entry.
+    CopiedRunCmd: Set<ProjectId * RunId>
     /// Machine-local app settings (the "Open in IDE" command template lives
     /// here). Loaded at startup, rewritten by the Settings editor.
     AppSettings: AppSettings
@@ -332,6 +335,10 @@ type Msg =
     /// (secrets excluded — they were never stored). "Current defaults" just
     /// uses the existing RunFlow (empty overrides).
     | RerunSameParams of ProjectId * RunId
+    /// Flag a run's "Copy CLI command" as just-copied (transient feedback).
+    /// The clipboard write itself happens in the view (needs a TopLevel).
+    | MarkRunCommandCopied of ProjectId * RunId
+    | ClearRunCommandCopied of ProjectId * RunId
     /// Open a directory in the OS file explorer (run dir, project dir, …).
     | OpenInExplorer of path:string
     /// Open a file in the OS default app (e.g. log.txt in a text editor).
@@ -458,6 +465,7 @@ let init () : Model * Cmd<Msg> =
       RunLogMatchIdx = Map.empty
       OpeningEditors = Set.empty
       OpeningIde     = Set.empty
+      CopiedRunCmd   = Set.empty
       AppSettings    = appSettings
       IdeCommandDraft = appSettings.IdeCommand |> Option.defaultValue ""
       IdeCandidates  = []
@@ -676,6 +684,22 @@ let flowById (model: Model) (pid: ProjectId) (flowId: string) : Flow option =
     match Map.tryFind pid model.ProjectFlows with
     | Some (FlowsOk flows) -> flows |> List.tryFind (fun f -> f.Id = flowId)
     | _ -> None
+
+/// The `takatora run …` command that reproduces a past run, or None if the
+/// run isn't cached. `pid` is the registered project name, so it doubles as
+/// the CLI `<project>` argument. Secret vars are dropped (the manifest only
+/// ever masked them; a real run re-sources them from the keychain) —
+/// identified from the flow definition when it's loaded, else falling back
+/// to RunCommand's mask-value defense.
+let runCommandFor (model: Model) (pid: ProjectId) (runId: RunId) : string option =
+    match Map.tryFind (pid, runId) model.RunDetails with
+    | None -> None
+    | Some (entry, _, _, _) ->
+        let secretNames =
+            match flowById model pid entry.FlowId with
+            | Some f -> f.Vars |> List.choose (fun v -> if v.Kind = VarKind.Secret then Some v.Name else None) |> Set.ofList
+            | None   -> Set.empty
+        Some (RunCommand.build pid entry.FlowId entry.Params secretNames)
 
 /// The dialog-renderable vars of a flow (declaration order), or [] if the
 /// flow / its flows.toml isn't loaded or has no such vars.
@@ -1015,7 +1039,10 @@ let closeTabs (toClose: RootTab list) (model: Model) : Model * Cmd<Msg> =
                     ToolboxHistories = Map.remove pid m.ToolboxHistories
                     ToolboxDirDraft = Map.remove pid m.ToolboxDirDraft
                     ToolboxRecentOpen = Set.remove pid m.ToolboxRecentOpen }
-            | RunDetail (pid, rid) -> { m with RunDetails = Map.remove (pid, rid) m.RunDetails }
+            | RunDetail (pid, rid) ->
+                { m with
+                    RunDetails   = Map.remove (pid, rid) m.RunDetails
+                    CopiedRunCmd = Set.remove (pid, rid) m.CopiedRunCmd }
             | LiveRun _ | Home     -> m
         // Pick the next active tab within the strip the user is looking at,
         // keeping the same slot index where possible (survivors always
@@ -1620,6 +1647,19 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                     | Some v -> Map.add name (TString v) acc
                     | None   -> acc) baseOverrides
             startRun pid entry.FlowId overrides model
+    | MarkRunCommandCopied (pid, runId) ->
+        // Transient "Copied ✓"; a timed message clears it (mirrors the
+        // ClearOpeningEditor re-enable pattern).
+        let clear : Cmd<Msg> =
+            [ fun dispatch ->
+                async {
+                    do! Async.Sleep 1500
+                    Dispatcher.UIThread.Post(fun () -> dispatch (ClearRunCommandCopied (pid, runId)))
+                }
+                |> Async.Start ]
+        { model with CopiedRunCmd = Set.add (pid, runId) model.CopiedRunCmd }, clear
+    | ClearRunCommandCopied (pid, runId) ->
+        { model with CopiedRunCmd = Set.remove (pid, runId) model.CopiedRunCmd }, Cmd.none
     | OpenInExplorer path ->
         // Open the directory in the OS file explorer. Best-effort; a missing
         // dir or a headless host just no-ops. Normalize separators first —

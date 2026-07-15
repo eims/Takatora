@@ -586,6 +586,20 @@ let private browseForToolboxDir
             |> Async.StartImmediate
     | _ -> ()
 
+/// Copy text to the OS clipboard. Uses the event source's TopLevel (the
+/// update loop has no window handle), same access route as the folder
+/// pickers. Best-effort — a null clipboard just no-ops.
+let private copyToClipboard (text: string) (e: RoutedEventArgs) : unit =
+    match e.Source with
+    | :? Visual as v ->
+        match TopLevel.GetTopLevel v with
+        | null -> ()
+        | top ->
+            match top.Clipboard with
+            | null -> ()
+            | cb   -> cb.SetTextAsync text |> ignore
+    | _ -> ()
+
 let private addProjectForm (form: AddProjectForm) (dispatch: Msg -> unit) : IView =
     let fieldLabel (text: string) : IView =
         TextBlock.create [
@@ -2849,6 +2863,8 @@ let private runDetailBody
         (logLines: string list)
         (logFilter: string)
         (logMatchIdx: int)
+        (runCommand: string option)
+        (commandCopied: bool)
         (dispatch: Msg -> unit)
         : IView =
     let started  = entry.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
@@ -2936,6 +2952,21 @@ let private runDetailBody
                                 Button.content "Re-run with current defaults"
                                 Button.onClick ((fun _ -> dispatch (RunFlow (pid, entry.FlowId))), SubPatchOptions.Always)
                             ]
+                            // Copy the equivalent `takatora run …` command
+                            // (secrets omitted) — reproduces this run from a
+                            // shell / CI. Hidden if the run isn't cached.
+                            match runCommand with
+                            | Some cmd ->
+                                Button.create [
+                                    Button.content (if commandCopied then "Copied ✓" else "Copy CLI command")
+                                    ToolTip.tip cmd
+                                    Button.onClick (
+                                        (fun e ->
+                                            copyToClipboard cmd e
+                                            dispatch (MarkRunCommandCopied (pid, entry.RunId))),
+                                        SubPatchOptions.Always)
+                                ] :> IView
+                            | None -> ()
                         ]
                     ]
                     sectionHeader "Parameters"
@@ -3042,7 +3073,10 @@ let private runDetailView
                     | None -> ()), SubPatchOptions.Always)
             DockPanel.children [
                 runDetailNav pid runId model dispatch
-                runDetailBody pid entry steps outputs logLines logFilter logMatchIdx dispatch
+                runDetailBody pid entry steps outputs logLines logFilter logMatchIdx
+                    (State.runCommandFor model pid runId)
+                    (Set.contains (pid, runId) model.CopiedRunCmd)
+                    dispatch
             ]
         ] :> _
     | None ->

@@ -67,6 +67,7 @@ type StateTests() =
           RunLogMatchIdx = Map.empty
           OpeningEditors = Set.empty
           OpeningIde     = Set.empty
+          CopiedRunCmd   = Set.empty
           AppSettings    = AppSettings.empty
           IdeCommandDraft = ""
           IdeCandidates  = []
@@ -1042,6 +1043,32 @@ type StateTests() =
         Assert.Equal<string option>(None, Secrets.read "p1" "token")
         // Cache no longer lists the deleted entry (drives the re-render).
         Assert.Equal<string list>([ "keep" ], Map.find "p1" m.ProjectSecrets)
+
+    // ─── Copy CLI command (RunDetail) ───────────────────────────────
+
+    [<Fact>]
+    member _.``runCommandFor builds the CLI command and omits secret vars`` () =
+        let entry =
+            { fakeEntry "r1" with
+                FlowId = "build"
+                Params = Map.ofList [ "branch", TString "dev"; "token", TString "***" ] }
+        let flow = { Id = "build"; Name = None; Vars = [ mkVar "token" VarKind.Secret None ]; Steps = [] }
+        let model =
+            { baseModel with
+                RunDetails   = Map.ofList [ ("p1", "r1"), (entry, [], Map.empty, []) ]
+                ProjectFlows = Map.ofList [ "p1", FlowsOk [ flow ] ] }
+        Assert.Equal<string option>(Some "takatora run p1 build --var branch=dev", runCommandFor model "p1" "r1")
+
+    [<Fact>]
+    member _.``runCommandFor is None for an uncached run`` () =
+        Assert.Equal<string option>(None, runCommandFor baseModel "p1" "ghost")
+
+    [<Fact>]
+    member _.``MarkRunCommandCopied sets and ClearRunCommandCopied clears the flag`` () =
+        let m1 = apply (MarkRunCommandCopied ("p1", "r1")) baseModel
+        Assert.True(m1.CopiedRunCmd.Contains ("p1", "r1"))
+        let m2 = apply (ClearRunCommandCopied ("p1", "r1")) m1
+        Assert.False(m2.CopiedRunCmd.Contains ("p1", "r1"))
 
     // ─── Toolbox ────────────────────────────────────────────────────
 

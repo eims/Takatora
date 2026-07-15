@@ -19,6 +19,7 @@
     <Compile Include="Secrets.fs" />
     <Compile Include="Scaffold.fs" />
     <Compile Include="History.fs" />
+    <Compile Include="RunCommand.fs" />
     <Compile Include="Toolbox.fs" />
     <Compile Include="Describe.fs" />
     <Compile Include="Watch.fs" />
