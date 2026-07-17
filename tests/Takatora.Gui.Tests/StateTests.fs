@@ -5,6 +5,7 @@ open System.IO
 open System.Collections.Generic
 open Xunit
 open Takatora.Core
+open Takatora.Gui
 open Takatora.Gui.State
 
 /// In-memory secret store so dialog secret tests never touch the real
@@ -58,6 +59,7 @@ type StateTests() =
           ToolboxStates  = Map.empty
           ToolboxHistories = Map.empty
           ToolRunsInFlight = Set.empty
+          ToolStopsRequested = Set.empty
           ToolRunErrors  = Map.empty
           ToolboxDirDraft = Map.empty
           ToolboxRecentOpen = Set.empty
@@ -86,7 +88,8 @@ type StateTests() =
           AddProject     = None
           CurrentProject = None
           RunDialog      = None
-          ShowingAbout   = false }
+          ShowingAbout   = false
+          ConfirmingQuit = false }
 
     let modelWithTabs (active: RootTab) (tabs: RootTab list) : Model =
         { baseModel with OpenTabs = tabs; ActiveTab = active }
@@ -1108,6 +1111,67 @@ type StateTests() =
         let m = apply (ToolRunCompleted ("p1", "tools/a.bat", Error "boom")) seeded
         Assert.False(m.ToolRunsInFlight.Contains ("p1", "tools/a.bat"))
         Assert.Equal("boom", Map.find ("p1", "tools/a.bat") m.ToolRunErrors)
+
+    [<Fact>]
+    member _.``StopTool marks an in-flight run as stop-requested`` () =
+        let seeded = { baseModel with ToolRunsInFlight = Set.ofList [ ("p1", "tools/a.bat") ] }
+        let m = apply (StopTool ("p1", "tools/a.bat")) seeded
+        Assert.True(m.ToolStopsRequested.Contains ("p1", "tools/a.bat"))
+        // the run stays in flight until ToolRunCompleted observes the death
+        Assert.True(m.ToolRunsInFlight.Contains ("p1", "tools/a.bat"))
+
+    [<Fact>]
+    member _.``StopTool for a run that is not in flight is a no-op`` () =
+        let m = apply (StopTool ("p1", "tools/a.bat")) baseModel
+        Assert.True(Set.isEmpty m.ToolStopsRequested)
+
+    [<Fact>]
+    member _.``RequestQuit with tool runs in flight opens the confirmation instead of quitting`` () =
+        let mutable quit = false
+        TrayBridge.performQuit <- fun () -> quit <- true
+        try
+            let seeded = { baseModel with ToolRunsInFlight = Set.ofList [ ("p1", "tools/a.bat") ] }
+            let m = apply RequestQuit seeded
+            Assert.True(m.ConfirmingQuit)
+            Assert.False(quit)
+        finally TrayBridge.performQuit <- ignore
+
+    [<Fact>]
+    member _.``RequestQuit with nothing in flight quits immediately`` () =
+        let mutable quit = false
+        TrayBridge.performQuit <- fun () -> quit <- true
+        try
+            let m = apply RequestQuit baseModel
+            Assert.False(m.ConfirmingQuit)
+            Assert.True(quit)
+        finally TrayBridge.performQuit <- ignore
+
+    [<Fact>]
+    member _.``ConfirmQuit quits; CancelQuit just closes the overlay`` () =
+        let mutable quit = false
+        TrayBridge.performQuit <- fun () -> quit <- true
+        try
+            let seeded = { baseModel with ConfirmingQuit = true }
+            let cancelled = apply CancelQuit seeded
+            Assert.False(cancelled.ConfirmingQuit)
+            Assert.False(quit)
+            let confirmed = apply ConfirmQuit seeded
+            Assert.False(confirmed.ConfirmingQuit)
+            Assert.True(quit)
+        finally TrayBridge.performQuit <- ignore
+
+    [<Fact>]
+    member _.``ToolRunCompleted clears the stop-requested flag`` () =
+        let record : ToolRunRecord =
+            { ToolKey = "tools/a.bat"; StartedAt = DateTimeOffset.UtcNow
+              DurationSec = 1.0; ExitCode = -1; LogPath = "x.log" }
+        let seeded =
+            { baseModel with
+                ToolRunsInFlight   = Set.ofList [ ("p1", "tools/a.bat") ]
+                ToolStopsRequested = Set.ofList [ ("p1", "tools/a.bat") ] }
+        let m = apply (ToolRunCompleted ("p1", "tools/a.bat", Ok record)) seeded
+        Assert.False(m.ToolStopsRequested.Contains ("p1", "tools/a.bat"))
+        Assert.False(m.ToolRunsInFlight.Contains ("p1", "tools/a.bat"))
 
     [<Fact>]
     member _.``CloseTab Project drops the toolbox caches`` () =

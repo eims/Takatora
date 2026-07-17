@@ -247,6 +247,36 @@ let ``runTool reports the nonzero exit code`` () =
         | Error e -> Assert.Fail(e))
 
 [<Fact>]
+let ``runToolWith's stop handle kills a long-running script`` () =
+    if not (OperatingSystem.IsWindows()) then () else
+    withTempProject (fun root stateDir ->
+        let batPath = Path.Combine(root, "tools", "slow.bat")
+        touch batPath
+        // ~30s if not killed; well past any sane test budget, so a pass
+        // proves the kill (the duration assert is the belt-and-braces).
+        File.WriteAllText(batPath, "@ping -n 30 127.0.0.1 > nul\r\n")
+        let tool =
+            { Key = "tools/slow.bat"; Name = "slow.bat"; Extension = ".bat"
+              FullPath = batPath; Dir = Path.GetDirectoryName batPath }
+        let mutable handle : ToolRunHandle option = None
+        use started = new System.Threading.ManualResetEventSlim(false)
+        let runner =
+            System.Threading.Tasks.Task.Run(fun () ->
+                Toolbox.runToolWith (fun h -> handle <- Some h; started.Set()) stateDir tool)
+        Assert.True(started.Wait(TimeSpan.FromSeconds 10.0), "onStarted never fired")
+        handle.Value.Stop ()
+        Assert.True(runner.Wait(TimeSpan.FromSeconds 15.0), "run did not end after Stop")
+        match runner.Result with
+        | Error e -> Assert.Fail(e)
+        | Ok record ->
+            Assert.NotEqual(0, record.ExitCode)
+            Assert.True(record.DurationSec < 25.0)
+            // a stopped run still lands in history
+            Assert.Equal("tools/slow.bat", (Toolbox.loadHistory stateDir 10 |> List.head).ToolKey)
+        // Stop after exit is a harmless no-op
+        handle.Value.Stop ())
+
+[<Fact>]
 let ``runTool errors when the script no longer exists`` () =
     withTempProject (fun root stateDir ->
         let tool =

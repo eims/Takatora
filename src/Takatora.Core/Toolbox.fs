@@ -57,6 +57,15 @@ type ToolboxLocalState = {
     Sort: ToolSort
 }
 
+/// Handle to an in-flight tool run, surfaced through `runToolWith`'s
+/// `onStarted` callback the moment the process is spawned. `Stop` kills
+/// the whole process tree — the interpreter (cmd/pwsh/bash) is itself a
+/// parent, and scripts routinely spawn further children. Safe to call
+/// more than once or after the process has already exited (a no-op
+/// then); a stopped run still completes through the normal path and is
+/// recorded in history with the kill's (nonzero) exit code.
+type ToolRunHandle = { Stop: unit -> unit }
+
 /// One line of `history.ndjson` — a single completed tool run. Kept out
 /// of `.takatora/runs/` on purpose so Toolbox runs never pollute the
 /// flow (Job) history.
@@ -80,9 +89,10 @@ type ToolRunRecord = {
 /// CLI can reuse it verbatim. `runTool` blocks; the GUI wraps it on a
 /// worker thread and marshals the result back to the UI thread.
 ///
-/// A tool spawned right before the app exits keeps running and its record
-/// is not written — same contract as flow runs (closing a run doesn't kill
-/// it). Acceptable: the log still lands, only the history line is missed.
+/// The GUI kills in-flight tool runs at Quit (via `ToolRunHandle`, hooked
+/// to the app's shutdown), so a run killed that way dies before its
+/// history record is written. Acceptable: the log still lands, only the
+/// history line is missed.
 [<RequireQualifiedAccess>]
 module Toolbox =
 
@@ -399,10 +409,12 @@ module Toolbox =
 
     /// Run a tool to completion, streaming stdout+stderr to a fresh log
     /// file under `<stateDir>/logs/`, and append a history record. BLOCKING
-    /// — the GUI calls this on a worker thread. `Error` covers a since-
-    /// deleted script, a missing interpreter, or a spawn failure; nothing
-    /// is recorded in those cases.
-    let runTool (stateDir: string) (tool: ToolEntry) : Result<ToolRunRecord, string> =
+    /// — the GUI calls this on a worker thread. `onStarted` fires (on the
+    /// calling thread) right after the process spawns, handing the caller a
+    /// stop handle so a long-running tool can be killed from outside.
+    /// `Error` covers a since-deleted script, a missing interpreter, or a
+    /// spawn failure; nothing is recorded in those cases.
+    let runToolWith (onStarted: ToolRunHandle -> unit) (stateDir: string) (tool: ToolEntry) : Result<ToolRunRecord, string> =
         if not (File.Exists tool.FullPath) then Error "script no longer exists on disk"
         else
             match interpreterFor tool.Extension with
@@ -436,6 +448,9 @@ module Toolbox =
 
                     let sw = Stopwatch.StartNew()
                     proc.Start() |> ignore
+                    // The swallow also covers Stop landing after `use proc`
+                    // disposed (run already over) — ObjectDisposedException.
+                    onStarted { Stop = fun () -> try proc.Kill(entireProcessTree = true) with _ -> () }
                     proc.BeginOutputReadLine()
                     proc.BeginErrorReadLine()
                     proc.WaitForExit()   // no-arg overload also flushes async reads
@@ -451,3 +466,8 @@ module Toolbox =
                     appendHistory stateDir record
                     Ok record
                 with ex -> Error ex.Message
+
+    /// `runToolWith` without a stop handle, for callers that don't need
+    /// cancellation (CLI one-shots, tests).
+    let runTool (stateDir: string) (tool: ToolEntry) : Result<ToolRunRecord, string> =
+        runToolWith ignore stateDir tool

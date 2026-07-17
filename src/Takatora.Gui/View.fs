@@ -2173,6 +2173,7 @@ let private toolRow
         (tool: ToolEntry)
         (isOn: bool)
         (inFlight: bool)
+        (stopRequested: bool)
         (lastRun: ToolRunRecord option)
         (error: string option)
         (dispatch: Msg -> unit)
@@ -2195,17 +2196,43 @@ let private toolRow
                 ])
             Button.onClick ((fun _ -> dispatch (ToggleTool (pid, tool.Key))), SubPatchOptions.Always)
         ] :> IView
+    // While a run is in flight the button flips to Stop (kills the whole
+    // process tree); a click leaves it disabled as "Stopping…" until the
+    // process is observed dead and ToolRunCompleted lands.
     let runButton : IView =
-        Button.create [
-            DockPanel.dock Dock.Right
-            Button.content (if inFlight then "Running…" else "Run")
-            Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
-            Button.verticalAlignment VerticalAlignment.Center
-            Button.isEnabled (isOn && not inFlight)
-            Button.onClick ((fun _ -> dispatch (RunTool (pid, tool.Key))), SubPatchOptions.Always)
-        ] :> IView
+        if inFlight then
+            Button.create [
+                DockPanel.dock Dock.Right
+                Button.content (if stopRequested then "Stopping…" else "Stop")
+                Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                Button.verticalAlignment VerticalAlignment.Center
+                Button.isEnabled (not stopRequested)
+                ToolTip.tip "Kill the running script and any processes it spawned"
+                Button.onClick ((fun _ -> dispatch (StopTool (pid, tool.Key))), SubPatchOptions.Always)
+            ] :> IView
+        else
+            Button.create [
+                DockPanel.dock Dock.Right
+                Button.content "Run"
+                Button.margin (Thickness(8.0, 0.0, 0.0, 0.0))
+                Button.verticalAlignment VerticalAlignment.Center
+                Button.isEnabled isOn
+                Button.onClick ((fun _ -> dispatch (RunTool (pid, tool.Key))), SubPatchOptions.Always)
+            ] :> IView
     // Last-run summary (or the last error), Dock.Right of the name.
+    // While in flight it reads "running…" instead (the Run→Stop button
+    // swap alone is easy to miss).
     let statusInfo : IView =
+        if inFlight then
+            TextBlock.create [
+                DockPanel.dock Dock.Right
+                TextBlock.text (if stopRequested then "stopping…" else "running…")
+                TextBlock.foreground accent
+                TextBlock.fontSize 11.0
+                TextBlock.verticalAlignment VerticalAlignment.Center
+                TextBlock.margin (Thickness(8.0, 0.0))
+            ] :> IView
+        else
         match error with
         | Some msg ->
             TextBlock.create [
@@ -2478,6 +2505,7 @@ let private toolboxBody
                                     yield toolRow pid t
                                         (not (state.Disabled.Contains t.Key))
                                         (model.ToolRunsInFlight.Contains (pid, t.Key))
+                                        (model.ToolStopsRequested.Contains (pid, t.Key))
                                         (Map.tryFind t.Key lastRunsMap)
                                         (Map.tryFind (pid, t.Key) model.ToolRunErrors)
                                         dispatch
@@ -3765,6 +3793,73 @@ let private aboutDialog (dispatch: Msg -> unit) : IView =
         )
     ] :> _
 
+/// Quit confirmation overlay, shown when Quit is requested while toolbox
+/// runs are still in flight. Confirming kills their process trees and exits.
+let private confirmQuitDialog (model: Model) (dispatch: Msg -> unit) : IView =
+    let count = Set.count model.ToolRunsInFlight
+    let toolNames =
+        model.ToolRunsInFlight
+        |> Set.toList
+        |> List.map (fun (_, key) -> key)
+        |> List.truncate 5
+    Border.create [
+        Border.background overlayBg
+        Border.child (
+            Border.create [
+                Border.background cardBg
+                Border.cornerRadius 6.0
+                Border.padding (Thickness(28.0, 24.0))
+                Border.horizontalAlignment HorizontalAlignment.Center
+                Border.verticalAlignment VerticalAlignment.Center
+                Border.maxWidth 460.0
+                Border.child (
+                    StackPanel.create [
+                        StackPanel.spacing 10.0
+                        StackPanel.children [
+                            TextBlock.create [
+                                TextBlock.text (
+                                    if count = 1 then "A toolbox script is still running"
+                                    else sprintf "%d toolbox scripts are still running" count)
+                                TextBlock.foreground (Brushes.White :> IBrush)
+                                TextBlock.fontSize 16.0
+                            ]
+                            for key in toolNames do
+                                TextBlock.create [
+                                    TextBlock.text (sprintf "• %s" key)
+                                    TextBlock.foreground dimBrush
+                                    TextBlock.fontSize 12.0
+                                ]
+                            TextBlock.create [
+                                TextBlock.text "Quitting stops them (the whole process tree is killed)."
+                                TextBlock.foreground mutedBrush
+                                TextBlock.fontSize 12.0
+                                TextBlock.textWrapping TextWrapping.Wrap
+                            ]
+                            StackPanel.create [
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.spacing 8.0
+                                StackPanel.horizontalAlignment HorizontalAlignment.Right
+                                StackPanel.margin (Thickness(0.0, 8.0, 0.0, 0.0))
+                                StackPanel.children [
+                                    Button.create [
+                                        Button.content "Cancel"
+                                        Button.onClick ((fun _ -> dispatch CancelQuit), SubPatchOptions.Always)
+                                    ]
+                                    Button.create [
+                                        Button.content "Stop them and quit"
+                                        Button.foreground (Brushes.White :> IBrush)
+                                        Button.background errorBrush
+                                        Button.onClick ((fun _ -> dispatch ConfirmQuit), SubPatchOptions.Always)
+                                    ]
+                                ]
+                            ]
+                        ]
+                    ]
+                )
+            ]
+        )
+    ] :> _
+
 let view (model: Model) (dispatch: Msg -> unit) : IView =
     let content =
         DockPanel.create [
@@ -3785,5 +3880,6 @@ let view (model: Model) (dispatch: Msg -> unit) : IView =
             | Some d -> yield runParamsDialog d dispatch
             | None   -> ()
             if model.ShowingAbout then yield aboutDialog dispatch
+            if model.ConfirmingQuit then yield confirmQuitDialog model dispatch
         ]
     ] :> _

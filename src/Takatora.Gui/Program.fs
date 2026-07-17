@@ -76,6 +76,17 @@ type App() =
                 win.Show()
                 win.Activate() |> ignore
 
+            // Quit plumbing: the model triggers the real shutdown (after its
+            // in-flight-tools check) and may need the hidden window back for
+            // the confirmation overlay. Whatever path shutdown takes, Exit
+            // kills any toolbox scripts the GUI started — they must not
+            // outlive the app.
+            TrayBridge.performQuit <- fun () ->
+                quitting <- true
+                desktop.Shutdown()
+            TrayBridge.showMainWindow <- showWindow
+            desktop.Exit.Add(fun _ -> State.stopAllToolRuns ())
+
             let tray = new TrayIcon()
             // green = armed & firing, yellow = enabled but nothing armed
             // (idle), red = globally paused. Pre-rendered so updates are cheap.
@@ -94,10 +105,10 @@ type App() =
             // A disabled info line above it ("Watching: N" / "Idle" / "Paused").
             let watchInfo = NativeMenuItem("Watching: 0")
             watchInfo.IsEnabled <- false
+            // Routed through the model (RequestQuit): quits immediately when
+            // idle, or asks for confirmation when toolbox runs are in flight.
             let quitItem = NativeMenuItem("Quit")
-            quitItem.Click.Add(fun _ ->
-                quitting <- true
-                desktop.Shutdown())
+            quitItem.Click.Add(fun _ -> TrayBridge.requestQuit ())
             menu.Items.Add(showItem)
             menu.Items.Add(NativeMenuItemSeparator())
             menu.Items.Add(watchInfo)

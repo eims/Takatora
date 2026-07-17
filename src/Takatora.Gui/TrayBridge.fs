@@ -35,3 +35,18 @@ let subscribeStatus (f: WatchStatus -> unit) =
 /// Tray → model: ask to flip the global watch master. Wired in `State.init`
 /// (which captures the real Elmish dispatch); a no-op until then.
 let mutable requestToggleGlobal : unit -> unit = ignore
+
+/// Tray → model: the Quit menu item routes through the model (RequestQuit)
+/// so it can confirm first when toolbox runs are still in flight. Wired in
+/// `State.init`; a no-op until then.
+let mutable requestQuit : unit -> unit = ignore
+
+/// Model → app: actually shut the process down (sets the close-to-tray
+/// bypass and calls desktop.Shutdown). Set in
+/// App.OnFrameworkInitializationCompleted; a no-op until then.
+let mutable performQuit : unit -> unit = ignore
+
+/// Model → app: re-show/activate the main window (it may be hidden to the
+/// tray when the quit confirmation needs to appear). Set alongside
+/// `performQuit`.
+let mutable showMainWindow : unit -> unit = ignore

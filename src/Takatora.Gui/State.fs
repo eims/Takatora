@@ -208,6 +208,10 @@ type Model = {
     /// Tools with a run in flight (per project + tool key). Guards against
     /// double-launch and drives the "Running…" affordance.
     ToolRunsInFlight: Set<ProjectId * string>
+    /// In-flight tool runs the user asked to stop: the kill has been
+    /// signalled but the process hasn't been observed dead yet. Drives the
+    /// button's disabled "Stopping…" state; cleared by ToolRunCompleted.
+    ToolStopsRequested: Set<ProjectId * string>
     /// Last run error per (project, tool key), shown inline on the row.
     /// Cleared when that tool is run again.
     ToolRunErrors: Map<ProjectId * string, string>
@@ -292,6 +296,9 @@ type Model = {
     RunDialog: RunDialogState option
     /// True while the About overlay is open.
     ShowingAbout: bool
+    /// True while the quit confirmation overlay is open (Quit was requested
+    /// with toolbox runs still in flight; confirming kills them and exits).
+    ConfirmingQuit: bool
 }
 
 type Msg =
@@ -326,6 +333,9 @@ type Msg =
     | ToggleTool of ProjectId * string
     /// Launch a tool (guarded against double-launch).
     | RunTool of ProjectId * string
+    /// Kill a tool's in-flight run (the whole process tree). Completion
+    /// still arrives via ToolRunCompleted once the process dies.
+    | StopTool of ProjectId * string
     /// A tool run finished (off-thread) with success or an error message.
     | ToolRunCompleted of ProjectId * string * Result<ToolRunRecord, string>
     /// Toggle the "Recent runs" section.
@@ -428,6 +438,13 @@ type Msg =
     // About overlay
     | ShowAbout
     | HideAbout
+    // Quit (routed through the model so in-flight toolbox runs can gate it)
+    /// Tray Quit clicked: exit immediately, or open the confirmation
+    /// overlay when toolbox runs are still in flight.
+    | RequestQuit
+    /// Confirmed: kill the in-flight tool runs and shut down.
+    | ConfirmQuit
+    | CancelQuit
 
 /// Engine kind per project (project.toml [engine].type), for tinting the
 /// Home project list. Best-effort: projects whose toml is missing/broken
@@ -457,6 +474,7 @@ let init () : Model * Cmd<Msg> =
       ToolboxStates  = Map.empty
       ToolboxHistories = Map.empty
       ToolRunsInFlight = Set.empty
+      ToolStopsRequested = Set.empty
       ToolRunErrors  = Map.empty
       ToolboxDirDraft = Map.empty
       ToolboxRecentOpen = Set.empty
@@ -484,7 +502,8 @@ let init () : Model * Cmd<Msg> =
       AddProject     = None
       CurrentProject = None
       RunDialog      = None
-      ShowingAbout   = false },
+      ShowingAbout   = false
+      ConfirmingQuit = false },
     // A always-on poll timer for watch mode. It's a no-op when nothing is
     // watched; when a project is watched, WatchPoll samples its git HEAD.
     [ (fun dispatch ->
@@ -500,7 +519,11 @@ let init () : Model * Cmd<Msg> =
       // to the UI thread, so the tray can drive Elmish without a back-channel.
       (fun dispatch ->
         TrayBridge.requestToggleGlobal <-
-            fun () -> Dispatcher.UIThread.Post(fun () -> dispatch ToggleGlobalWatch)) ]
+            fun () -> Dispatcher.UIThread.Post(fun () -> dispatch ToggleGlobalWatch)
+        // Same pattern for the tray's Quit item, so quitting can pass
+        // through RequestQuit's in-flight-tools check.
+        TrayBridge.requestQuit <-
+            fun () -> Dispatcher.UIThread.Post(fun () -> dispatch RequestQuit)) ]
 
 let private moveOrAppend (tab: RootTab) (tabs: RootTab list) : RootTab list =
     if List.contains tab tabs then tabs else tabs @ [ tab ]
@@ -602,6 +625,21 @@ let private projectRoot
     projects
     |> List.tryFind (fun (p: ProjectRegistration) -> p.Name = pid)
     |> Option.map (fun p -> p.Path)
+
+/// Stop handles for in-flight tool runs, keyed like ToolRunsInFlight.
+/// A mutable side-table rather than model state: a handle is a live
+/// closure over the running Process, which has no business inside the
+/// Elmish model. Written from the worker thread (runToolWith's
+/// onStarted), read from the UI thread (StopTool) — hence Concurrent.
+let private toolRunHandles =
+    System.Collections.Concurrent.ConcurrentDictionary<ProjectId * string, ToolRunHandle>()
+
+/// Kill every in-flight toolbox run (whole process trees). Hooked to the
+/// app's shutdown (desktop.Exit in Program) so scripts the GUI started
+/// never outlive a Quit. Stop is idempotent and swallows late/dead-process
+/// races, so calling this at any point is safe.
+let stopAllToolRuns () =
+    for KeyValue (_, h) in toolRunHandles do h.Stop ()
 
 /// The machine-local toolbox state dir for a project (state.toml,
 /// history.ndjson, logs/), or None if the project isn't registered.
@@ -1395,7 +1433,10 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 [ fun dispatch ->
                     async {
                         do! Async.SwitchToThreadPool ()
-                        let result = try Toolbox.runTool stateDir t with ex -> Error ex.Message
+                        let result =
+                            try Toolbox.runToolWith (fun h -> toolRunHandles[(pid, key)] <- h) stateDir t
+                            with ex -> Error ex.Message
+                        toolRunHandles.TryRemove((pid, key)) |> ignore
                         Dispatcher.UIThread.Post(fun () -> dispatch (ToolRunCompleted (pid, key, result)))
                     }
                     |> Async.Start ]
@@ -1404,8 +1445,21 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 ToolRunErrors    = Map.remove (pid, key) model.ToolRunErrors },
             cmd
         | _ -> model, Cmd.none
+    | StopTool (pid, key) ->
+        // Signal the kill and flip to "stopping". The run itself still ends
+        // through ToolRunCompleted (WaitForExit returns once the tree dies),
+        // which clears both flags — so a Stop on an already-finishing run is
+        // harmless. Missing handle (spawn raced ahead / already removed):
+        // just mark requested; worst case the flag clears on completion.
+        if model.ToolRunsInFlight.Contains (pid, key) then
+            match toolRunHandles.TryGetValue ((pid, key)) with
+            | true, h -> h.Stop ()
+            | _ -> ()
+            { model with ToolStopsRequested = Set.add (pid, key) model.ToolStopsRequested }, Cmd.none
+        else model, Cmd.none
     | ToolRunCompleted (pid, key, result) ->
         let inFlight = Set.remove (pid, key) model.ToolRunsInFlight
+        let stopsRequested = Set.remove (pid, key) model.ToolStopsRequested
         match result with
         | Ok record ->
             let hist =
@@ -1414,12 +1468,14 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
                 |> fun h -> (record :: h) |> List.truncate 100
             { model with
                 ToolRunsInFlight = inFlight
+                ToolStopsRequested = stopsRequested
                 ToolboxHistories = Map.add pid hist model.ToolboxHistories
                 ToolRunErrors    = Map.remove (pid, key) model.ToolRunErrors },
             Cmd.none
         | Error msg ->
             { model with
                 ToolRunsInFlight = inFlight
+                ToolStopsRequested = stopsRequested
                 ToolRunErrors    = Map.add (pid, key) msg model.ToolRunErrors },
             Cmd.none
     | ToggleToolboxRecent pid ->
@@ -2041,6 +2097,24 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         { model with AddProject = None }, Cmd.none
     | ShowAbout -> { model with ShowingAbout = true }, Cmd.none
     | HideAbout -> { model with ShowingAbout = false }, Cmd.none
+    | RequestQuit ->
+        if Set.isEmpty model.ToolRunsInFlight then
+            // Nothing to warn about — exit right away. The actual kill of
+            // any stragglers is hooked to desktop.Exit in Program.
+            TrayBridge.performQuit ()
+            model, Cmd.none
+        else
+            // The window may be hidden to the tray; bring it back so the
+            // confirmation is actually visible.
+            TrayBridge.showMainWindow ()
+            { model with ConfirmingQuit = true }, Cmd.none
+    | ConfirmQuit ->
+        // stopAllToolRuns also runs on desktop.Exit; calling performQuit is
+        // enough, but the flag reset keeps the model sane if shutdown is
+        // somehow interrupted.
+        TrayBridge.performQuit ()
+        { model with ConfirmingQuit = false }, Cmd.none
+    | CancelQuit -> { model with ConfirmingQuit = false }, Cmd.none
     | AddProjectSetDir dir ->
         match model.AddProject with
         | None -> model, Cmd.none
