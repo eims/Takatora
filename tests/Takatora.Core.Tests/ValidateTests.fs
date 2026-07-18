@@ -49,9 +49,11 @@ let ``run returns Valid when both files parse`` () =
     withTempDir (fun dir ->
         writeCi dir validProjectToml validFlowsToml
         match Validate.run dir with
-        | Validate.Valid (project, flows) ->
+        | Validate.Valid (project, flows, ps, warnings) ->
             Assert.Equal("fixture", project.Name)
             Assert.Equal(1, List.length flows)
+            Assert.Empty(ps)
+            Assert.Empty(warnings)
         | other -> Assert.Fail($"expected Valid, got %A{other}"))
 
 [<Fact>]
@@ -105,6 +107,85 @@ foo = { type = "enum", default = "a" }
             Assert.EndsWith("flows.toml", source)
         | other -> Assert.Fail($"expected ConfigError, got %A{other}"))
 
+// ─── params.toml integration ───────────────────────────────────────
+
+let private writeParams (workingDir: string) (paramsToml: string) =
+    File.WriteAllText(Path.Combine(workingDir, ".takatora", "params.toml"), paramsToml)
+
+[<Fact>]
+let ``run reports declared params and no warnings when all referenced`` () =
+    withTempDir (fun dir ->
+        writeCi dir validProjectToml """
+[[flow]]
+id = "smoke"
+[[flow.steps]]
+type = "notify.console"
+message = "${params.studio_name}"
+"""
+        writeParams dir """
+[params]
+studio_name = { type = "string", value = "Foo" }
+"""
+        match Validate.run dir with
+        | Validate.Valid (_, _, ps, warnings) ->
+            Assert.Equal(1, List.length ps)
+            Assert.Empty(warnings)
+        | other -> Assert.Fail($"expected Valid, got %A{other}"))
+
+[<Fact>]
+let ``run rejects an undeclared params reference`` () =
+    withTempDir (fun dir ->
+        writeCi dir validProjectToml """
+[[flow]]
+id = "smoke"
+[[flow.steps]]
+type = "notify.console"
+message = "${params.nope}"
+"""
+        match Validate.run dir with
+        | Validate.ConfigError (source, msg) ->
+            Assert.EndsWith("params.toml", source)
+            Assert.Contains("nope", msg)
+            Assert.Contains("smoke", msg)
+        | other -> Assert.Fail($"expected ConfigError, got %A{other}"))
+
+[<Fact>]
+let ``run attributes params parse errors to params.toml`` () =
+    withTempDir (fun dir ->
+        writeCi dir validProjectToml validFlowsToml
+        writeParams dir """
+[params]
+pw = { type = "secret", value = "oops" }
+"""
+        match Validate.run dir with
+        | Validate.ConfigError (source, msg) ->
+            Assert.EndsWith("params.toml", source)
+            Assert.Contains("pw", msg)
+        | other -> Assert.Fail($"expected ConfigError, got %A{other}"))
+
+[<Fact>]
+let ``run warns on flow vars shadowing params and unused params`` () =
+    withTempDir (fun dir ->
+        writeCi dir validProjectToml """
+[[flow]]
+id = "smoke"
+[flow.vars]
+studio_name = { type = "string", default = "local" }
+[[flow.steps]]
+type = "notify.console"
+message = "${params.studio_name}"
+"""
+        writeParams dir """
+[params]
+studio_name = { type = "string", value = "Foo" }
+orphan      = { type = "string", value = "unused" }
+"""
+        match Validate.run dir with
+        | Validate.Valid (_, _, _, warnings) ->
+            Assert.Contains(warnings, fun w -> w.Contains "shadows")
+            Assert.Contains(warnings, fun w -> w.Contains "orphan")
+        | other -> Assert.Fail($"expected Valid, got %A{other}"))
+
 // ─── format ────────────────────────────────────────────────────────
 
 [<Fact>]
@@ -121,7 +202,7 @@ let ``format Valid yields exit 0 and prints to stdout`` () =
           Vcs = None
           History = { KeepLastNRuns = 50 } }
     let flow = { Id = "smoke"; Name = None; Vars = []; Steps = [] }
-    let stdout, stderr, code = Validate.format (Validate.Valid (project, [ flow ]))
+    let stdout, stderr, code = Validate.format (Validate.Valid (project, [ flow ], [], []))
     Assert.Equal(0, code)
     Assert.Contains("valid", stdout)
     Assert.Contains("smoke", stdout)

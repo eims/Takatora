@@ -14,12 +14,14 @@
     <Compile Include="ProjectEditTests.fs" />
     <Compile Include="ValidateTests.fs" />
     <Compile Include="VarsTests.fs" />
+    <Compile Include="ParamsTests.fs" />
     <Compile Include="EnginesTests.fs" />
     <Compile Include="ProjectRegistryTests.fs" />
     <Compile Include="AppSettingsTests.fs" />
     <Compile Include="AppDataTests.fs" />
     <Compile Include="IdesTests.fs" />
     <Compile Include="SecretsTests.fs" />
+    <Compile Include="GrantsTests.fs" />
     <Compile Include="ScaffoldTests.fs" />
     <Compile Include="HistoryTests.fs" />
     <Compile Include="DescribeTests.fs" />

@@ -12,11 +12,13 @@
     <Compile Include="FlowsEdit.fs" />
     <Compile Include="ProjectEdit.fs" />
     <Compile Include="Vars.fs" />
+    <Compile Include="Params.fs" />
     <Compile Include="Engines.fs" />
     <Compile Include="ProjectRegistry.fs" />
     <Compile Include="AppSettings.fs" />
     <Compile Include="Ides.fs" />
     <Compile Include="Secrets.fs" />
+    <Compile Include="Grants.fs" />
     <Compile Include="Scaffold.fs" />
     <Compile Include="History.fs" />
     <Compile Include="RunCommand.fs" />

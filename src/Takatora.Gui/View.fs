@@ -1605,6 +1605,92 @@ let private secretsBlock (pid: ProjectId) (names: string list) (dispatch: Msg ->
         ]
     ] :> _
 
+/// Project-shared params (`.takatora/params.toml`). Non-secret values are
+/// shown read-only (the TOML file is the editor); secret params get a
+/// masked input that stores the value in the OS keychain under the same
+/// key the runner reads. The "stored" badge derives from the cached
+/// keychain listing (keyed by registry name — matches project.toml's name
+/// unless the project was registered with `--name`).
+let private sharedParamsBlock
+        (pid: ProjectId)
+        (ps: ProjectParam list)
+        (storedNames: string list)
+        (drafts: Map<ProjectId * string, string>)
+        (dispatch: Msg -> unit)
+        : IView =
+    let stored = Set.ofList storedNames
+    let nonSecretRow (p: ProjectParam) : IView =
+        DockPanel.create [
+            DockPanel.children [
+                TextBlock.create [
+                    DockPanel.dock Dock.Left
+                    TextBlock.text p.Name
+                    TextBlock.width 200.0
+                    TextBlock.foreground dimBrush
+                    TextBlock.verticalAlignment VerticalAlignment.Center
+                ] :> IView
+                TextBlock.create [
+                    TextBlock.text (p.Value |> Option.map renderTomlValue |> Option.defaultValue "")
+                    TextBlock.verticalAlignment VerticalAlignment.Center
+                    TextBlock.textWrapping TextWrapping.Wrap
+                ] :> IView
+            ]
+        ] :> _
+    let secretRow (p: ProjectParam) : IView =
+        let draft = Map.tryFind (pid, p.Name) drafts |> Option.defaultValue ""
+        DockPanel.create [
+            DockPanel.children [
+                TextBlock.create [
+                    DockPanel.dock Dock.Left
+                    TextBlock.text p.Name
+                    TextBlock.width 200.0
+                    TextBlock.foreground dimBrush
+                    TextBlock.verticalAlignment VerticalAlignment.Center
+                ] :> IView
+                Button.create [
+                    DockPanel.dock Dock.Right
+                    Button.content "Save"
+                    Button.isEnabled (draft <> "")
+                    Button.onClick ((fun _ -> dispatch (SaveParamSecret (pid, p.Name))), SubPatchOptions.Always)
+                ] :> IView
+                TextBlock.create [
+                    DockPanel.dock Dock.Right
+                    TextBlock.text (if Set.contains p.Name stored then "stored ✓" else "not stored")
+                    TextBlock.foreground (if Set.contains p.Name stored then brush "#4ec97a" else mutedBrush)
+                    TextBlock.fontSize 12.0
+                    TextBlock.margin (Thickness(8.0, 0.0))
+                    TextBlock.verticalAlignment VerticalAlignment.Center
+                ] :> IView
+                TextBox.create [
+                    TextBox.passwordChar '●'
+                    TextBox.watermark "enter value to store…"
+                    TextBox.text draft
+                    TextBox.onTextChanged ((fun s -> dispatch (ParamSecretDraft (pid, p.Name, s))), SubPatchOptions.Always)
+                ] :> IView
+            ]
+        ] :> _
+    StackPanel.create [
+        StackPanel.spacing 4.0
+        StackPanel.children [
+            yield sectionHeader "Shared params"
+            yield (TextBlock.create [
+                TextBlock.text "From .takatora/params.toml — shared by every flow via ${params.name}. Secret values live in the OS keychain, never in the file."
+                TextBlock.foreground mutedBrush
+                TextBlock.fontSize 12.0
+                TextBlock.textWrapping TextWrapping.Wrap
+                TextBlock.margin (Thickness(0.0, 0.0, 0.0, 6.0))
+            ] :> IView)
+            if List.isEmpty ps then
+                yield TextBlock.create [
+                    TextBlock.text "No shared params declared."
+                    TextBlock.foreground mutedBrush
+                ] :> IView
+            else
+                for p in ps do
+                    yield (if p.Kind = VarKind.Secret then secretRow p else nonSecretRow p)
+        ]
+    ] :> _
+
 /// Settings editor for the toolbox scan directories. Unlike the rest of
 /// Settings (read-only project.toml), these persist to `.takatora/toolbox.toml`
 /// — committed and shared. Each row resolves against the project root and
@@ -1924,6 +2010,7 @@ let private settingsBody
                 || blockMatches "open in ide command launch editor rider visual studio code"
                 || (isGodot && blockMatches "godot search path engine executable")
                 || blockMatches "secrets keychain credentials"
+                || blockMatches "shared params toml flow variables"
                 || blockMatches "toolbox scripts tools directories scan bat cmd ps1 sh"
             ScrollViewer.create [
                 ScrollViewer.content (
@@ -1936,6 +2023,10 @@ let private settingsBody
                                 yield ideCommandBlock ideCommandDraft ideCandidates dispatch
                             if isGodot && blockMatches "godot search path engine executable" then
                                 yield godotBlock pid model.GodotSearchPathsDraft model.GodotCandidates proj.Engine.EnginePath dispatch
+                            if blockMatches "shared params toml flow variables" then
+                                yield sharedParamsBlock pid
+                                          (Map.tryFind pid model.ProjectParams |> Option.defaultValue [])
+                                          secrets model.ParamSecretDrafts dispatch
                             if blockMatches "secrets keychain credentials" then
                                 yield secretsBlock pid secrets dispatch
                             if blockMatches "toolbox scripts tools directories scan bat cmd ps1 sh" then
@@ -3122,6 +3213,12 @@ let private failureMessage = function
     | RunFailure.TaskNotFound stepType -> sprintf "no task .fsx for type '%s'" stepType
     | RunFailure.ConfigError (src, m)  -> sprintf "config error in %s: %s" src m
     | RunFailure.InternalError m       -> sprintf "internal error: %s" m
+    | RunFailure.SecretAccessDenied (flowId, notGranted, stale) ->
+        sprintf "flow '%s' has no access grant for secret param(s): %s"
+            flowId (String.concat ", " (notGranted @ stale))
+    | RunFailure.SecretValueMissing (flowId, param) ->
+        sprintf "flow '%s' needs secret param '%s' but no value is stored — set it in Project Settings"
+            flowId param
 
 let private liveRunOutcomeBlock
         (outcome: RunOutcome)
@@ -3860,6 +3957,70 @@ let private confirmQuitDialog (model: Model) (dispatch: Msg -> unit) : IView =
         )
     ] :> _
 
+/// "Allow secret access?" overlay — opened when a flow about to run
+/// references secret params without a current machine-local grant. Same
+/// overlay pattern as confirmQuitDialog.
+let private grantPromptDialog (g: GrantPromptState) (dispatch: Msg -> unit) : IView =
+    Border.create [
+        Border.background overlayBg
+        Border.child (
+            Border.create [
+                Border.background cardBg
+                Border.cornerRadius 6.0
+                Border.padding (Thickness(28.0, 24.0))
+                Border.horizontalAlignment HorizontalAlignment.Center
+                Border.verticalAlignment VerticalAlignment.Center
+                Border.maxWidth 500.0
+                Border.child (
+                    StackPanel.create [
+                        StackPanel.spacing 10.0
+                        StackPanel.children [
+                            TextBlock.create [
+                                TextBlock.text (sprintf "Flow '%s' wants to read secret params" g.FlowId)
+                                TextBlock.foreground (Brushes.White :> IBrush)
+                                TextBlock.fontSize 16.0
+                            ]
+                            for name, desc in g.Params do
+                                TextBlock.create [
+                                    TextBlock.text (
+                                        let d = desc |> Option.map (sprintf " — %s") |> Option.defaultValue ""
+                                        let staleMark = if Set.contains name g.Stale then "  (flow changed since last approval)" else ""
+                                        sprintf "• %s%s%s" name d staleMark)
+                                    TextBlock.foreground dimBrush
+                                    TextBlock.fontSize 12.0
+                                    TextBlock.textWrapping TextWrapping.Wrap
+                                ]
+                            TextBlock.create [
+                                TextBlock.text "Allowing is remembered on this machine and re-asked whenever the flow's definition changes."
+                                TextBlock.foreground mutedBrush
+                                TextBlock.fontSize 12.0
+                                TextBlock.textWrapping TextWrapping.Wrap
+                            ]
+                            StackPanel.create [
+                                StackPanel.orientation Orientation.Horizontal
+                                StackPanel.spacing 8.0
+                                StackPanel.horizontalAlignment HorizontalAlignment.Right
+                                StackPanel.margin (Thickness(0.0, 8.0, 0.0, 0.0))
+                                StackPanel.children [
+                                    Button.create [
+                                        Button.content "Cancel"
+                                        Button.onClick ((fun _ -> dispatch GrantPromptCancel), SubPatchOptions.Always)
+                                    ]
+                                    Button.create [
+                                        Button.content "Allow and run"
+                                        Button.foreground (Brushes.White :> IBrush)
+                                        Button.background accent
+                                        Button.onClick ((fun _ -> dispatch GrantPromptApprove), SubPatchOptions.Always)
+                                    ]
+                                ]
+                            ]
+                        ]
+                    ]
+                )
+            ]
+        )
+    ] :> _
+
 let view (model: Model) (dispatch: Msg -> unit) : IView =
     let content =
         DockPanel.create [
@@ -3878,6 +4039,9 @@ let view (model: Model) (dispatch: Msg -> unit) : IView =
             yield content
             match model.RunDialog with
             | Some d -> yield runParamsDialog d dispatch
+            | None   -> ()
+            match model.GrantPrompt with
+            | Some g -> yield grantPromptDialog g dispatch
             | None   -> ()
             if model.ShowingAbout then yield aboutDialog dispatch
             if model.ConfirmingQuit then yield confirmQuitDialog model dispatch

@@ -12,6 +12,10 @@ type ResolveContext = {
     StepOutputs: Map<string, Map<string, TomlValue>>
     /// Reference to the owning project — exposes `${project.name}` etc.
     Project: Project
+    /// Project-shared params (`.takatora/params.toml`) — exposes
+    /// `${params.X}`. Secret param values are injected by the runner
+    /// only after the machine-local access grant checks pass.
+    Params: Map<string, TomlValue>
     /// OS environment reader. Factored as a function so tests can inject
     /// a deterministic substitute without touching the real environment.
     Env: string -> string option
@@ -65,11 +69,15 @@ module Vars =
                 | None -> fail $"step '{stepId}' has no output '{key}'"
         | "project" :: rest ->
             projectField ctx.Project (String.concat "." rest)
+        | [ "params"; name ] ->
+            match Map.tryFind name ctx.Params with
+            | Some v -> v
+            | None -> fail $"unknown param '${{params.{name}}}' — declare it in .takatora/params.toml"
         | [ "env"; name ] ->
             match ctx.Env name with
             | Some v -> TString v
             | None -> fail $"environment variable '{name}' is not set"
-        | _ -> fail $"unsupported placeholder ${{{path}}} — expected vars.X / steps.X.outputs.Y / project.X / env.X"
+        | _ -> fail $"unsupported placeholder ${{{path}}} — expected vars.X / params.X / steps.X.outputs.Y / project.X / env.X"
 
     /// Substitute placeholders inside a single string. If the entire
     /// string is a single placeholder, the typed value comes through;
@@ -107,8 +115,8 @@ module Vars =
             fail $"`when` expression '${{{path}}}' must reference a bool, got {other.GetType().Name}"
 
     /// Evaluate a step's `when` clause. MVP grammar accepts only:
-    ///   - `${vars.X}` (bool reference)
-    ///   - `!${vars.X}` (bool negation)
+    ///   - `${vars.X}` / `${params.X}` (bool reference)
+    ///   - `!${vars.X}` / `!${params.X}` (bool negation)
     /// Comparison and logical-combine forms are deferred.
     let evalWhen (ctx: ResolveContext) (expression: string) : bool =
         let trimmed = expression.Trim()

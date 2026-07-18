@@ -50,6 +50,12 @@ type RunFailure =
     | TaskNotFound of stepType: string
     | ConfigError of source: string * message: string
     | InternalError of message: string
+    /// The flow references secret params without a current machine-local
+    /// access grant. `notGranted` never had one; `stale` had one but the
+    /// flow definition changed since it was recorded.
+    | SecretAccessDenied of flowId: string * notGranted: string list * stale: string list
+    /// A referenced secret param has no value in the OS credential store.
+    | SecretValueMissing of flowId: string * param: string
 
 /// One step entry in a `--dry-run` plan. Same shape whether the step
 /// would have run or been skipped — `SkipReason` is `Some` for skips
@@ -408,6 +414,7 @@ module Run =
             (priorOutputs: Map<string, Map<string, TomlValue>>)
             (resolveCtx: ResolveContext)
             (secretNames: Set<string>)
+            (secretParamNames: Set<string>)
             (index: int)
             (step: Step)
             : StepRecord =
@@ -469,7 +476,11 @@ module Run =
         // Keep secret values out of the on-disk input.json — scrub them
         // from the params written to disk; the real values reach the task
         // through TAKATORA_SECRET_<name> env vars set on the fsi process.
-        let secretValues = secretValuesFrom secretNames resolveCtx.Vars
+        // Secret *project params* (resolveCtx.Params) get the same
+        // treatment as secret flow vars.
+        let secretValues =
+            secretValuesFrom secretNames resolveCtx.Vars
+            @ secretValuesFrom secretParamNames resolveCtx.Params
         let inputParams =
             if List.isEmpty secretValues then resolvedParams
             else resolvedParams |> Map.map (fun _ v -> redactValue secretValues v)
@@ -539,6 +550,12 @@ module Run =
         psi.Environment.["TAKATORA_OUTPUT_FILE"] <- outputPath
         psi.Environment.["TAKATORA_EVENTS_FILE"] <- eventsPath
         // Real secret values travel only in-process, never to disk.
+        // Params first, then flow vars — the env namespace is flat, so on
+        // a name collision the flow var wins (pre-params behavior).
+        for n in secretParamNames do
+            match Map.tryFind n resolveCtx.Params with
+            | Some (TString s) -> psi.Environment.[$"TAKATORA_SECRET_{n}"] <- s
+            | _ -> ()
         for n in secretNames do
             match Map.tryFind n resolveCtx.Vars with
             | Some (TString s) -> psi.Environment.[$"TAKATORA_SECRET_{n}"] <- s
@@ -736,6 +753,25 @@ module Run =
                             Executable = d.Executable } }
             | None -> project
 
+    /// Load `.takatora/params.toml` and verify the flow only references
+    /// declared params. Shared by `plan` and `execute`; both fail before
+    /// any run state is created.
+    let private loadProjectParams (projectRoot: string) (flow: Flow) : Result<ProjectParam list, RunFailure> =
+        let paramsPath = Params.paramsPath projectRoot
+        let loaded =
+            try Ok (Params.load projectRoot)
+            with TomlConfigError msg -> Error (RunFailure.ConfigError (paramsPath, msg))
+        loaded
+        |> Result.bind (fun ps ->
+            let declared = ps |> List.map (fun p -> p.Name) |> Set.ofList
+            let undeclared = Set.difference (Params.referencedIn flow) declared
+            if Set.isEmpty undeclared then Ok ps
+            else
+                let names = undeclared |> Set.toList |> String.concat ", "
+                Error (RunFailure.ConfigError (
+                    paramsPath,
+                    $"flow '{flow.Id}' references undeclared param(s): {names} — declare them in .takatora/params.toml")))
+
     /// Resolve a flow into the same view `execute` would see at start
     /// of step execution, but stop short of actually spawning anything.
     /// Used by `takatora run --dry-run` to preview what would happen.
@@ -757,6 +793,9 @@ module Run =
             match flows |> List.tryFind (fun f -> f.Id = opts.FlowId) with
             | None -> Error (RunFailure.FlowNotFound opts.FlowId)
             | Some flow ->
+                match loadProjectParams projectRoot flow with
+                | Error err -> Error err
+                | Ok projectParams ->
                 // Same engine resolution as `execute` so the plan reflects
                 // the runner's actual resolution.
                 let project = resolveEngineForRun project projectRoot
@@ -766,10 +805,18 @@ module Run =
                     match Environment.GetEnvironmentVariable(name: string) with
                     | null -> None
                     | s -> Some s
+                // Dry-run never reads the credential store and needs no
+                // access grant — secret params resolve to the mask so the
+                // preview stays value-free.
+                let paramsMap =
+                    Params.secretNames projectParams
+                    |> Set.fold (fun acc n -> Map.add n (TString secretMask) acc)
+                              (Params.nonSecretValues projectParams)
                 let ctx : ResolveContext = {
                     Vars = vars
                     StepOutputs = Map.empty
                     Project = project
+                    Params = paramsMap
                     Env = envReader
                 }
 
@@ -843,10 +890,42 @@ module Run =
             | None -> Error (RunFailure.FlowNotFound opts.FlowId)
             | Some flow ->
 
+            match loadProjectParams projectRoot flow with
+            | Error err -> Error err
+            | Ok projectParams ->
+
+            // Secret params are gated by machine-local access grants: the
+            // check (and the credential-store reads) happen before any run
+            // state is created, so a denied run leaves no run record.
+            let secretParamNames =
+                Set.intersect (Params.referencedIn flow) (Params.secretNames projectParams)
+
+            let secretParamValues : Result<Map<string, TomlValue>, RunFailure> =
+                if Set.isEmpty secretParamNames then Ok Map.empty
+                else
+                    let check = Grants.check projectRoot flow secretParamNames
+                    if not (List.isEmpty check.NotGranted) || not (List.isEmpty check.Stale) then
+                        Error (RunFailure.SecretAccessDenied (flow.Id, check.NotGranted, check.Stale))
+                    else
+                        (Ok Map.empty, Set.toList secretParamNames)
+                        ||> List.fold (fun acc name ->
+                            acc |> Result.bind (fun m ->
+                                match Secrets.read project.Name name with
+                                | Some v -> Ok (Map.add name (TString v) m)
+                                | None -> Error (RunFailure.SecretValueMissing (flow.Id, name))))
+
+            match secretParamValues with
+            | Error err -> Error err
+            | Ok secretParamMap ->
+
             let effectiveWorkingDir =
                 Path.GetFullPath(Path.Combine(projectRoot, project.WorkingDir))
 
             let project = resolveEngineForRun project projectRoot
+
+            let paramsMap =
+                secretParamMap
+                |> Map.fold (fun acc k v -> Map.add k v acc) (Params.nonSecretValues projectParams)
 
             let runId = RunId.generate DateTimeOffset.UtcNow
             let runDir = Path.Combine(projectRoot, ".takatora", "runs", runId)
@@ -903,9 +982,10 @@ module Run =
                         Vars = vars
                         StepOutputs = priorOutputs
                         Project = project
+                        Params = paramsMap
                         Env = envReader
                     }
-                    let record = runStep opts project projectRoot effectiveWorkingDir runDir eventsPath logPath priorOutputs ctx secretNames (i + 1) step
+                    let record = runStep opts project projectRoot effectiveWorkingDir runDir eventsPath logPath priorOutputs ctx secretNames secretParamNames (i + 1) step
                     steps <- record :: steps
                     match record.Status with
                     | StepStatus.Success ->

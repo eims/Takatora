@@ -95,10 +95,12 @@ let runResultToExitCode (outcome: RunOutcome) =
 
 let failureToExitCode (failure: RunFailure) =
     match failure with
-    | RunFailure.FlowNotFound _   -> 3
-    | RunFailure.ConfigError _    -> 2
-    | RunFailure.TaskNotFound _   -> 1
-    | RunFailure.InternalError _  -> 5
+    | RunFailure.FlowNotFound _       -> 3
+    | RunFailure.ConfigError _        -> 2
+    | RunFailure.TaskNotFound _       -> 1
+    | RunFailure.InternalError _      -> 5
+    | RunFailure.SecretAccessDenied _ -> 6
+    | RunFailure.SecretValueMissing _ -> 2
 
 let private describeStatus (s: StepStatus) =
     match s with
@@ -239,6 +241,19 @@ let formatFailure (failure: RunFailure) : string =
     | RunFailure.TaskNotFound stepType -> $"run: no task .fsx for type '{stepType}'{Environment.NewLine}"
     | RunFailure.ConfigError (src, m)  -> $"run: configuration error in {src}:{Environment.NewLine}  {m}{Environment.NewLine}"
     | RunFailure.InternalError m       -> $"run: internal error: {m}{Environment.NewLine}"
+    | RunFailure.SecretAccessDenied (flowId, notGranted, stale) ->
+        let sb = System.Text.StringBuilder()
+        if not (List.isEmpty notGranted) then
+            sb.AppendLine($"run: flow '{flowId}' uses secret param(s) without access granted on this machine:") |> ignore
+            for p in notGranted do sb.AppendLine($"  - {p}") |> ignore
+        if not (List.isEmpty stale) then
+            sb.AppendLine($"run: flow '{flowId}' changed since secret access was granted for:") |> ignore
+            for p in stale do sb.AppendLine($"  - {p}") |> ignore
+        sb.AppendLine($"  grant with: takatora params grant <project> {flowId}") |> ignore
+        sb.ToString()
+    | RunFailure.SecretValueMissing (flowId, param) ->
+        $"run: flow '{flowId}' needs secret param '{param}' but no value is stored{Environment.NewLine}" +
+        $"  store it via the GUI (Project Settings) or: takatora params set <project> {param} --stdin{Environment.NewLine}"
 
 let private renderTomlValue (v: TomlValue) : string =
     match v with
