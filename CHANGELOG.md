@@ -3,6 +3,28 @@
 All notable changes to Takatora are documented here. Entries are bilingual
 (日本語 / English). Versions follow the `v*` tags that drive releases.
 
+## Unreleased
+
+### 🇯🇵 日本語
+
+#### 追加
+- **ステップ単位のログ文字コード指定。** `shell` タスクに `encoding`
+  パラメータを追加しました。既定は OS のネイティブコードページ（日本語
+  Windows では CP932）のままで、UBT / cl.exe / git など UE ツールチェーンの
+  ローカライズ出力は従来どおり正しく読めます。butler（itch.io
+  アップロード）のように常に UTF-8 を吐くツールをそのステップだけ
+  `encoding = "utf-8"` と指定すれば、化けずに `log.txt` へ出力されます。
+
+### 🇬🇧 English
+
+#### Added
+- **Per-step log output encoding.** The `shell` task gains an `encoding`
+  param. The default stays the OS native code page (CP932 on Japanese
+  Windows), so the UE toolchain's localized output (UBT, cl.exe, git)
+  keeps reading correctly. Tools that always emit UTF-8 — butler (itch.io
+  upload) among them — can set `encoding = "utf-8"` on just that step to
+  avoid mojibake in `log.txt`.
+
 ## v0.1.1-alpha — hotfix
 
 ### 🇯🇵 日本語
