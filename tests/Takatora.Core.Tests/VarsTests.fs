@@ -27,9 +27,13 @@ let private ctxWith (vars: (string * TomlValue) list)
         |> List.map (fun (id, kvs) -> id, Map.ofList kvs)
         |> Map.ofList
       Project = project
+      Params = Map.empty
       Env = fun n -> Map.tryFind n env }
 
 let private ctx vars = ctxWith vars [] Map.empty
+
+let private ctxParams (ps: (string * TomlValue) list) : ResolveContext =
+    { ctx [] with Params = Map.ofList ps }
 
 let private catchVarError (action: unit -> 'a) : string =
     try
@@ -101,6 +105,26 @@ let ``resolve looks up project.name and project.working_dir`` () =
 let ``resolve looks up env.<NAME> via injected reader`` () =
     let c = ctxWith [] [] (Map.ofList [ "TAKATORA_TEST", "abc" ])
     Assert.Equal(TString "abc", Vars.resolve c (TString "${env.TAKATORA_TEST}"))
+
+[<Fact>]
+let ``resolve looks up params.<name>`` () =
+    let c = ctxParams [ "studio_name", TString "Foo Studio"; "retries", TInt 3L ]
+    Assert.Equal(TString "Foo Studio", Vars.resolve c (TString "${params.studio_name}"))
+    Assert.Equal(TInt 3L, Vars.resolve c (TString "${params.retries}"))
+    Assert.Equal(TString "by Foo Studio", Vars.resolve c (TString "by ${params.studio_name}"))
+
+[<Fact>]
+let ``resolve raises on undeclared param`` () =
+    let msg = catchVarError (fun () ->
+        Vars.resolve (ctxParams []) (TString "${params.missing}"))
+    Assert.Contains("params.missing", msg)
+    Assert.Contains("params.toml", msg)
+
+[<Fact>]
+let ``evalWhen accepts params bool reference`` () =
+    let c = ctxParams [ "notify", TBool true ]
+    Assert.True(Vars.evalWhen c "${params.notify}")
+    Assert.False(Vars.evalWhen c "!${params.notify}")
 
 // ─── resolve: error cases ──────────────────────────────────────────
 

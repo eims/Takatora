@@ -34,8 +34,10 @@ type StateTests() =
             "takatora-gui-state-tests",
             Guid.NewGuid().ToString("N"))
     do Directory.CreateDirectory(tmpRoot) |> ignore
-    // Keep the run dialog's secret path off the real keychain.
+    // Keep the run dialog's secret path off the real keychain, and the
+    // grant-prompt path off the real %APPDATA% grants store.
     do Secrets.setBackendForTests (InMemorySecretStore() :> ISecretStore)
+    do Grants.setPathForTests (Path.Combine(tmpRoot, "test-grants.toml"))
 
     // ─── helpers ────────────────────────────────────────────────────
 
@@ -89,7 +91,10 @@ type StateTests() =
           CurrentProject = None
           RunDialog      = None
           ShowingAbout   = false
-          ConfirmingQuit = false }
+          ConfirmingQuit = false
+          GrantPrompt    = None
+          ProjectParams  = Map.empty
+          ParamSecretDrafts = Map.empty }
 
     let modelWithTabs (active: RootTab) (tabs: RootTab list) : Model =
         { baseModel with OpenTabs = tabs; ActiveTab = active }
@@ -148,6 +153,7 @@ type StateTests() =
     interface IDisposable with
         member _.Dispose() =
             Secrets.resetBackend ()
+            Grants.clearPathOverride ()
             try Directory.Delete(tmpRoot, recursive = true) with _ -> ()
 
     // ─── init ───────────────────────────────────────────────────────
@@ -1204,3 +1210,76 @@ type StateTests() =
             Assert.False(Set.contains "token" d.Stored)
         | None -> Assert.True(false, "dialog should still be open")
         Assert.Equal<string option>(None, Secrets.read "p1" "token")
+
+    // ─── secret-access grant prompt (project params) ────────────────
+
+    /// A registered project whose flow references a secret shared param.
+    member private _.setupSecretParamProject (name: string) : ProjectRegistration =
+        let flowsToml =
+            "[[flow]]\n" +
+            "id = \"deploy\"\n" +
+            "[[flow.steps]]\n" +
+            "type = \"echo\"\n" +
+            "message = \"${params.steam_password}\"\n"
+        let reg = setupProjectDir name (Some flowsToml)
+        File.WriteAllText(
+            Path.Combine(reg.Path, ".takatora", "params.toml"),
+            "[params]\nsteam_password = { type = \"secret\", description = \"Steam pw\" }\n")
+        reg
+
+    [<Fact>]
+    member this.``RequestRun on a flow with ungranted secret params opens the grant prompt`` () =
+        let reg = this.setupSecretParamProject "sp1"
+        let m = apply (RequestRun ("sp1", "deploy")) { baseModel with Projects = [ reg ] }
+        match m.GrantPrompt with
+        | Some g ->
+            Assert.Equal("deploy", g.FlowId)
+            Assert.Equal<(string * string option) list>(
+                [ "steam_password", Some "Steam pw" ], g.Params)
+            Assert.Empty(g.Stale)
+        | None -> Assert.True(false, "expected the grant prompt to open")
+        Assert.True(Map.isEmpty m.LiveRuns, "the run must not start before approval")
+
+    [<Fact>]
+    member this.``GrantPromptApprove records the grant and starts the run`` () =
+        let reg = this.setupSecretParamProject "sp2"
+        let prompted = apply (RequestRun ("sp2", "deploy")) { baseModel with Projects = [ reg ] }
+        let m = apply GrantPromptApprove prompted
+        Assert.Equal<GrantPromptState option>(None, m.GrantPrompt)
+        Assert.Equal(1, Map.count m.LiveRuns)
+        match Grants.listFor reg.Path with
+        | [ g ] ->
+            Assert.Equal("deploy", g.FlowId)
+            Assert.Equal("steam_password", g.Param)
+            Assert.Equal("sp2", g.ProjectName)
+        | other -> Assert.True(false, sprintf "expected one grant, got %A" other)
+
+    [<Fact>]
+    member this.``GrantPromptCancel closes the prompt without granting or running`` () =
+        let reg = this.setupSecretParamProject "sp3"
+        let prompted = apply (RequestRun ("sp3", "deploy")) { baseModel with Projects = [ reg ] }
+        let m = apply GrantPromptCancel prompted
+        Assert.Equal<GrantPromptState option>(None, m.GrantPrompt)
+        Assert.True(Map.isEmpty m.LiveRuns)
+        Assert.Empty(Grants.listFor reg.Path)
+
+    [<Fact>]
+    member this.``a granted flow runs without prompting`` () =
+        let reg = this.setupSecretParamProject "sp4"
+        let approved =
+            apply (RequestRun ("sp4", "deploy")) { baseModel with Projects = [ reg ] }
+            |> apply GrantPromptApprove
+        // Second run of the unchanged flow: straight to a live run.
+        let m = apply (RequestRun ("sp4", "deploy")) { approved with LiveRuns = Map.empty }
+        Assert.Equal<GrantPromptState option>(None, m.GrantPrompt)
+        Assert.Equal(1, Map.count m.LiveRuns)
+
+    [<Fact>]
+    member this.``SaveParamSecret stores the draft under the project name and clears it`` () =
+        let reg = this.setupSecretParamProject "sp5"
+        let m =
+            { baseModel with Projects = [ reg ] }
+            |> apply (ParamSecretDraft ("sp5", "steam_password", "hunter2"))
+            |> apply (SaveParamSecret ("sp5", "steam_password"))
+        Assert.False(Map.containsKey ("sp5", "steam_password") m.ParamSecretDrafts)
+        Assert.Equal<string option>(Some "hunter2", Secrets.read "sp5" "steam_password")

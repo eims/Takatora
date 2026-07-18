@@ -161,6 +161,21 @@ type RunDialogState = {
     Error: string option
 }
 
+/// "Allow secret access?" overlay state. Opened by startRun when the
+/// chosen flow references secret project params without a current
+/// machine-local grant; Approve records the grants and re-enters the run.
+type GrantPromptState = {
+    ProjectId: ProjectId
+    FlowId: string
+    /// (param name, optional description) — every secret param the flow
+    /// references, granted or not, so the dialog shows the full picture.
+    Params: (string * string option) list
+    /// Names whose grant exists but is stale (the flow changed since).
+    Stale: Set<string>
+    /// Var overrides of the interrupted run, replayed on Approve.
+    Overrides: Map<string, TomlValue>
+}
+
 /// Same shape as FlowsLoad but for `.takatora/project.toml`. Project info
 /// is technically validated at `project add` time, but the file may
 /// have been edited or deleted between registration and now.
@@ -299,6 +314,15 @@ type Model = {
     /// True while the quit confirmation overlay is open (Quit was requested
     /// with toolbox runs still in flight; confirming kills them and exits).
     ConfirmingQuit: bool
+    /// "Allow secret access?" overlay. None = closed. Opened by startRun
+    /// when a flow references secret params without a current grant.
+    GrantPrompt: GrantPromptState option
+    /// Cached `.takatora/params.toml` declarations per project (for the
+    /// Settings shared-params section). Refreshed alongside ProjectSecrets.
+    ProjectParams: Map<ProjectId, ProjectParam list>
+    /// In-progress secret-param value texts in Settings, keyed by
+    /// (project, param name). Cleared on save.
+    ParamSecretDrafts: Map<ProjectId * string, string>
 }
 
 type Msg =
@@ -424,6 +448,13 @@ type Msg =
     | RunDialogCancel
     /// Delete a stored secret from the keychain (Settings manager).
     | DeleteSecret of ProjectId * varName:string
+    // Secret-access grant prompt (project params)
+    /// Record grants for every param listed in the prompt, then run.
+    | GrantPromptApprove
+    | GrantPromptCancel
+    // Settings: shared-params secret storage
+    | ParamSecretDraft of ProjectId * name:string * value:string
+    | SaveParamSecret  of ProjectId * name:string
     | LiveRunCompleted of LiveRunKey * Result<RunOutcome, RunFailure>
     | LiveRunProgress  of LiveRunKey * LiveProgress
     | LiveRunFailed    of LiveRunKey * exn
@@ -503,7 +534,10 @@ let init () : Model * Cmd<Msg> =
       CurrentProject = None
       RunDialog      = None
       ShowingAbout   = false
-      ConfirmingQuit = false },
+      ConfirmingQuit = false
+      GrantPrompt    = None
+      ProjectParams  = Map.empty
+      ParamSecretDrafts = Map.empty },
     // A always-on poll timer for watch mode. It's a no-op when nothing is
     // watched; when a project is watched, WatchPoll samples its git HEAD.
     [ (fun dispatch ->
@@ -688,6 +722,31 @@ let private loadFlowsFor
         else
             try FlowsOk (TomlConfig.loadFlows path)
             with ex -> FlowsError ex.Message
+
+/// Best-effort read of `.takatora/params.toml` declarations. Parse errors
+/// yield [] here — the runner (and validate) surface them with context;
+/// the Settings section just has nothing to show.
+let private loadParamsFor
+        (pid: ProjectId)
+        (projects: ProjectRegistration list)
+        : ProjectParam list =
+    match projectRoot pid projects with
+    | None -> []
+    | Some root ->
+        try Takatora.Core.Params.load root with _ -> []
+
+/// The project.toml `name` — the key Core uses for secret *params* in the
+/// credential store. Usually equal to the registry name (pid); they only
+/// differ when the project was registered with `--name`.
+let private projectNameFor
+        (pid: ProjectId)
+        (projects: ProjectRegistration list)
+        : string =
+    match projectRoot pid projects with
+    | None -> pid
+    | Some root ->
+        try (TomlConfig.loadProject (Path.Combine(root, ".takatora", "project.toml"))).Name
+        with _ -> pid
 
 // ─── Run-with-parameters helpers ────────────────────────────────────
 
@@ -1123,6 +1182,40 @@ let private startRun
     match projectRoot pid model.Projects with
     | None -> model, Cmd.none
     | Some root ->
+        // Grant gate: if the flow references secret params without a
+        // current machine-local grant, open the confirmation overlay
+        // instead of running. Reads flows.toml from disk (not the cache)
+        // so the check matches what the runner will hash. Config errors
+        // fall through — Run.execute reports them with full context.
+        let grantGate =
+            try
+                let ps = Takatora.Core.Params.load root
+                let secretNames = Takatora.Core.Params.secretNames ps
+                if Set.isEmpty secretNames then None
+                else
+                    TomlConfig.loadFlows (Path.Combine(root, ".takatora", "flows.toml"))
+                    |> List.tryFind (fun f -> f.Id = flowId)
+                    |> Option.bind (fun flow ->
+                        let refs = Set.intersect (Takatora.Core.Params.referencedIn flow) secretNames
+                        if Set.isEmpty refs then None
+                        else
+                            let check = Grants.check root flow refs
+                            if List.isEmpty check.NotGranted && List.isEmpty check.Stale then None
+                            else Some (ps, refs, check))
+            with _ -> None
+        match grantGate with
+        | Some (ps, refs, check) ->
+            let describe name =
+                ps |> List.tryFind (fun p -> p.Name = name) |> Option.bind (fun p -> p.Description)
+            { model with
+                GrantPrompt =
+                    Some { ProjectId = pid
+                           FlowId = flowId
+                           Params = refs |> Set.toList |> List.map (fun n -> n, describe n)
+                           Stale = Set.ofList check.Stale
+                           Overrides = overrides } },
+            Cmd.none
+        | None ->
         let key = Guid.NewGuid()
         let tab = LiveRun key
         let liveState = {
@@ -1271,6 +1364,9 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         let secrets =
             if Map.containsKey pid model.ProjectSecrets then model.ProjectSecrets
             else Map.add pid (Secrets.listForProject pid) model.ProjectSecrets
+        let projectParams =
+            if Map.containsKey pid model.ProjectParams then model.ProjectParams
+            else Map.add pid (loadParamsFor pid model.Projects) model.ProjectParams
         { model with
             OpenTabs       = moveOrAppend tab model.OpenTabs
             ActiveTab      = tab
@@ -1278,7 +1374,8 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             ProjectHistory = history
             ProjectFlows   = flows
             ProjectInfo    = info
-            ProjectSecrets = secrets },
+            ProjectSecrets = secrets
+            ProjectParams  = projectParams },
         Cmd.none
     | ActivateTab tab ->
         if List.contains tab model.OpenTabs then
@@ -1320,10 +1417,16 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | ActivateSubTab (pid, sub) ->
         // Entering Settings re-reads the keychain so a secret saved via the
         // run dialog (or removed in the OS) shows up without a manual refresh.
+        // Same for the shared-params declarations (params.toml may have
+        // been edited on disk).
         let secrets =
             match sub with
             | ProjectSettings -> Map.add pid (Secrets.listForProject pid) model.ProjectSecrets
             | _               -> model.ProjectSecrets
+        let projectParams =
+            match sub with
+            | ProjectSettings -> Map.add pid (loadParamsFor pid model.Projects) model.ProjectParams
+            | _               -> model.ProjectParams
         // First entry to the Toolbox tab triggers a lazy scan.
         let cmd =
             match sub with
@@ -1332,7 +1435,8 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
             | _ -> Cmd.none
         { model with
             ProjectSubTabs = Map.add pid sub model.ProjectSubTabs
-            ProjectSecrets = secrets },
+            ProjectSecrets = secrets
+            ProjectParams  = projectParams },
         cmd
     | RefreshHistory pid ->
         { model with
@@ -1345,7 +1449,8 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | RefreshProjectInfo pid ->
         { model with
             ProjectInfo    = Map.add pid (loadProjectInfoFor pid model.Projects) model.ProjectInfo
-            ProjectSecrets = Map.add pid (Secrets.listForProject pid) model.ProjectSecrets },
+            ProjectSecrets = Map.add pid (Secrets.listForProject pid) model.ProjectSecrets
+            ProjectParams  = Map.add pid (loadParamsFor pid model.Projects) model.ProjectParams },
         Cmd.none
     | RefreshToolbox pid ->
         match projectRoot pid model.Projects with
@@ -2115,6 +2220,51 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         TrayBridge.performQuit ()
         { model with ConfirmingQuit = false }, Cmd.none
     | CancelQuit -> { model with ConfirmingQuit = false }, Cmd.none
+    | GrantPromptApprove ->
+        // Approving records one grant per listed param, pinned to the flow
+        // definition currently on disk, then re-enters startRun (whose
+        // gate now passes).
+        match model.GrantPrompt with
+        | None -> model, Cmd.none
+        | Some g ->
+            match projectRoot g.ProjectId model.Projects with
+            | None -> { model with GrantPrompt = None }, Cmd.none
+            | Some root ->
+                (try
+                    TomlConfig.loadFlows (Path.Combine(root, ".takatora", "flows.toml"))
+                    |> List.tryFind (fun f -> f.Id = g.FlowId)
+                    |> Option.iter (fun flow ->
+                        let hash = FlowHash.compute flow
+                        let name = projectNameFor g.ProjectId model.Projects
+                        let now = DateTimeOffset.UtcNow
+                        for param, _ in g.Params do
+                            Grants.record
+                                { ProjectPath = root
+                                  ProjectName = name
+                                  FlowId = g.FlowId
+                                  Param = param
+                                  FlowHash = hash
+                                  GrantedAt = now
+                                  Source = "flows" })
+                 with _ -> ())
+                startRun g.ProjectId g.FlowId g.Overrides { model with GrantPrompt = None }
+    | GrantPromptCancel ->
+        { model with GrantPrompt = None }, Cmd.none
+    | ParamSecretDraft (pid, name, value) ->
+        { model with ParamSecretDrafts = Map.add (pid, name) value model.ParamSecretDrafts },
+        Cmd.none
+    | SaveParamSecret (pid, name) ->
+        match Map.tryFind (pid, name) model.ParamSecretDrafts with
+        | None
+        | Some "" -> model, Cmd.none
+        | Some value ->
+            // Secret params are keyed by project.toml's name (what the
+            // runner reads), not the registry name — see projectNameFor.
+            (try Secrets.write (projectNameFor pid model.Projects) name value with _ -> ())
+            { model with
+                ParamSecretDrafts = Map.remove (pid, name) model.ParamSecretDrafts
+                ProjectSecrets = Map.add pid (Secrets.listForProject pid) model.ProjectSecrets },
+            Cmd.none
     | AddProjectSetDir dir ->
         match model.AddProject with
         | None -> model, Cmd.none

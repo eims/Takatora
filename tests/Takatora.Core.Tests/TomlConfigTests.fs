@@ -239,3 +239,55 @@ let ``parseProject surfaces TOML syntax errors`` () =
     let msg = catchTomlError (fun () ->
         TomlConfig.parseProject "this is not = = valid toml" |> ignore)
     Assert.Contains("TOML parse error", msg)
+
+// ─── params.toml ───────────────────────────────────────────────────
+
+let private sampleParamsToml = """
+[params]
+studio_name    = { type = "string", value = "Foo Studio", description = "Company name" }
+build_channel  = { type = "enum", values = ["dev", "beta", "release"], value = "dev" }
+upload_maps    = { type = "list", item = "string", value = ["Main", "Lobby"] }
+steam_password = { type = "secret", description = "Steam partner password" }
+"""
+
+[<Fact>]
+let ``parseParams reads declarations sorted by name`` () =
+    let ps = TomlConfig.parseParams sampleParamsToml
+    Assert.Equal<string list>(
+        [ "build_channel"; "steam_password"; "studio_name"; "upload_maps" ],
+        ps |> List.map (fun p -> p.Name))
+    let studio = ps |> List.find (fun p -> p.Name = "studio_name")
+    Assert.Equal(VarKind.String, studio.Kind)
+    Assert.Equal(Some (TString "Foo Studio"), studio.Value)
+    Assert.Equal(Some "Company name", studio.Description)
+    let channel = ps |> List.find (fun p -> p.Name = "build_channel")
+    Assert.Equal(VarKind.Enum [ "dev"; "beta"; "release" ], channel.Kind)
+    let maps = ps |> List.find (fun p -> p.Name = "upload_maps")
+    Assert.Equal(Some (TArray [ TString "Main"; TString "Lobby" ]), maps.Value)
+    let secret = ps |> List.find (fun p -> p.Name = "steam_password")
+    Assert.Equal(VarKind.Secret, secret.Kind)
+    Assert.Equal(None, secret.Value)
+
+[<Fact>]
+let ``parseParams rejects secret with inline value`` () =
+    let toml = """
+[params]
+steam_password = { type = "secret", value = "hunter2" }
+"""
+    let msg = catchTomlError (fun () -> TomlConfig.parseParams toml |> ignore)
+    Assert.Contains("steam_password", msg)
+    Assert.Contains("must not carry a 'value'", msg)
+
+[<Fact>]
+let ``parseParams rejects non-secret without value`` () =
+    let toml = """
+[params]
+studio_name = { type = "string" }
+"""
+    let msg = catchTomlError (fun () -> TomlConfig.parseParams toml |> ignore)
+    Assert.Contains("studio_name", msg)
+    Assert.Contains("require a 'value'", msg)
+
+[<Fact>]
+let ``parseParams on document without params table yields empty list`` () =
+    Assert.Equal<ProjectParam list>([], TomlConfig.parseParams "")

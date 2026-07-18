@@ -43,6 +43,23 @@ takatora run <project> <flow> [--var KEY=VALUE]... [--output-format json]
 - Check `result` and each `steps[].status`; the process exit code also
   reflects success/failure.
 
+**Secret shared params:** a flow referencing `${params.<name>}` where the
+param is `type = "secret"` (declared in `.takatora/params.toml`) needs a
+machine-local access grant first — otherwise `run` fails with **exit 6** and
+points at the fix. There is no prompt; granting is an explicit command:
+
+- `takatora params list <project> [--output-format json]` — declared params +
+  per-flow grant state (granted / stale / not granted).
+- `takatora params grant <project> <flow>` — allow (running it is the consent).
+  **Ask the user before granting** — this authorizes the flow to read stored
+  credentials on their machine.
+- `takatora params set <project> <name> --from-env VAR | --stdin` — store a
+  secret value (never via argv).
+- `takatora params revoke <project> [--flow <id>] [--param <name>]`.
+
+Grants go stale when the flow definition changes semantically (exit 6 again,
+message says so). `--dry-run` needs no grant; secret values render as `***`.
+
 ## Read results
 
 - `takatora history <project> [--flow <id>] [--limit N] [--output-format json]`

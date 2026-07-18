@@ -783,3 +783,269 @@ Step.run "sleeping" (fun () ->
         Assert.Contains("result = \"cancelled\"", manifest)
         let events = File.ReadAllLines(Path.Combine(outcome.RunDir, "events.ndjson"))
         Assert.Contains(events, fun l -> l.Contains("\"kind\":\"step.cancel\""))
+
+/// In-memory ISecretStore for the params-run tests (SecretsTests' store
+/// is file-private, so this file carries its own copy).
+type private ParamsInMemoryStore() =
+    let d = System.Collections.Generic.Dictionary<string, string>()
+    interface ISecretStore with
+        member _.Read(key) =
+            match d.TryGetValue key with
+            | true, v -> Some v
+            | _ -> None
+        member _.Write(key, value) = d.[key] <- value
+        member _.Delete(key) = d.Remove key
+        member _.List(prefix) =
+            [ for kv in d do
+                if kv.Key.StartsWith(prefix, StringComparison.Ordinal) then yield kv.Key ]
+
+/// End-to-end coverage for project-shared params (`.takatora/params.toml`):
+/// `${params.X}` resolution, the machine-local secret-access grants, and
+/// redaction of secret param values. Same fixture style as RunTests; each
+/// test gets a fresh temp project plus isolated grants store and secret
+/// backend (xUnit instantiates the class per test method).
+[<Xunit.Collection("env-sensitive")>]
+type ParamsRunTests() =
+
+    let dir =
+        Path.Combine(
+            Path.GetTempPath(),
+            "takatora-params-run-tests",
+            Guid.NewGuid().ToString("N"))
+    do Directory.CreateDirectory(dir) |> ignore
+    do Grants.setPathForTests (Path.Combine(dir, "test-grants.toml"))
+    do Secrets.setBackendForTests (ParamsInMemoryStore() :> ISecretStore)
+
+    let sdkAssemblyPath =
+        typeof<Takatora.Tasks.TaskFailure>.Assembly.Location
+
+    let writeFile (relative: string) (content: string) =
+        let full = Path.Combine(dir, relative)
+        Directory.CreateDirectory(Path.GetDirectoryName full) |> ignore
+        File.WriteAllText(full, content)
+
+    let buildOptions (flowId: string) : Run.Options = {
+        WorkingDir = dir
+        FlowId = flowId
+        VarOverrides = Map.empty
+        SdkAssemblyPath = sdkAssemblyPath
+        BuiltinTasksDir = Path.Combine(AppContext.BaseDirectory, "builtin-tasks")
+        UserTasksDir = None
+    }
+
+    let projectToml = """
+[project]
+name = "rt-fixture"
+working_dir = "."
+
+[engine]
+type = "godot"
+"""
+
+    /// Record a grant for one param of the flow as it currently exists on
+    /// disk (hash computed from the real flows.toml).
+    let grantCurrent (flowId: string) (param: string) =
+        let flow =
+            TomlConfig.loadFlows (Path.Combine(dir, ".takatora", "flows.toml"))
+            |> List.find (fun f -> f.Id = flowId)
+        Grants.record
+            { ProjectPath = dir
+              ProjectName = "rt-fixture"
+              FlowId = flowId
+              Param = param
+              FlowHash = FlowHash.compute flow
+              GrantedAt = DateTimeOffset.UtcNow
+              Source = "flows" }
+
+    interface IDisposable with
+        member _.Dispose() =
+            Grants.clearPathOverride ()
+            Secrets.resetBackend ()
+            try Directory.Delete(dir, recursive = true) with _ -> ()
+
+    // ─── non-secret params ────────────────────────────────────────
+
+    [<Fact>]
+    member _.``non-secret param resolves into a task end-to-end`` () =
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/params.toml" """
+[params]
+studio_name = { type = "string", value = "Foo Studio" }
+"""
+        writeFile ".takatora/flows.toml" """
+[[flow]]
+id = "stamp"
+[[flow.steps]]
+id = "echo"
+type = "echo"
+message = "by ${params.studio_name}"
+"""
+        writeFile ".takatora/tasks/echo.fsx" """
+open Takatora.Tasks
+let msg = Param.required<string> "message"
+Output.set "echoed" msg
+"""
+        let outcome =
+            match Run.execute (buildOptions "stamp") with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        Assert.Equal(Some (TString "by Foo Studio"), Map.tryFind "echoed" outcome.Steps.[0].Outputs)
+
+    [<Fact>]
+    member _.``undeclared params reference fails before any run state exists`` () =
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/flows.toml" """
+[[flow]]
+id = "broken"
+[[flow.steps]]
+type = "echo"
+message = "${params.nope}"
+"""
+        match Run.execute (buildOptions "broken") with
+        | Error (RunFailure.ConfigError (src, msg)) ->
+            Assert.Contains("params.toml", src)
+            Assert.Contains("nope", msg)
+        | other -> Assert.Fail($"expected ConfigError, got %A{other}")
+        Assert.False(Directory.Exists(Path.Combine(dir, ".takatora", "runs")),
+                     "a denied run must not create run state")
+
+    // ─── secret enforcement ───────────────────────────────────────
+
+    [<Fact>]
+    member _.``secret param without grant is denied with no run record`` () =
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/params.toml" """
+[params]
+steam_password = { type = "secret" }
+"""
+        writeFile ".takatora/flows.toml" """
+[[flow]]
+id = "deploy"
+[[flow.steps]]
+type = "echo"
+message = "${params.steam_password}"
+"""
+        match Run.execute (buildOptions "deploy") with
+        | Error (RunFailure.SecretAccessDenied (flowId, notGranted, stale)) ->
+            Assert.Equal("deploy", flowId)
+            Assert.Equal<string list>([ "steam_password" ], notGranted)
+            Assert.Empty(stale)
+        | other -> Assert.Fail($"expected SecretAccessDenied, got %A{other}")
+        Assert.False(Directory.Exists(Path.Combine(dir, ".takatora", "runs")),
+                     "a denied run must not create run state")
+
+    [<Fact>]
+    member _.``granted secret param runs, is redacted on disk, and reaches the task via env`` () =
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/params.toml" """
+[params]
+steam_password = { type = "secret" }
+"""
+        writeFile ".takatora/flows.toml" """
+[[flow]]
+id = "deploy"
+[[flow.steps]]
+id = "e"
+type = "echo.secret"
+message = "pw=${params.steam_password}"
+"""
+        writeFile ".takatora/tasks/echo.secret.fsx" """
+open Takatora.Tasks
+let masked = Param.required<string> "message"
+let real = System.Environment.GetEnvironmentVariable "TAKATORA_SECRET_steam_password"
+Step.run "echo" (fun () -> printfn "MASKED=%s REALLEN=%d" masked real.Length)
+Output.set "masked" masked
+"""
+        Secrets.write "rt-fixture" "steam_password" "supersecret456"
+        grantCurrent "deploy" "steam_password"
+
+        let outcome =
+            match Run.execute (buildOptions "deploy") with
+            | Ok o -> o
+            | Error e -> Assert.Fail($"expected Ok, got %A{e}"); Unchecked.defaultof<_>
+        Assert.Equal(RunResult.Success, outcome.Result)
+        // The task saw the scrubbed param but the real value via env.
+        Assert.Equal(Some (TString "pw=***"), Map.tryFind "masked" outcome.Steps.[0].Outputs)
+        let log = File.ReadAllText(Path.Combine(outcome.RunDir, "log.txt"))
+        Assert.Contains(sprintf "REALLEN=%d" "supersecret456".Length, log)
+        // No on-disk artifact carries the plaintext.
+        Assert.DoesNotContain("supersecret456", log)
+        Assert.DoesNotContain("supersecret456", File.ReadAllText(Path.Combine(outcome.RunDir, "manifest.toml")))
+        for f in Directory.GetFiles(Path.Combine(outcome.RunDir, "inputs")) do
+            Assert.DoesNotContain("supersecret456", File.ReadAllText f)
+
+    [<Fact>]
+    member _.``editing the flow makes an existing grant stale`` () =
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/params.toml" """
+[params]
+steam_password = { type = "secret" }
+"""
+        writeFile ".takatora/flows.toml" """
+[[flow]]
+id = "deploy"
+[[flow.steps]]
+type = "echo"
+message = "${params.steam_password}"
+"""
+        Secrets.write "rt-fixture" "steam_password" "v"
+        grantCurrent "deploy" "steam_password"
+        // Semantic edit after the grant: the step now also uploads somewhere.
+        writeFile ".takatora/flows.toml" """
+[[flow]]
+id = "deploy"
+[[flow.steps]]
+type = "echo"
+message = "${params.steam_password}"
+target = "https://evil.example"
+"""
+        match Run.execute (buildOptions "deploy") with
+        | Error (RunFailure.SecretAccessDenied (_, notGranted, stale)) ->
+            Assert.Empty(notGranted)
+            Assert.Equal<string list>([ "steam_password" ], stale)
+        | other -> Assert.Fail($"expected stale SecretAccessDenied, got %A{other}")
+
+    [<Fact>]
+    member _.``granted secret without a stored value fails with SecretValueMissing`` () =
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/params.toml" """
+[params]
+steam_password = { type = "secret" }
+"""
+        writeFile ".takatora/flows.toml" """
+[[flow]]
+id = "deploy"
+[[flow.steps]]
+type = "echo"
+message = "${params.steam_password}"
+"""
+        grantCurrent "deploy" "steam_password"
+        match Run.execute (buildOptions "deploy") with
+        | Error (RunFailure.SecretValueMissing (flowId, param)) ->
+            Assert.Equal("deploy", flowId)
+            Assert.Equal("steam_password", param)
+        | other -> Assert.Fail($"expected SecretValueMissing, got %A{other}")
+
+    // ─── dry run ──────────────────────────────────────────────────
+
+    [<Fact>]
+    member _.``plan needs no grant and masks secret params`` () =
+        writeFile ".takatora/project.toml" projectToml
+        writeFile ".takatora/params.toml" """
+[params]
+steam_password = { type = "secret" }
+"""
+        writeFile ".takatora/flows.toml" """
+[[flow]]
+id = "deploy"
+[[flow.steps]]
+id = "s"
+type = "echo"
+message = "pw=${params.steam_password}"
+"""
+        match Run.plan (buildOptions "deploy") with
+        | Error e -> Assert.Fail($"expected Ok, got %A{e}")
+        | Ok p ->
+            Assert.Equal(Some (TString "pw=***"),
+                         Map.tryFind "message" p.Steps.[0].ResolvedParams)

@@ -213,6 +213,89 @@ let main argv =
 
     root.Subcommands.Add(projectCmd)
 
+    // ─── params list/grant/revoke/set ─────────────────────────────
+    let paramsCmd =
+        Command("params", "Manage project-shared params (.takatora/params.toml) and secret access grants")
+
+    // params list <project> [--output-format]
+    let paramsListProject = Argument<string>("project")
+    paramsListProject.Description <- "Registered project name OR path to a working dir with .takatora/"
+    paramsListProject.DefaultValueFactory <- (fun _ -> ".")
+    let paramsListFormat = Option<string>("--output-format")
+    paramsListFormat.Description <- "Output format: human (default) | json"
+    paramsListFormat.DefaultValueFactory <- (fun _ -> "human")
+    let paramsListCmd = Command("list", "Show declared params and per-flow secret access state")
+    paramsListCmd.Arguments.Add(paramsListProject)
+    paramsListCmd.Options.Add(paramsListFormat)
+    paramsListCmd.SetAction(fun (pr: ParseResult) ->
+        match Params.parseFormat (pr.GetValue(paramsListFormat)) with
+        | Error msg ->
+            Console.Error.WriteLine(sprintf "params list: %s" msg)
+            2
+        | Ok fmt -> Params.invokeList (pr.GetValue(paramsListProject)) fmt)
+    paramsCmd.Subcommands.Add(paramsListCmd)
+
+    // params grant <project> <flow>
+    let paramsGrantProject = Argument<string>("project")
+    paramsGrantProject.Description <- "Registered project name OR path"
+    let paramsGrantFlow = Argument<string>("flow")
+    paramsGrantFlow.Description <- "Flow id from flows.toml"
+    let paramsGrantCmd =
+        Command("grant",
+                "Allow a flow to read the secret params it references (recorded machine-locally; running this command is the consent)")
+    paramsGrantCmd.Arguments.Add(paramsGrantProject)
+    paramsGrantCmd.Arguments.Add(paramsGrantFlow)
+    paramsGrantCmd.SetAction(fun (pr: ParseResult) ->
+        Params.invokeGrant (pr.GetValue(paramsGrantProject)) (pr.GetValue(paramsGrantFlow)))
+    paramsCmd.Subcommands.Add(paramsGrantCmd)
+
+    // params revoke <project> [--flow X] [--param Y]
+    let paramsRevokeProject = Argument<string>("project")
+    paramsRevokeProject.Description <- "Registered project name OR path"
+    let paramsRevokeFlow = Option<string>("--flow")
+    paramsRevokeFlow.Description <- "Limit to grants of this flow id"
+    let paramsRevokeParam = Option<string>("--param")
+    paramsRevokeParam.Description <- "Limit to grants of this param name"
+    let paramsRevokeCmd =
+        Command("revoke", "Remove secret access grants recorded on this machine")
+    paramsRevokeCmd.Arguments.Add(paramsRevokeProject)
+    paramsRevokeCmd.Options.Add(paramsRevokeFlow)
+    paramsRevokeCmd.Options.Add(paramsRevokeParam)
+    paramsRevokeCmd.SetAction(fun (pr: ParseResult) ->
+        let opt (s: string) = if String.IsNullOrWhiteSpace s then None else Some s
+        Params.invokeRevoke
+            (pr.GetValue(paramsRevokeProject))
+            (opt (pr.GetValue(paramsRevokeFlow)))
+            (opt (pr.GetValue(paramsRevokeParam))))
+    paramsCmd.Subcommands.Add(paramsRevokeCmd)
+
+    // params set <project> <name> --from-env VAR | --stdin
+    let paramsSetProject = Argument<string>("project")
+    paramsSetProject.Description <- "Registered project name OR path"
+    let paramsSetName = Argument<string>("name")
+    paramsSetName.Description <- "Secret param name declared in params.toml"
+    let paramsSetFromEnv = Option<string>("--from-env")
+    paramsSetFromEnv.Description <- "Read the value from this environment variable"
+    let paramsSetStdin = Option<bool>("--stdin")
+    paramsSetStdin.Description <- "Read the value from stdin (e.g. piped in)"
+    let paramsSetCmd =
+        Command("set", "Store a secret param's value in the OS credential manager (never passed via argv)")
+    paramsSetCmd.Arguments.Add(paramsSetProject)
+    paramsSetCmd.Arguments.Add(paramsSetName)
+    paramsSetCmd.Options.Add(paramsSetFromEnv)
+    paramsSetCmd.Options.Add(paramsSetStdin)
+    paramsSetCmd.SetAction(fun (pr: ParseResult) ->
+        let fromEnvRaw = pr.GetValue(paramsSetFromEnv)
+        let fromEnv = if String.IsNullOrWhiteSpace fromEnvRaw then None else Some fromEnvRaw
+        Params.invokeSet
+            (pr.GetValue(paramsSetProject))
+            (pr.GetValue(paramsSetName))
+            fromEnv
+            (pr.GetValue(paramsSetStdin)))
+    paramsCmd.Subcommands.Add(paramsSetCmd)
+
+    root.Subcommands.Add(paramsCmd)
+
     // ─── history ──────────────────────────────────────────────────
     let historyProjectArg = Argument<string>("project")
     historyProjectArg.Description <- "Registered project name OR path to a working dir with .takatora/"

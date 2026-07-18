@@ -44,7 +44,25 @@ platform = "Win64"
 `item="string"|...`). Each can have `default` and `description`.
 
 **Templating** (in step param string values): `${vars.<name>}`,
-`${steps.<id>.outputs.<name>}`, `${project.<field>}`, `${env.<NAME>}`.
+`${params.<name>}`, `${steps.<id>.outputs.<name>}`, `${project.<field>}`,
+`${env.<NAME>}`.
+
+**Shared params** — optional `<project>/.takatora/params.toml` (committed),
+project-wide values every flow can reference as `${params.<name>}`:
+
+```toml
+[params]
+studio_name    = { type = "string", value = "Foo Studio" }
+steam_password = { type = "secret" }   # value lives in the OS credential
+                                       # manager, NEVER in this file
+```
+
+Non-secret entries need `value` (the shared value); `type = "secret"` entries
+must NOT have one (store via `takatora params set <p> <name> --stdin` or GUI
+Project Settings). A flow referencing a secret param runs only after a
+machine-local grant: `takatora params grant <project> <flow>` (run fails with
+exit 6 otherwise; semantic flow edits make grants stale and re-require it).
+Don't reuse a name between a flow var and a param — `validate` warns.
 
 **`when` is bool-only:** `${vars.<bool>}` or `!${vars.<bool>}`. No enum/string
 comparison — to branch on an enum value, pass it to a custom task and branch

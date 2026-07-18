@@ -68,6 +68,21 @@ carry their allowed `values`. `outputs` is the list of output names a step of
 this type records (referenceable downstream as
 `${steps.<id>.outputs.<name>}`).
 
+**List project-shared params + secret access state** (declared in
+`.takatora/params.toml`, referenced from flows as `${params.<name>}`):
+
+```
+takatora params list <project> [--output-format json]
+```
+```
+Params of 'sample-game' (.takatora/params.toml):
+  steam_password       secret         (secret, stored)  — Steam partner password
+  studio_name          string         "Foo Studio"
+
+Secret access (this machine):
+  deploy               steam_password       granted
+```
+
 **See a flow's resolved plan without executing anything** — this is the safe
 way to understand what a flow *would* do (effective vars + ordered steps,
 including which engine resolves):
@@ -119,6 +134,34 @@ takatora run <project> <flow> [--var KEY=VALUE]... [--output-format json]
 Check `result` (`success` / `failure` / ...) and each `steps[].status`; the
 process exit code reflects success/failure too. `run_dir` is where this run's
 logs and outputs live (see below).
+
+### Secret params (access grants)
+
+A flow that references a **secret** shared param (`${params.<name>}` with
+`type = "secret"` in `.takatora/params.toml`) only runs after access has been
+granted on this machine. Without a grant, `run` fails with **exit code 6**
+and no run record:
+
+```
+run: flow 'deploy' uses secret param(s) without access granted on this machine:
+  - steam_password
+  grant with: takatora params grant <project> deploy
+```
+
+The CLI never prompts — granting is its own explicit command (running it
+**is** the consent; there is no y/N):
+
+```
+takatora params grant <project> <flow>     # allow the flow's secret params
+takatora params revoke <project> [--flow <id>] [--param <name>]
+takatora params set <project> <name> --from-env VAR   # store a secret value
+takatora params set <project> <name> --stdin          # (never via argv)
+```
+
+Grants are pinned to the flow's definition: a semantic edit to the flow makes
+them stale (`run` exits 6 again and says so) until re-granted. A missing
+stored value exits 2 with a pointer to `params set`. `--dry-run` needs no
+grant and shows secret values masked as `***`.
 
 ## 3. Read results
 

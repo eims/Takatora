@@ -65,6 +65,7 @@ skill folder into your own project's `.claude/skills/` to use it there.
 | `takatora detect-engines [--format json]` | List detected engine installs |
 | `takatora describe <task> [--project <p>]` | Print a task's param/output schema |
 | `takatora project list \| add \| remove` | Manage the project registry |
+| `takatora params list \| grant \| revoke \| set` | Shared params + secret access grants |
 
 `<project>` is either a registered name or a path to a directory containing
 `.takatora/`.
@@ -77,5 +78,12 @@ skill folder into your own project's `.claude/skills/` to use it there.
 - **Vars** — flow inputs (`[flow.vars]`), overridable at run time
   (`--var name=value`, or the GUI's run dialog). Referenced as
   `${vars.name}` in step params.
+- **Shared params** — project-wide values in `.takatora/params.toml`
+  (committed), referenced from any flow as `${params.name}` — accounts,
+  channels, and other settings you don't want duplicated per flow. Secret
+  ones keep their value in the OS credential manager, and a flow reads them
+  only after a one-time, machine-local access grant (re-confirmed when the
+  flow's definition changes). See
+  [Authoring flows & custom tasks](ai-authoring.md).
 - **Step outputs** — values a task records (e.g. a package's `archive_path`),
   referenceable downstream as `${steps.<id>.outputs.<name>}`.

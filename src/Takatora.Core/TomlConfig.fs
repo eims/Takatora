@@ -217,6 +217,40 @@ module TomlConfig =
         | Some arr -> arr |> Seq.map parseFlow |> List.ofSeq
         | None -> []
 
+    let private parseProjectParam (name: string) (tbl: TomlTable) : ProjectParam =
+        let kind = parseVarKind name tbl
+        let value =
+            match tbl.TryGetValue("value") with
+            | true, v -> Some (convert v)
+            | _ -> None
+        let description =
+            match tbl.TryGetValue("description") with
+            | true, (:? string as s) when not (System.String.IsNullOrWhiteSpace s) -> Some s
+            | _ -> None
+        match kind, value with
+        | VarKind.Secret, Some _ ->
+            fail $"param '{name}': secret params must not carry a 'value' — store it in the credential manager (GUI Project Settings or `takatora params set`)"
+        | VarKind.Secret, None -> ()
+        | _, None ->
+            fail $"param '{name}': non-secret params require a 'value'"
+        | _, Some _ -> ()
+        { Name = name; Kind = kind; Value = value; Description = description }
+
+    /// Parse a `params.toml` payload into project-shared params. Order in
+    /// the file is not significant; the result is sorted by name.
+    let parseParams (text: string) : ProjectParam list =
+        let model = toModel text
+        match tryTable model "params" with
+        | None -> []
+        | Some pt ->
+            pt
+            |> Seq.map (fun kv ->
+                match kv.Value with
+                | :? TomlTable as v -> parseProjectParam kv.Key v
+                | other -> fail $"param '{kv.Key}' must be an inline table, got {other.GetType().Name}")
+            |> List.ofSeq
+            |> List.sortBy (fun p -> p.Name)
+
     /// Read and parse a `project.toml` from disk.
     let loadProject (path: string) : Project =
         File.ReadAllText path |> parseProject
@@ -224,3 +258,7 @@ module TomlConfig =
     /// Read and parse a `flows.toml` from disk.
     let loadFlows (path: string) : Flow list =
         File.ReadAllText path |> parseFlows
+
+    /// Read and parse a `params.toml` from disk.
+    let loadParams (path: string) : ProjectParam list =
+        File.ReadAllText path |> parseParams

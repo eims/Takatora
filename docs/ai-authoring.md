@@ -54,9 +54,34 @@ api_key = { type = "secret" }
 
 ### Templating (in step param values, as strings)
 - `${vars.<name>}` — a flow variable.
+- `${params.<name>}` — a project-shared param (see next section).
 - `${steps.<id>.outputs.<name>}` — an output recorded by an earlier step (that
   step needs an explicit `id`).
 - `${project.<field>}` / `${env.<NAME>}` — project field / environment var.
+
+### Shared params (`<project>/.takatora/params.toml`, optional)
+Project-wide values every flow can reference as `${params.<name>}` — no
+per-flow duplication. The file is committed; the type vocabulary matches
+`[flow.vars]`, but non-secret entries carry a `value` (the shared value, not
+a default) and `type = "secret"` entries carry **no value** — the value lives
+in the OS credential manager (`takatora params set` or GUI Project Settings).
+
+```toml
+[params]
+studio_name    = { type = "string", value = "Foo Studio" }
+steam_password = { type = "secret", description = "Steam partner password" }
+```
+
+A flow that references a **secret** param needs a machine-local access grant
+before `takatora run` will execute it (`takatora params grant <project>
+<flow>`; the GUI asks with a dialog). The grant is pinned to the flow's
+definition — editing the flow's steps/vars/when re-triggers the confirmation
+(comment/format-only edits don't). Grants live outside the repo, so a pulled
+flows.toml edit can never read secrets silently. Secret param values are
+masked (`***`) in manifests/inputs/logs and reach tasks only via
+`TAKATORA_SECRET_<name>` env vars, exactly like secret flow vars. Avoid
+giving a flow var and a param the same name (that env namespace is flat;
+`validate` warns).
 
 ### `when` (step gating) — bool-only grammar
 A step's `when` is `${vars.<boolVar>}` or `!${vars.<boolVar>}` only. There is

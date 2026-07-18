@@ -100,3 +100,16 @@ type Flow = {
     Vars: FlowVar list
     Steps: Step list
 }
+
+/// Project-shared parameter declared in `.takatora/params.toml` and
+/// referenced from flows as `${params.<name>}`. Non-secret params carry
+/// their shared value inline (the file is committed); `type = "secret"`
+/// params declare only the name — the value lives in the OS credential
+/// store under the same key space as flow-var secrets.
+type ProjectParam = {
+    Name: string
+    Kind: VarKind
+    /// Some for non-secret params (required); None for secrets.
+    Value: TomlValue option
+    Description: string option
+}
