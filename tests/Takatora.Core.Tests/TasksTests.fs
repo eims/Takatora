@@ -505,3 +505,43 @@ type TasksSdkTests() =
                 "dotnet"
                 [ "--version" ]
         Assert.Equal(0, probe.exitCode)
+
+    // ----- output encoding override (butler/itch mojibake fix) -----
+
+    [<Fact>]
+    member _.``encodingByName resolves utf-8, native, code-page number and name`` () =
+        Assert.Equal(65001, (Cmd.encodingByName "utf-8").CodePage)
+        Assert.Equal(65001, (Cmd.encodingByName "UTF8").CodePage)
+        // "" / native / ansi all fall back to the OS ANSI code page.
+        let ansi = System.Text.Encoding.GetEncoding(System.Globalization.CultureInfo.CurrentCulture.TextInfo.ANSICodePage)
+        Assert.Equal(ansi.CodePage, (Cmd.encodingByName "").CodePage)
+        Assert.Equal(ansi.CodePage, (Cmd.encodingByName "native").CodePage)
+        // Legacy code pages resolve by number and by name (provider registered).
+        Assert.Equal(932, (Cmd.encodingByName "932").CodePage)
+        Assert.Equal(932, (Cmd.encodingByName "shift_jis").CodePage)
+
+    [<Fact>]
+    member _.``encodingByName fails loudly on an unknown name`` () =
+        let ex = Assert.Throws<TaskFailure>(fun () -> Cmd.encodingByName "not-a-real-encoding" |> ignore)
+        Assert.Contains("Unknown encoding", ex.Message)
+
+    [<Fact>]
+    member _.``execCaptureWith with UTF-8 override decodes multibyte output correctly`` () =
+        setupInput """{"params":{}}"""
+        // Bytes a native (CP932/CP1252) decode would mangle — the emoji is a
+        // 4-byte UTF-8 sequence no single-byte/CP932 page can represent, so a
+        // correct result *proves* the override took effect. `type`/`cat` emit
+        // the file's bytes verbatim, leaving the decode entirely to us.
+        let text = "こんにちは-😀"
+        let file = Path.Combine(dir, "utf8.txt")
+        File.WriteAllBytes(file, System.Text.UTF8Encoding(false).GetBytes text)
+        let isWindows =
+            System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                System.Runtime.InteropServices.OSPlatform.Windows)
+        let exe, args = if isWindows then "cmd.exe", [ "/c"; "type"; file ] else "cat", [ file ]
+        let r =
+            Cmd.execCaptureWith
+                { ExecOptions.empty with Encoding = Some (Cmd.encodingByName "utf-8") }
+                exe args
+        Assert.Equal(0, r.exitCode)
+        Assert.Contains(text, r.stdout)

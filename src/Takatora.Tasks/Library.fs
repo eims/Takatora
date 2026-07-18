@@ -691,6 +691,13 @@ type ExecOptions = {
     /// Hard wall-clock cap. On expiry the runner kills the entire
     /// process tree and the task fails with a timeout message.
     Timeout: TimeSpan option
+    /// How to decode the child's stdout/stderr bytes. `None` uses the OS
+    /// native (ANSI) code page — correct for the engine toolchain (UBT,
+    /// cl.exe, git) which emits localized text in that page. Override it
+    /// for tools that emit a fixed encoding regardless of the OS locale:
+    /// most Go/Rust CLIs (butler, rclone, …) are always UTF-8, so decoding
+    /// them as CP932 mojibakes their output. See `Cmd.encodingByName`.
+    Encoding: System.Text.Encoding option
 }
 
 [<RequireQualifiedAccess>]
@@ -700,6 +707,7 @@ module ExecOptions =
         Env = Map.empty
         IgnoreExitCodes = []
         Timeout = None
+        Encoding = None
     }
 
 /// Spawn external processes from a task .fsx. By default stdout/stderr
@@ -715,16 +723,40 @@ module Cmd =
 
     let private taskFail msg : 'T = raise (TaskFailure msg)
 
+    // Legacy (non-UTF-8) code pages like 932 need this provider registered
+    // before GetEncoding can resolve them on .NET. Do it once, up front, so
+    // both the native default and any name-based override can rely on it.
+    do try Encoding.RegisterProvider(CodePagesEncodingProvider.Instance) with _ -> ()
+
     /// Console tools (UBT, cl.exe, git, …) emit bytes in the OS's native
     /// (ANSI/console) code page, not UTF-8 — e.g. CP932 on Japanese
     /// Windows. Decode captured/streamed output with that code page so
-    /// localized messages don't turn into mojibake in log.txt. Registering
-    /// the code-pages provider is required for GetEncoding(932) on .NET.
+    /// localized messages don't turn into mojibake in log.txt.
     let private nativeEncoding : Encoding =
-        try
-            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance)
-            Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.ANSICodePage)
+        try Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.ANSICodePage)
         with _ -> Encoding.UTF8
+
+    /// Resolve an `encoding` param string to an Encoding. Accepts UTF-8
+    /// spellings, the OS-native sentinel, and any .NET code-page number or
+    /// name (`932`, `shift_jis`, `latin1`, …). Empty/`"native"`/`"ansi"`
+    /// give the native default. Throws `TaskFailure` on an unknown name so
+    /// a typo in flows.toml fails loudly rather than silently mojibaking.
+    let encodingByName (name: string) : Encoding =
+        match (name |> Option.ofObj |> Option.defaultValue "").Trim().ToLowerInvariant() with
+        | "" | "native" | "ansi" | "oem" -> nativeEncoding
+        | "utf-8" | "utf8" -> UTF8Encoding(false) :> Encoding
+        | "utf-16" | "utf16" | "unicode" -> Encoding.Unicode
+        | other ->
+            try
+                match Int32.TryParse other with
+                | true, cp -> Encoding.GetEncoding(cp)
+                | _        -> Encoding.GetEncoding(other)
+            with _ -> taskFail (sprintf "Unknown encoding '%s'" name)
+
+    /// The encoding an exec should decode child output with: the explicit
+    /// override, else the OS native code page.
+    let private resolveEncoding (opts: ExecOptions) : Encoding =
+        opts.Encoding |> Option.defaultValue nativeEncoding
 
     let private buildPsi (exe: string) (args: string list) (opts: ExecOptions) : ProcessStartInfo =
         let psi = ProcessStartInfo(exe)
@@ -764,10 +796,12 @@ module Cmd =
         // un-redirected console child loses its output in that mode.
         psi.RedirectStandardOutput <- true
         psi.RedirectStandardError <- true
-        // Decode the tool's native-codepage bytes correctly (then re-emit as
-        // UTF-8 via Console.Out, which the runner reads as UTF-8).
-        psi.StandardOutputEncoding <- nativeEncoding
-        psi.StandardErrorEncoding <- nativeEncoding
+        // Decode the tool's bytes with the resolved encoding (native code
+        // page by default), then re-emit as UTF-8 via Console.Out, which the
+        // runner reads as UTF-8.
+        let enc = resolveEncoding opts
+        psi.StandardOutputEncoding <- enc
+        psi.StandardErrorEncoding <- enc
         use proc = new Process()
         proc.StartInfo <- psi
         proc.OutputDataReceived.Add(fun e -> if not (isNull e.Data) then Console.Out.WriteLine(e.Data))
@@ -807,8 +841,9 @@ module Cmd =
         let psi = buildPsi exe args opts
         psi.RedirectStandardOutput <- true
         psi.RedirectStandardError <- true
-        psi.StandardOutputEncoding <- nativeEncoding
-        psi.StandardErrorEncoding <- nativeEncoding
+        let enc = resolveEncoding opts
+        psi.StandardOutputEncoding <- enc
+        psi.StandardErrorEncoding <- enc
         use proc = Process.Start(psi)
         // Read both streams concurrently; reading sequentially can
         // deadlock if the child fills the unread pipe.
